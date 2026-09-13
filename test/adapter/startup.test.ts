@@ -28,7 +28,7 @@ function ports(overrides: Partial<StartupPorts> = {}, trace: Trace = []): Startu
       return true
     },
     requiredFiles: () => ["entrypoint.ts", "descriptions/a.txt"],
-    fileExists: () => {
+    regularFileExists: () => {
       trace.push("structural")
       return true
     },
@@ -59,10 +59,19 @@ describe("the unmarked-root fast path", () => {
   })
 
   test("skips the probe, the version read and reconciliation entirely", async () => {
-    // Not merely registration: an unconfigured project pays nothing at all.
     const trace: Trace = []
     await runStartup(ports({ markerExists: () => false }, trace))
-    expect(trace).toEqual([])
+    expect(trace).not.toContain("probe")
+    expect(trace).not.toContain("version")
+    expect(trace).not.toContain("reconcile")
+  })
+
+  test("still runs user-wide housekeeping, which exists for exactly these roots", async () => {
+    // Gating housekeeping on the marker would mean the roots it exists for —
+    // moved, gone, or de-marked — are the ones never reclaimed.
+    const trace: Trace = []
+    await runStartup(ports({ markerExists: () => false }, trace))
+    expect(trace).toContain("housekeeping")
   })
 })
 
@@ -70,12 +79,16 @@ describe("structural verification", () => {
   test("runs after the marker and before anything bounded", async () => {
     const trace: Trace = []
     await runStartup(ports({}, trace))
-    expect(trace.slice(0, 2)).toEqual(["marker", "structural"])
+    const gates = trace.filter((entry) => entry === "marker" || entry === "structural")
+    expect(gates[0]).toBe("marker")
+    expect(gates).toContain("structural")
+    expect(trace.indexOf("marker")).toBeLessThan(trace.indexOf("probe"))
+    expect(trace.indexOf("structural")).toBeLessThan(trace.indexOf("probe"))
   })
 
   test("registers nothing when a shipped file is missing", async () => {
     const outcome = await runStartup(
-      ports({ fileExists: (path) => path !== "descriptions/a.txt" }),
+      ports({ regularFileExists: (path) => path !== "descriptions/a.txt" }),
     )
     expect(outcome.status).toBe("structuralFailure")
     if (outcome.status !== "structuralFailure") return
@@ -83,17 +96,18 @@ describe("structural verification", () => {
   })
 
   test("names the expected layout, because a partial copy is its own failure class", async () => {
-    const outcome = await runStartup(ports({ fileExists: () => false }))
+    const outcome = await runStartup(ports({ regularFileExists: () => false }))
     if (outcome.status !== "structuralFailure") throw new Error("expected a structural failure")
     expect(outcome.diagnostic).toContain("checkout is incomplete")
     expect(outcome.diagnostic).toContain("supervisor entrypoint")
   })
 
-  test("skips every bounded item once it has failed", async () => {
+  test("skips the gated work once it has failed", async () => {
     const trace: Trace = []
-    await runStartup(ports({ fileExists: () => false }, trace))
+    await runStartup(ports({ regularFileExists: () => false }, trace))
     expect(trace).not.toContain("probe")
-    expect(trace).not.toContain("housekeeping")
+    expect(trace).not.toContain("reconcile")
+    expect(trace).not.toContain("version")
   })
 })
 

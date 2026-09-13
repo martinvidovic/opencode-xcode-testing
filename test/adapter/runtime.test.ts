@@ -17,13 +17,13 @@ const TRUSTED_ROOT = "/workspace/example"
 
 /** A probe that accepts exactly the candidates it is told to accept. */
 function probeAccepting(...usable: string[]): RuntimeProbe {
-  return (candidate) =>
+  return async (candidate) =>
     usable.includes(candidate) ? { usable: true, version: "1.4.0" } : { usable: false }
 }
 
 describe("an explicitly configured runtime", () => {
-  test("wins over everything else", () => {
-    const outcome = resolveRuntime({
+  test("wins over everything else", async () => {
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       configured: "/opt/bun/bin/bun",
       hostExecutable: "/opt/opencode",
@@ -33,9 +33,9 @@ describe("an explicitly configured runtime", () => {
     expect(outcome).toMatchObject({ status: "resolved", path: "/opt/bun/bin/bun", source: "configuration" })
   })
 
-  test("resolves a relative value against the trusted root", () => {
+  test("resolves a relative value against the trusted root", async () => {
     const expected = join(TRUSTED_ROOT, "tools/bun")
-    const outcome = resolveRuntime({
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       configured: "tools/bun",
       hostExecutable: "/opt/opencode",
@@ -44,9 +44,9 @@ describe("an explicitly configured runtime", () => {
     expect(outcome).toMatchObject({ status: "resolved", path: expected })
   })
 
-  test("is a hard error when it is set but unusable, never a fallback", () => {
+  test("is a hard error when it is set but unusable, never a fallback", async () => {
     // A setting that silently degrades fails somewhere else, later.
-    const outcome = resolveRuntime({
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       configured: "/opt/broken/bun",
       hostExecutable: "/opt/opencode",
@@ -63,8 +63,8 @@ describe("an explicitly configured runtime", () => {
 })
 
 describe("the host executable", () => {
-  test("is used when it genuinely runs TypeScript", () => {
-    const outcome = resolveRuntime({
+  test("is used when it genuinely runs TypeScript", async () => {
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       hostExecutable: "/opt/bun",
       pathCandidate: "bun",
@@ -73,8 +73,8 @@ describe("the host executable", () => {
     expect(outcome).toMatchObject({ status: "resolved", source: "host" })
   })
 
-  test("falls through to PATH when it cannot, which is the expected case", () => {
-    const outcome = resolveRuntime({
+  test("falls through to PATH when it cannot, which is the expected case", async () => {
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       hostExecutable: "/opt/homebrew/bin/opencode",
       pathCandidate: "bun",
@@ -83,13 +83,13 @@ describe("the host executable", () => {
     expect(outcome).toMatchObject({ status: "resolved", path: "bun", source: "path" })
   })
 
-  test("is probed before PATH, so a working host executable is preferred", () => {
+  test("is probed before PATH, so a working host executable is preferred", async () => {
     const probed: string[] = []
-    resolveRuntime({
+    await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       hostExecutable: "/opt/opencode",
       pathCandidate: "bun",
-      probe: (candidate) => {
+      probe: async (candidate) => {
         probed.push(candidate)
         return { usable: false }
       },
@@ -99,8 +99,8 @@ describe("the host executable", () => {
 })
 
 describe("when nothing works", () => {
-  test("fails closed rather than falling back silently", () => {
-    const outcome = resolveRuntime({
+  test("fails closed rather than falling back silently", async () => {
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       hostExecutable: "/opt/opencode",
       pathCandidate: "bun",
@@ -109,8 +109,8 @@ describe("when nothing works", () => {
     expect(outcome).toMatchObject({ status: "failed", reason: "runnerFailure" })
   })
 
-  test("names Bun, the candidates it tried, and the setting that would fix it", () => {
-    const outcome = resolveRuntime({
+  test("names Bun, the candidates it tried, and the setting that would fix it", async () => {
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       hostExecutable: "/opt/opencode",
       probe: probeAccepting(),
@@ -123,8 +123,8 @@ describe("when nothing works", () => {
     expect(outcome.probed).toEqual(["/opt/opencode"])
   })
 
-  test("copes with Bun being absent from PATH entirely", () => {
-    const outcome = resolveRuntime({
+  test("copes with Bun being absent from PATH entirely", async () => {
+    const outcome = await resolveRuntime({
       trustedRoot: TRUSTED_ROOT,
       hostExecutable: "/opt/opencode",
       probe: probeAccepting(),

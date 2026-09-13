@@ -17,8 +17,14 @@ import { isAbsolute, resolve } from "node:path"
 
 export type RuntimeSource = "configuration" | "host" | "path"
 
-/** A probe must prove the candidate executes a trivial script, not merely exist. */
-export type RuntimeProbe = (candidate: string) => { usable: boolean; version?: string }
+/**
+ * A probe must prove the candidate executes a trivial script, not merely exist.
+ *
+ * It is asynchronous because startup runs it under a shared deadline: a
+ * synchronous probe blocks the loop, so the deadline it is supposed to be
+ * bounded by cannot fire until after it has already finished.
+ */
+export type RuntimeProbe = (candidate: string) => Promise<{ usable: boolean; version?: string }>
 
 export type RuntimeResolution =
   | { status: "resolved"; path: string; source: RuntimeSource; version?: string }
@@ -41,7 +47,7 @@ export type RuntimeInput = {
   probe: RuntimeProbe
 }
 
-export function resolveRuntime(input: RuntimeInput): RuntimeResolution {
+export async function resolveRuntime(input: RuntimeInput): Promise<RuntimeResolution> {
   const probed: string[] = []
 
   if (input.configured !== undefined) {
@@ -50,7 +56,7 @@ export function resolveRuntime(input: RuntimeInput): RuntimeResolution {
       : resolve(input.trustedRoot, input.configured)
     probed.push(path)
 
-    const result = input.probe(path)
+    const result = await input.probe(path)
     if (result.usable) {
       return {
         status: "resolved",
@@ -72,7 +78,7 @@ export function resolveRuntime(input: RuntimeInput): RuntimeResolution {
   for (const candidate of [input.hostExecutable, input.pathCandidate]) {
     if (candidate === undefined) continue
     probed.push(candidate)
-    const result = input.probe(candidate)
+    const result = await input.probe(candidate)
     if (!result.usable) continue
     return {
       status: "resolved",

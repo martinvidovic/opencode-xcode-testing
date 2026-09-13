@@ -65,9 +65,20 @@ export function rootKeyFor(canonicalTrustedRoot: string): string {
 }
 
 export function storageFor(homeDir: string, canonicalTrustedRoot: string): Storage {
+  return storageForRootKey(homeDir, rootKeyFor(canonicalTrustedRoot))
+}
+
+/**
+ * The same storage, addressed by the key instead of the path.
+ *
+ * User-wide housekeeping visits roots it has only ever seen as keys — the
+ * repository they belong to may have moved or gone — so it cannot hash a path
+ * to find them. Deriving every path from the key is what makes that possible
+ * without the caller assembling directory names itself.
+ */
+export function storageForRootKey(homeDir: string, rootKey: string): Storage {
   const toolRoot = join(homeDir, "Library", "Application Support", TOOL_DIRECTORY)
   const registryDir = join(toolRoot, "registry")
-  const rootKey = rootKeyFor(canonicalTrustedRoot)
   const rootDir = join(toolRoot, "roots", rootKey)
 
   return {

@@ -28,6 +28,12 @@ export type Registry = {
   schemaVersion: 1
   lastHousekeepingAtMs?: number
   roots: Record<string, { lastSeenAtMs: number }>
+  /**
+   * The last runtime probe that succeeded, revalidated by `stat` rather than
+   * re-spawned. First start pays for a subprocess; later starts pay for a
+   * stat, which is the identity-recheck philosophy #8 applies to toolchains.
+   */
+  runtime?: { path: string; mtimeMs: number; size: number; version?: string }
 }
 
 const EMPTY_REGISTRY: Registry = { schemaVersion: 1, roots: {} }
