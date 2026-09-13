@@ -1,0 +1,8 @@
+Test Run invalid: 2 errors
+
+No Test Run was started and no Result Bundle exists.
+
+errors (2):
+  destination: a destination must be requested or configured [required]
+  scheme: more than one shared scheme was discovered; name one explicitly [ambiguous]
+    candidates: App, Demo

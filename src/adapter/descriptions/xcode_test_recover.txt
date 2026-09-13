@@ -1,0 +1,23 @@
+Clear a stuck Xcode test execution slot for this project.
+
+Only one Test Run may hold a project's execution slot at a time. When a previous
+run's lifecycle could not be confirmed — the tool crashed, or a process could
+not be accounted for — the slot stays held rather than being handed to a new
+run, because starting a second xcodebuild while an unaccounted-for one may still
+be writing the same build directory produces results nobody can explain.
+
+Call this when xcode_test reports that the execution slot is quarantined. It
+takes no arguments: recovery is idempotent, bounded, and always scoped to this
+project. It never interrupts a run that is genuinely still active.
+
+It returns one of:
+
+  recovered         work was reconciled and the slot is usable again
+  alreadyHealthy    nothing needed doing
+  busy              a live run still owns the slot; wait for it
+  stillQuarantined  the previous run's state remains unresolved
+  cancelled         recovery was cancelled partway
+  failed            recovery could not complete
+
+stillQuarantined is not a reason to retry in a loop. It means a process could
+not be accounted for, and the next step is to find out which.
