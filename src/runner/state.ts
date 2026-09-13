@@ -42,6 +42,8 @@ export type RunRecord = {
   rootKey: string
   state: RunState
   admittedAt: string
+  /** Recorded so a recovered run can report what it really waited, not zero. */
+  queueDurationMs?: number
   timeoutSeconds: number
   /**
    * The resolved contract and the Requested Scope, recorded at admission.

@@ -146,6 +146,15 @@ describe("a run that never recorded what it was asked to do", () => {
       expect(readRunRecord(box.storage, "run-bare")?.state).toBe("completed")
       expect(readQueue(box.storage).activeRunId).toBeUndefined()
       expect(existsSync(join(runDirectory(box.storage, "run-bare"), SUMMARY_ARTIFACT))).toBe(false)
+
+      // An index is still published, so inspection can say "nothing retained"
+      // rather than "this run was never known".
+      const index = JSON.parse(
+        readFileSync(join(runDirectory(box.storage, "run-bare"), "index.json"), "utf8"),
+      ) as { runId: string; occurrences: unknown[]; tests: { completeness: string } }
+      expect(index.runId).toBe("run-bare")
+      expect(index.occurrences).toEqual([])
+      expect(index.tests.completeness).toBe("unavailable")
     })
   })
 })

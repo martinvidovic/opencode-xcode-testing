@@ -14,7 +14,6 @@ import { writeFileSync } from "node:fs"
 import {
   admit,
   CoordinationStateError,
-  clearQuarantine,
   MINIMUM_FREE_BYTES,
   readQueue,
   reap,
@@ -22,7 +21,7 @@ import {
   writeQueue,
   type AdmissionEnvironment,
 } from "../../src/runner/queue.ts"
-import { quarantineSlot } from "../../src/runner/recovery.ts"
+import { quarantineSlot, reconcileRoot } from "../../src/runner/recovery.ts"
 import { fakeProbe, sleep, withSandbox, type Sandbox } from "./harness.ts"
 
 const OWNER = { pid: 1000, startedAt: "owner-start" }
@@ -110,8 +109,20 @@ describe("admission", () => {
       const result = await admit(environmentFor(box), { waitDeadlineMs: 5_000 })
       expect(result).toMatchObject({ status: "failed", reason: "executionSlotQuarantined" })
 
-      clearQuarantine(box.storage)
-      expect((await admit(environmentFor(box))).status).toBe("admitted")
+      // Only recovery clears a quarantine, and only after identity-safe
+      // confirmation that nothing attributable to the run is still running.
+      reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({ processes: {} }),
+        timestamp: () => "2026-09-13T10:00:00.000Z",
+      })
+      expect(
+        (
+          await admit(environmentFor(box), {
+            prepare: () => true,
+          })
+        ).status,
+      ).toBe("admitted")
     })
   })
 })

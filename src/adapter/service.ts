@@ -19,9 +19,12 @@ import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
 import type { TestToolResult } from "../domain/result.ts"
+import { requestedScopeDigest } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
 import { interpretRun } from "../interpreter/interpret.ts"
+import { INDEX_VERSION, type NormalizedIndex } from "../interpreter/index-model.ts"
+import { DECODER_VERSION, REQUESTED_SCHEMA_VERSION } from "../interpreter/schema.ts"
 import { inspectIndex } from "../interpreter/paging.ts"
 import type { XcresultTool } from "../interpreter/ports.ts"
 import { createXcresultTool } from "../interpreter/xcresulttool.ts"
@@ -32,7 +35,7 @@ import {
   type ControlMessage,
 } from "../runner/control.ts"
 import { systemProbe } from "../runner/identity.ts"
-import { admit, releaseSlot, type AdmissionEnvironment } from "../runner/queue.ts"
+import { admit, QUARANTINE_REASON, releaseSlot, type AdmissionEnvironment } from "../runner/queue.ts"
 import {
   createRunDirectory,
   RUN_ARTIFACTS,
@@ -42,7 +45,13 @@ import {
 } from "../runner/paths.ts"
 import { reclaimIsolatedDerivedData, reconcileRoot } from "../runner/recovery.ts"
 import { resolveTestRun } from "../runner/resolution.ts"
-import { advance, readRunRecord, writeRunRecord, type RunRecord } from "../runner/state.ts"
+import {
+  advance,
+  readRunRecord,
+  RUN_STATES,
+  writeRunRecord,
+  type RunRecord,
+} from "../runner/state.ts"
 import { buildArguments, buildEnvironment, XCODEBUILD } from "../runner/xcodebuild.ts"
 import type {
   AdmittedRun,
@@ -195,6 +204,8 @@ function startRun(
       }
     }
 
+    writeRunRecord(environment.storage, { ...record, queueDurationMs: admission.queueDurationMs })
+
     resolveAdmitted({
       runId,
       resolved: resolution.resolved,
@@ -316,11 +327,11 @@ function publishTerminal(
   environment: ServiceEnvironment,
   record: RunRecord,
   summary: TestToolResult,
-  index: unknown,
+  index: NormalizedIndex,
 ): void {
   const { storage } = environment
   writePrivateFileAtomic(
-    join(runDirectory(storage, record.runId), "index.json"),
+    join(runDirectory(storage, record.runId), INDEX_ARTIFACT),
     `${JSON.stringify(index)}\n`,
   )
   writePrivateFileAtomic(
@@ -333,6 +344,51 @@ function publishTerminal(
 
 /** The terminal summary, readable after a crash without rerunning anything. */
 export const SUMMARY_ARTIFACT = "summary.json"
+
+/** The immutable normalized index every later inspection pages through. */
+export const INDEX_ARTIFACT = "index.json"
+
+/**
+ * The index for a run whose durable contract is unreadable: structurally the
+ * same thing a completed run publishes, holding nothing. It exists so a caller
+ * inspecting the run is told there is no retained evidence, rather than told
+ * the run does not exist.
+ */
+function emptyIndex(runId: string): NormalizedIndex {
+  return {
+    indexVersion: INDEX_VERSION,
+    runId,
+    decoderVersion: DECODER_VERSION,
+    schemaVersion: REQUESTED_SCHEMA_VERSION,
+    occurrences: [],
+    testFailures: [],
+    buildErrors: [],
+    attestations: [],
+    scopeVerdict: "unverifiable",
+    scopeDigest: requestedScopeDigest({ kind: "all" }),
+    requestedSelectionCount: 0,
+    observedOutsideScope: 0,
+    build: { completeness: "unavailable" },
+    tests: { completeness: "unavailable" },
+    log: { availability: "unavailable", retainedBytesExact: false },
+    bundleDigestVerified: "unknown",
+  }
+}
+
+function publishIndexOnly(
+  environment: ServiceEnvironment,
+  record: RunRecord,
+  index: NormalizedIndex,
+): void {
+  writePrivateFileAtomic(
+    join(runDirectory(environment.storage, record.runId), INDEX_ARTIFACT),
+    `${JSON.stringify(index)}\n`,
+  )
+  const completed = advance(environment.storage, record, "completed", {
+    completedAt: environment.timestamp(),
+  })
+  reclaimIsolatedDerivedData(environment.storage, completed)
+}
 
 /**
  * Reconcile the root, then finish whatever reconciliation handed back.
@@ -348,6 +404,7 @@ export async function reconcile(environment: ServiceEnvironment) {
     storage: environment.storage,
     probe: systemProbe,
     timestamp: environment.timestamp,
+    claimant: selfIdentity(),
   })
 
   for (const runId of report.needsFinalization) {
@@ -380,15 +437,17 @@ export async function finalizeRecovered(
 
   let current = record
   for (const state of ["supervisorReady", "childRecorded", "launchAuthorized", "executionCompleted"] as const) {
-    if (RUN_STATE_ORDER.indexOf(current.state) < RUN_STATE_ORDER.indexOf(state)) {
+    if (RUN_STATES.indexOf(current.state) < RUN_STATES.indexOf(state)) {
       current = advance(environment.storage, current, state)
     }
   }
 
   if (record.resolved === undefined) {
     // Nothing describes what this run was asked to do, so no honest summary can
-    // be written. The slot is still given back; the artifacts stay for review.
-    advance(environment.storage, current, "completed", { completedAt: environment.timestamp() })
+    // be written — fabricating one would look authoritative and be wrong. An
+    // empty index is still published, so inspection answers "nothing retained"
+    // rather than "never known", and the artifacts stay for review.
+    publishIndexOnly(environment, current, emptyIndex(runId))
     releaseOwnership(environment, runId)
     return
   }
@@ -406,11 +465,13 @@ export async function finalizeRecovered(
     resolved: record.resolved,
     timing: {
       admittedAt: record.admittedAt,
-      queueDurationMs: 0,
+      queueDurationMs: record.queueDurationMs ?? 0,
       ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
+      // The original process duration was never observed and is not invented;
+      // the reported total therefore measures from where recovery took over.
       elapsedBeforeInterpretationMs: 0,
     },
-    terminationTrigger: record.terminationTrigger ?? "toolFailure",
+    terminationTrigger: record.terminationTrigger ?? "unknown",
     termination: {
       requested: record.terminationTrigger === undefined ? "no" : "yes",
       gracefulTerminationObserved: "unknown",
@@ -433,14 +494,7 @@ export async function finalizeRecovered(
   releaseOwnership(environment, runId)
 }
 
-const RUN_STATE_ORDER = [
-  "admitted",
-  "supervisorReady",
-  "childRecorded",
-  "launchAuthorized",
-  "executionCompleted",
-  "completed",
-] as const
+
 
 /**
  * Give the execution slot back — or hold the root quarantined when the run's
@@ -452,7 +506,7 @@ function releaseOwnership(environment: ServiceEnvironment, runId: string): void 
   const record = readRunRecord(environment.storage, runId)
   if (record?.quarantined === true) {
     releaseSlot(environment.storage, runId, {
-      reason: record.quarantineReason ?? "the Test Run lifecycle could not be confirmed",
+      reason: record.quarantineReason ?? QUARANTINE_REASON,
       since: environment.timestamp(),
     })
     return
@@ -460,16 +514,6 @@ function releaseOwnership(environment: ServiceEnvironment, runId: string): void 
   releaseSlot(environment.storage, runId)
 }
 
-/**
- * The index is what every later inspection reads. Publishing it is what makes
- * "a completed run is never reinterpreted" true rather than aspirational.
- */
-function publishIndex(storage: Storage, record: RunRecord, index: unknown): void {
-  writePrivateFileAtomic(
-    join(runDirectory(storage, record.runId), "index.json"),
-    `${JSON.stringify(index)}\n`,
-  )
-}
 
 function logFacts(path: string): { retainedBytes?: number; retainedBytesExact: boolean } {
   try {
@@ -577,7 +621,7 @@ function inspectRetained(
   environment: ServiceEnvironment,
   request: InspectRunRequest,
 ): InspectionResponse<unknown> {
-  const path = join(runDirectory(environment.storage, request.runId), "index.json")
+  const path = join(runDirectory(environment.storage, request.runId), INDEX_ARTIFACT)
   let index: unknown
   try {
     index = JSON.parse(readFileSync(path, "utf8"))

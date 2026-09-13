@@ -24,13 +24,13 @@
  * Nothing inside re-acquires it — the lock is not reentrant.
  */
 
-import { readdirSync, rmSync } from "node:fs"
+import { existsSync, readdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 
 import { allIdentitiesGone, signallingIsSafe, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
 import { withLock } from "./locks.ts"
 import { RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
-import { readQueue, writeQueue, type QueueState } from "./queue.ts"
+import { QUARANTINE_REASON, readQueue, writeQueue, type QueueState } from "./queue.ts"
 import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
 
 export type RecoveryStatus =
@@ -46,6 +46,11 @@ export type RecoveryEnvironment = {
   probe: ProcessProbe
   timestamp(): string
   signal?: { aborted: boolean }
+  /**
+   * The process that will finalize whatever this pass adopts. Recorded onto
+   * each adopted run so a concurrent instance sees a live owner and defers.
+   */
+  claimant?: ProcessIdentity
 }
 
 export type RecoveryReport = {
@@ -58,6 +63,8 @@ export type RecoveryReport = {
   needsFinalization: string[]
   /** Runs whose lifecycle is still uncertain, and which hold the root quarantined. */
   uncertain: string[]
+  /** Completed runs whose own recorded quarantine had never been published. */
+  quarantined: string[]
   /** Slots released because their run is no longer live or already finished. */
   slotsReleased: string[]
   /** Completed runs whose isolated DerivedData was reclaimed. */
@@ -83,6 +90,7 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
     status: "alreadyHealthy",
     needsFinalization: [],
     uncertain: [],
+    quarantined: [],
     slotsReleased: [],
     derivedDataCleaned: [],
     quarantineCleared: false,
@@ -121,14 +129,29 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
     }
 
     if (record.state === "completed") {
+      // A run that recorded its own quarantine and then crashed before
+      // publishing it is exactly the window the quarantine exists to cover.
+      if (record.quarantined === true && state.quarantine === undefined) {
+        report.quarantined.push(runId)
+      }
       if (reclaimIsolatedDerivedData(storage, record)) report.derivedDataCleaned.push(runId)
       continue
     }
 
     const outcome = classify(environment, record)
-    if (outcome === "busy") busy = true
-    else if (outcome === "uncertain") report.uncertain.push(runId)
-    else report.needsFinalization.push(runId)
+    if (outcome === "busy") {
+      busy = true
+    } else if (outcome === "uncertain") {
+      report.uncertain.push(runId)
+    } else {
+      // Claim it before releasing the lock. Finalization happens outside this
+      // lock — it has to interpret — so without a claim two instances would
+      // both adopt the same run and both publish a terminal summary.
+      if (environment.claimant !== undefined) {
+        writeRunRecord(storage, { ...record, owner: environment.claimant })
+      }
+      report.needsFinalization.push(runId)
+    }
   }
 
   // Slot bookkeeping. An active slot naming a run with no durable record is,
@@ -143,18 +166,15 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
     }
   }
 
-  if (report.uncertain.length > 0) {
+  const holding = [...report.uncertain, ...report.quarantined]
+  if (holding.length > 0) {
     // Publishing quarantine and dropping ownership is one transition: a root
     // that is quarantined must never also look busy, or admission would wait
     // out its whole deadline instead of failing fast.
-    const runId = report.uncertain[0] as string
+    const runId = holding[0] as string
     state = {
       ...withoutActive(state),
-      quarantine: {
-        runId,
-        reason: "the lifecycle of a previous Test Run could not be confirmed",
-        since: environment.timestamp(),
-      },
+      quarantine: { runId, reason: QUARANTINE_REASON, since: environment.timestamp() },
     }
   } else if (state.quarantine !== undefined && report.needsFinalization.length === 0) {
     if (canClearQuarantine(environment, state.quarantine.runId)) {
@@ -172,6 +192,7 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
 
   const changed =
     report.needsFinalization.length > 0 ||
+    report.quarantined.length > 0 ||
     report.slotsReleased.length > 0 ||
     report.derivedDataCleaned.length > 0 ||
     report.quarantineCleared
@@ -223,7 +244,14 @@ function classify(environment: RecoveryEnvironment, record: RunRecord): RunOutco
  */
 function canClearQuarantine(environment: RecoveryEnvironment, runId: string): boolean {
   const record = readRunRecord(environment.storage, runId)
-  if (record === undefined) return true
+  if (record === undefined) {
+    // Nothing to attribute and no identities to validate. Holding a root
+    // forever over a run whose artifacts no longer exist is the one failure
+    // mode quarantine must not have; a run whose directory is still there but
+    // unreadable is corruption, and keeps the root held.
+    return !existsSync(runDirectory(environment.storage, runId))
+  }
+  if (record.quarantined === true) return false
   if (record.state !== "completed") return false
   if (record.child !== undefined) {
     if (signallingIsSafe(environment.probe, { pgid: record.child.pgid, processes: [record.child] })) {

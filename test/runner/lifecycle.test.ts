@@ -341,3 +341,112 @@ describe("a run whose owner is still alive", () => {
     })
   })
 })
+
+describe("a quarantine recorded but never published", () => {
+  test("is published by recovery, because the crash window is exactly what it covers", async () => {
+    // The supervisor stamps `quarantined` on the record; the owner publishes it
+    // to the queue. A crash in between left the root looking merely busy.
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-q")
+      seedRun(box.storage, {
+        runId: "run-q",
+        state: "completed",
+        completedAt: TIMESTAMP,
+        quarantined: true,
+      })
+      writeQueue(box.storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: "run-q" })
+
+      const report = recover(box)
+      expect(report.quarantined).toEqual(["run-q"])
+      const state = readQueue(box.storage)
+      expect(state.quarantine?.runId).toBe("run-q")
+      expect(state.activeRunId).toBeUndefined()
+    })
+  })
+
+  test("is not cleared again by the same pass", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-q")
+      seedRun(box.storage, { runId: "run-q", state: "completed", completedAt: TIMESTAMP, quarantined: true })
+
+      recover(box)
+      expect(readQueue(box.storage).quarantine).toBeDefined()
+      // A second pass sees the same recorded quarantine and holds it.
+      recover(box)
+      expect(readQueue(box.storage).quarantine).toBeDefined()
+    })
+  })
+})
+
+describe("adopting a run for finalization", () => {
+  test("claims it, so a concurrent instance defers instead of publishing twice", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-adopt")
+      seedRun(box.storage, {
+        runId: "run-adopt",
+        state: "executionCompleted",
+        supervisor: { pid: 100, startedAt: "s" },
+      })
+
+      const claimant = { pid: 7777, startedAt: "claimant-alive" }
+      const first = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({ processes: {} }),
+        timestamp: () => TIMESTAMP,
+        claimant,
+      })
+      expect(first.needsFinalization).toEqual(["run-adopt"])
+      expect(readRunRecord(box.storage, "run-adopt")?.owner).toEqual(claimant)
+
+      // Finalization happens outside the lock, so a second instance must see
+      // the claim and leave the run to its adopter.
+      const second = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({ processes: { 7777: "claimant-alive" } }),
+        timestamp: () => TIMESTAMP,
+      })
+      expect(second.status).toBe("busy")
+      expect(second.needsFinalization).toEqual([])
+    })
+  })
+})
+
+describe("clearing a quarantine", () => {
+  test("is refused while the run's durable state is unreadable", async () => {
+    await withSandbox((box) => {
+      // The directory is still there, so something happened here that nothing
+      // can now account for. That is corruption, and it holds the root.
+      createRunDirectory(box.storage, "run-corrupt")
+      writeFileSync(join(runDirectory(box.storage, "run-corrupt"), "metadata.json"), "{ not json", {
+        mode: 0o600,
+      })
+      writeQueue(box.storage, {
+        schemaVersion: 1,
+        nextSequence: 2,
+        tickets: [],
+        quarantine: { runId: "run-corrupt", reason: "unconfirmed", since: TIMESTAMP },
+      })
+
+      recover(box)
+      expect(readQueue(box.storage).quarantine).toBeDefined()
+    })
+  })
+
+  test("is allowed once nothing attributable to the run remains at all", async () => {
+    // A quarantine naming a run whose artifacts are entirely gone has no
+    // identities to validate and nothing left to endanger. Holding the root
+    // forever over it is the one failure quarantine must not have.
+    await withSandbox((box) => {
+      writeQueue(box.storage, {
+        schemaVersion: 1,
+        nextSequence: 2,
+        tickets: [],
+        quarantine: { runId: "run-evicted", reason: "unconfirmed", since: TIMESTAMP },
+      })
+
+      const report = recover(box)
+      expect(report.quarantineCleared).toBe(true)
+      expect(readQueue(box.storage).quarantine).toBeUndefined()
+    })
+  })
+})

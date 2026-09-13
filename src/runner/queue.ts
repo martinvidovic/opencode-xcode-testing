@@ -42,6 +42,13 @@ export type Ticket = {
 
 export type Quarantine = { runId: string; reason: string; since: string }
 
+/**
+ * Why a root is quarantined, in the one wording every path uses. A root held
+ * for different-sounding reasons depending on which code path noticed would
+ * make the same condition look like several.
+ */
+export const QUARANTINE_REASON = "the Test Run lifecycle could not be confirmed"
+
 export type QueueState = {
   schemaVersion: 1
   nextSequence: number
@@ -210,6 +217,11 @@ export async function admit(
       if (runId === undefined) {
         // Durable state could not be created, so no slot transfers. Failing
         // closed here is what keeps ownership and artifacts from diverging.
+        //
+        // `recoveryFailed` is the closed taxonomy's term for an operational
+        // failure of root coordination, which this is — there is no separate
+        // reason for "could not allocate", and inventing one would widen a
+        // closed set for a case a caller cannot act on differently.
         writeQueue(storage, { ...state, tickets: withdraw })
         return { status: "failed", reason: "recoveryFailed", ...queued() }
       }
@@ -240,7 +252,7 @@ export async function admit(
 export function releaseSlot(
   storage: Storage,
   runId: string,
-  quarantine?: { reason: string; since: string },
+  quarantine?: Omit<Quarantine, "runId">,
 ): void {
   withLock(storage.rootLock, () => {
     const state = readQueue(storage)
@@ -248,16 +260,6 @@ export function releaseSlot(
     const next: QueueState = { ...state, tickets: state.tickets }
     delete next.activeRunId
     if (quarantine !== undefined) next.quarantine = { runId, ...quarantine }
-    writeQueue(storage, next)
-  })
-}
-
-/** Clear quarantine. Only recovery calls this, and only when it is certain. */
-export function clearQuarantine(storage: Storage): void {
-  withLock(storage.rootLock, () => {
-    const state = readQueue(storage)
-    const next = { ...state }
-    delete next.quarantine
     writeQueue(storage, next)
   })
 }
