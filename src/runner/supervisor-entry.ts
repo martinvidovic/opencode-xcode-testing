@@ -62,17 +62,27 @@ class ControlChannel {
   })
 
   #onSpec: ((spec: SupervisorLaunchSpec | undefined) => void) | undefined
+  #lost = false
 
   constructor() {
     this.#stream.on("data", (chunk) => this.#consume(String(chunk)))
     this.#stream.on("error", () => this.#onSpec?.(undefined))
     // Channel loss after the handshake is the adapter going away, which the
-    // supervisor is explicitly designed to survive.
-    this.#stream.on("end", () => this.#onSpec?.(undefined))
+    // supervisor is explicitly designed to survive — but it is recorded, since
+    // it becomes the trigger when nothing else has fixed one.
+    this.#stream.on("end", () => {
+      this.#lost = true
+      this.#onSpec?.(undefined)
+    })
   }
 
   get aborted(): boolean {
     return this.#aborted
+  }
+
+  /** True once the private control channel has gone. */
+  get lost(): boolean {
+    return this.#lost
   }
 
   /** The launch spec, or `undefined` when the channel produced no usable one. */
@@ -167,6 +177,7 @@ export async function main(): Promise<number> {
           },
           whenAborted: channel.whenAborted,
         },
+        channelLost: () => channel.lost,
       },
       { record, supervisorIdentity: selfIdentity() },
     )

@@ -282,3 +282,195 @@ describe("identity validation", () => {
     expect(signallingIsSafe(probe, { pgid: 42, processes: [{ pid: 42, startedAt: "start-a" }] })).toBe(false)
   })
 })
+
+describe("the termination trigger", () => {
+  test("is durable before the first signal is sent, not after the run ends", async () => {
+    // A crash mid-escalation must not leave recovery unable to tell a cancelled
+    // run from a timed-out one.
+    await withSandbox(async (box) => {
+      const observed: Array<string | undefined> = []
+      const runId = "run-supervision"
+
+      const watching = {
+        ...systemProbe,
+        signalGroup(pgid: number, signal: NodeJS.Signals) {
+          observed.push(readRunRecord(box.storage, runId)?.terminationTrigger)
+          systemProbe.signalGroup(pgid, signal)
+        },
+      }
+
+      const directory = createRunDirectory(box.storage, runId)
+      expect(directory).toBeDefined()
+      const record = seedRun(box.storage, { runId, timeoutSeconds: 900 })
+
+      let aborted = false
+      let announce: () => void = () => {}
+      const whenAborted = new Promise<void>((resolve) => {
+        announce = resolve
+      })
+      setTimeout(() => {
+        aborted = true
+        announce()
+      }, 300)
+
+      await superviseRun(
+        {
+          storage: box.storage,
+          probe: watching,
+          now: monotonic(),
+          timestamp: () => new Date().toISOString(),
+          sleep,
+          escalation: IMMEDIATE_ESCALATION,
+          startupDeadlineMs: 10_000,
+          cancellation: {
+            get aborted() {
+              return aborted
+            },
+            whenAborted,
+          },
+          spawn: () =>
+            spawnGatedChild({
+              command: process.execPath,
+              args: stubArgs({ sleepMs: 30_000 }),
+              cwd: box.homeDir,
+              environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+              logPath: join(box.storage.runsDir, runId, RUN_ARTIFACTS.rawLog),
+            }),
+        },
+        { record, supervisorIdentity: { pid: process.pid, startedAt: "test" } },
+      )
+
+      expect(observed.length).toBeGreaterThan(0)
+      // Every signal was sent with the trigger already on disk.
+      for (const trigger of observed) expect(trigger).toBe("callerCancellation")
+    })
+  }, 30_000)
+})
+
+describe("a group that will not die", () => {
+  test("does not make the supervisor wait indefinitely", async () => {
+    // Signalling that achieves nothing and a drain that never empties are both
+    // bounded; the run ends inside the termination window either way.
+    await withSandbox(async (box) => {
+      const runId = "run-stuck"
+      createRunDirectory(box.storage, runId)
+      const record = seedRun(box.storage, { runId, timeoutSeconds: 900 })
+
+      const immortal = {
+        identify: (pid: number) => ({ pid, startedAt: "immortal" }),
+        membersOf: () => [4242],
+        signalGroup: () => {},
+      }
+
+      const started = Date.now()
+      const result = await superviseRun(
+        {
+          storage: box.storage,
+          probe: immortal,
+          now: monotonic(),
+          timestamp: () => new Date().toISOString(),
+          sleep,
+          escalation: IMMEDIATE_ESCALATION,
+          startupDeadlineMs: 5_000,
+          spawn: () =>
+            spawnGatedChild({
+              command: process.execPath,
+              args: stubArgs({ exitCode: 0 }),
+              cwd: box.homeDir,
+              environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+              logPath: join(box.storage.runsDir, runId, RUN_ARTIFACTS.rawLog),
+            }),
+        },
+        { record, supervisorIdentity: { pid: process.pid, startedAt: "test" } },
+      )
+
+      expect(Date.now() - started).toBeLessThan(20_000)
+      expect(result.termination.descendantsConfirmedExited).toBe("no")
+      expect(result.quarantine).toBeDefined()
+      expect(readRunRecord(box.storage, runId)?.quarantined).toBe(true)
+    })
+  }, 40_000)
+})
+
+describe("channel loss", () => {
+  test("becomes the trigger when nothing else has fixed one", async () => {
+    await withSandbox(async (box) => {
+      const runId = "run-lost"
+      createRunDirectory(box.storage, runId)
+      const record = seedRun(box.storage, { runId, timeoutSeconds: 900 })
+
+      const result = await superviseRun(
+        {
+          storage: box.storage,
+          probe: systemProbe,
+          now: monotonic(),
+          timestamp: () => new Date().toISOString(),
+          sleep,
+          escalation: IMMEDIATE_ESCALATION,
+          startupDeadlineMs: 10_000,
+          channelLost: () => true,
+          spawn: () =>
+            spawnGatedChild({
+              command: process.execPath,
+              args: stubArgs({ exitCode: 0 }),
+              cwd: box.homeDir,
+              environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+              logPath: join(box.storage.runsDir, runId, RUN_ARTIFACTS.rawLog),
+            }),
+        },
+        { record, supervisorIdentity: { pid: process.pid, startedAt: "test" } },
+      )
+
+      expect(result.trigger).toBe("toolFailure")
+      expect(readRunRecord(box.storage, runId)?.terminationTrigger).toBe("toolFailure")
+    })
+  }, 30_000)
+
+  test("never displaces a cancellation that already fixed the outcome", async () => {
+    await withSandbox(async (box) => {
+      const runId = "run-lost-after-cancel"
+      createRunDirectory(box.storage, runId)
+      const record = seedRun(box.storage, { runId, timeoutSeconds: 900 })
+
+      let aborted = false
+      let announce: () => void = () => {}
+      const whenAborted = new Promise<void>((resolve) => {
+        announce = resolve
+      })
+      setTimeout(() => {
+        aborted = true
+        announce()
+      }, 200)
+
+      const result = await superviseRun(
+        {
+          storage: box.storage,
+          probe: systemProbe,
+          now: monotonic(),
+          timestamp: () => new Date().toISOString(),
+          sleep,
+          escalation: IMMEDIATE_ESCALATION,
+          startupDeadlineMs: 10_000,
+          channelLost: () => true,
+          cancellation: {
+            get aborted() {
+              return aborted
+            },
+            whenAborted,
+          },
+          spawn: () =>
+            spawnGatedChild({
+              command: process.execPath,
+              args: stubArgs({ sleepMs: 30_000 }),
+              cwd: box.homeDir,
+              environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+              logPath: join(box.storage.runsDir, runId, RUN_ARTIFACTS.rawLog),
+            }),
+        },
+        { record, supervisorIdentity: { pid: process.pid, startedAt: "test" } },
+      )
+
+      expect(result.trigger).toBe("callerCancellation")
+    })
+  }, 30_000)
+})

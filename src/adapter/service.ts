@@ -18,8 +18,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
-import type { TestToolResult } from "../domain/result.ts"
-import { requestedScopeDigest } from "../domain/scope.ts"
+import type { TestRunSummary, TestToolResult } from "../domain/result.ts"
+import { SCHEMA_VERSION } from "../domain/result.ts"
+import { normalizeRequestedScope, requestedScopeDigest } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
 import { interpretRun } from "../interpreter/interpret.ts"
@@ -267,7 +268,9 @@ async function superviseAndInterpret(
   })
 
   if (!supervision.ok) {
-    return runnerFailure(environment, input, supervision.message)
+    const summary = runnerFailureSummary(environment, input, supervision.message, supervision.phase)
+    publishTerminal(environment, input.record, summary, emptyIndex(input.record.runId))
+    return summary
   }
 
   input.hooks.onState("interpreting")
@@ -309,6 +312,7 @@ async function superviseAndInterpret(
     },
     tool: readerFor(environment, resultBundlePath),
     clock: { now: environment.now },
+    ...(input.cancellation === undefined ? {} : { signal: input.cancellation }),
   })
 
   publishTerminal(environment, record, summary, index)
@@ -523,25 +527,98 @@ function logFacts(path: string): { retainedBytes?: number; retainedBytesExact: b
   }
 }
 
-function runnerFailure(
+/**
+ * The terminal summary for a run whose supervision failed after admission.
+ *
+ * This is a **run-scoped** result, not a queued one. The run holds a `runId`
+ * and retained artifacts; reporting it as a pre-execution failure would tell
+ * the caller no Test Run ever existed and hide evidence they could inspect.
+ *
+ * Every fact the runner could not establish is `unknown` rather than a
+ * plausible zero — a supervisor that never reported is a supervisor whose
+ * child's fate is genuinely unobserved.
+ */
+function runnerFailureSummary(
   environment: ServiceEnvironment,
-  input: { record: RunRecord; admission: { admittedAt: string; queueDurationMs: number } },
+  input: {
+    record: RunRecord
+    request: TestRunRequest
+    resolution: Extract<ReturnType<typeof resolveTestRun>, { status: "resolved" }>
+    admission: { admittedAt: string; queueDurationMs: number }
+    startedAt: number
+  },
   message: string,
-): TestToolResult {
+  phase: "launching" | "terminating",
+): TestRunSummary {
+  const scope = input.request.requestedScope
+  const normalized = normalizeRequestedScope(scope)
+
   return {
-    schemaVersion: 1,
+    schemaVersion: SCHEMA_VERSION,
+    runId: input.record.runId,
+    resolved: input.resolution.resolved,
+    scope: {
+      kind: scope.kind,
+      digest: requestedScopeDigest(scope),
+      requestedSelectionCount: normalized.kind === "selected" ? normalized.tests.length : 0,
+      verdict: "notReached",
+      attestations: [],
+      shown: 0,
+      truncated: false,
+    },
+    timing: {
+      admittedAt: input.admission.admittedAt,
+      queueDurationMs: input.admission.queueDurationMs,
+      totalDurationMs: environment.now() - input.startedAt,
+    },
+    // A runner operational failure that initiates termination fixes the
+    // outcome with trigger `toolFailure` (#7).
+    terminationTrigger: "toolFailure",
+    termination: {
+      requested: "no",
+      gracefulTerminationObserved: "unknown",
+      forceEscalationRequired: "unknown",
+      terminationGraceExceeded: "unknown",
+      descendantsConfirmedExited: "unknown",
+    },
+    // Nothing launched means nothing executed; anything later is unobserved.
+    execution: { execObserved: phase === "launching" ? "no" : "unknown", successfulExit: "unknown" },
+    build: { completeness: "unavailable" },
+    tests: { completeness: "unavailable" },
+    inspection: {
+      scope: "unavailable",
+      failures: "unavailable",
+      buildErrors: "unavailable",
+      tests: "unavailable",
+      log: "unavailable",
+    },
     outcome: "infrastructureFailed",
-    phase: "queued",
-    reason: "recoveryFailed",
+    reason: "runnerFailure",
     message,
-    queuedAt: input.admission.admittedAt,
-    queueDurationMs: input.admission.queueDurationMs,
+    diagnostics: {
+      testFailures: [],
+      testFailureSection: { total: 0, shown: 0, truncated: false },
+      buildErrors: [],
+      buildErrorSection: { total: 0, shown: 0, truncated: false },
+      observedTests: [],
+      observedTestSection: { total: 0, shown: 0, truncated: false },
+    },
   }
 }
 
 // --- the supervisor process -----------------------------------------------
 
-type SupervisionOutcome = { ok: true } | { ok: false; message: string }
+/**
+ * Why supervision ended, and where. The phase matters: a supervisor that never
+ * completed its handshake failed in `launching`, and the child it would have
+ * created provably never ran.
+ */
+type SupervisionOutcome =
+  | { ok: true }
+  | { ok: false; message: string; phase: "launching" | "terminating" }
+
+/** The supervisor has this long to answer the handshake (#3). */
+const HANDSHAKE_DEADLINE_MS = 30_000
 
 function runSupervisor(
   environment: ServiceEnvironment,
@@ -555,7 +632,7 @@ function runSupervisor(
   return new Promise((resolve) => {
     const child = spawn(environment.runtimePath, [environment.supervisorEntrypoint], {
       cwd: environment.trustedRoot,
-      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", ...stubEnvironment() },
       // Detached so it outlives this call, with a private inherited control
       // channel: fd 3 is ours to write, fd 4 is the supervisor's to answer on.
       detached: true,
@@ -564,6 +641,35 @@ function runSupervisor(
 
     const toSupervisor = child.stdio[3]
     const fromSupervisor = child.stdio[4]
+
+    let settled = false
+    let handshook = false
+    let spawnFailed = false
+    let channelLost = false
+
+    const finish = (outcome: SupervisionOutcome) => {
+      if (settled) return
+      settled = true
+      clearTimeout(handshakeTimer)
+      resolve(outcome)
+    }
+
+    // A write to a channel whose far end has gone is channel loss, not a
+    // failure to start. Conflating the two misreports where the run died.
+    toSupervisor?.on("error", () => {
+      channelLost = true
+    })
+    fromSupervisor?.on("error", () => {
+      channelLost = true
+    })
+
+    const handshakeTimer = setTimeout(() => {
+      finish({
+        ok: false,
+        message: "the supervisor did not complete its handshake within its startup deadline",
+        phase: "launching",
+      })
+    }, HANDSHAKE_DEADLINE_MS)
 
     const secret = newChannelSecret()
     toSupervisor?.write(
@@ -596,23 +702,53 @@ function runSupervisor(
       const { messages, rest } = decodeMessages(buffer)
       buffer = rest
       for (const message of messages) {
-        if (message.type === "ready") input.onState("supervisorReady")
+        if (message.type === "ready") {
+          handshook = true
+          input.onState("supervisorReady")
+        }
         if (message.type === "state") input.onState(message.state as ProtocolState)
         if (message.type === "completed") input.onState("executionCompleted")
       }
     })
 
     child.on("error", () => {
-      resolve({ ok: false, message: "the supervisor process could not be started" })
+      spawnFailed = true
+      finish({
+        ok: false,
+        message: "the supervisor process could not be started",
+        phase: "launching",
+      })
     })
+
     child.on("exit", (code) => {
-      resolve(
-        code === 0
-          ? { ok: true }
-          : { ok: false, message: `the supervisor exited with status ${code ?? "unknown"}` },
-      )
+      if (spawnFailed) return
+      if (!handshook) {
+        finish({
+          ok: false,
+          message: channelLost
+            ? "the supervisor's control channel closed before it completed its handshake"
+            : "the supervisor exited before completing its handshake",
+          phase: "launching",
+        })
+        return
+      }
+      if (code === 0) {
+        finish({ ok: true })
+        return
+      }
+      finish({
+        ok: false,
+        message: `the supervisor exited with status ${code ?? "unknown"}`,
+        phase: "terminating",
+      })
     })
   })
+}
+
+/** Carries the stub's scripted behaviour through, and nothing else. */
+function stubEnvironment(): Record<string, string> {
+  const mode = process.env["XCODE_TEST_STUB"]
+  return mode === undefined ? {} : { XCODE_TEST_STUB: mode }
 }
 
 // --- inspection -----------------------------------------------------------
