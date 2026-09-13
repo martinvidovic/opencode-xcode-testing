@@ -283,7 +283,8 @@ async function superviseAndInterpret(
 
   input.hooks.onState("interpreting")
 
-  const record = readRunRecord(storage, input.record.runId) ?? input.record
+  const stabilized = stabilize(environment, readRunRecord(storage, input.record.runId) ?? input.record, resultBundlePath)
+  const record = stabilized.record
   const processDurationMs = environment.now() - input.startedAt
 
   const { summary, index } = await interpretRun({
@@ -291,7 +292,7 @@ async function superviseAndInterpret(
       runId: record.runId,
       trustedRoot: environment.trustedRoot,
       resultBundlePresent: existsSync(resultBundlePath),
-      bundleDigestVerified: "yes",
+      bundleDigestVerified: stabilized.verified,
       toolchain: environment.toolchain,
       log: logFacts(join(directory, RUN_ARTIFACTS.rawLog)),
     },
@@ -469,7 +470,10 @@ export async function finalizeRecovered(
       runId,
       trustedRoot: environment.trustedRoot,
       resultBundlePresent: existsSync(resultBundlePath),
-      bundleDigestVerified: "unknown",
+      // A recovered run is verified against the digest recorded at
+      // stabilization; a mismatch degrades bundle-backed detail without
+      // invalidating what was already read.
+      bundleDigestVerified: verifyRecordedDigest(record, resultBundlePath),
       toolchain: environment.toolchain,
       log: logFacts(join(directory, RUN_ARTIFACTS.rawLog)),
     },
@@ -810,6 +814,40 @@ function queuedFailureMessage(reason: string): string {
     default:
       return "the Test Run could not be admitted."
   }
+}
+
+/**
+ * Record the Result Bundle's digest once the bundle is stable.
+ *
+ * Stabilization is the lifecycle phase after the process has exited and the
+ * capture handles are closed, and it sits **outside** the eager interpretation
+ * budget deliberately: a bundle near the retention target is not something a
+ * 120-second deadline can absorb. Recording it here is what lets a later read
+ * say whether it is looking at the same bytes.
+ */
+function stabilize(
+  environment: ServiceEnvironment,
+  record: RunRecord,
+  bundlePath: string,
+): { record: RunRecord; verified: "yes" | "no" | "unknown" } {
+  if (!existsSync(bundlePath)) return { record, verified: "unknown" }
+
+  const digest = bundleDigest(bundlePath)
+  if (record.bundleDigest !== undefined && record.bundleDigest !== digest) {
+    // The bundle changed under us. What was read is still what was read; it is
+    // the next read that can no longer be trusted to describe the same thing.
+    return { record, verified: "no" }
+  }
+
+  const next = { ...record, bundleDigest: digest }
+  writeRunRecord(environment.storage, next)
+  return { record: next, verified: "yes" }
+}
+
+/** Re-verify a recorded digest before reading a bundle again. */
+function verifyRecordedDigest(record: RunRecord, bundlePath: string): "yes" | "no" | "unknown" {
+  if (record.bundleDigest === undefined || !existsSync(bundlePath)) return "unknown"
+  return bundleDigest(bundlePath) === record.bundleDigest ? "yes" : "no"
 }
 
 /** A deterministic content digest, computed once at stabilization (#8). */

@@ -150,8 +150,10 @@ function collectOccurrence(
     attempts,
     failures,
     position: path,
-    ...(options.configurationId === undefined ? {} : { configurationId: options.configurationId }),
-    ...(options.deviceId === undefined ? {} : { deviceId: options.deviceId }),
+    // A node that names its own context is authoritative for that occurrence;
+    // the declared single configuration is only a fallback.
+    ...contextField("configurationId", node.configurationId ?? options.configurationId),
+    ...contextField("deviceId", node.deviceId ?? options.deviceId),
   })
 }
 
@@ -293,6 +295,13 @@ function parseIdentifier(identifier: string): { suite?: string; test?: string } 
  * display in the user's locale — `"0,0019s"` on a comma-decimal machine — so
  * parsing it would silently produce zero for some people and not others.
  */
+function contextField<K extends "configurationId" | "deviceId">(
+  key: K,
+  value: string | undefined,
+): { [P in K]?: string } | Record<string, never> {
+  return value === undefined ? {} : ({ [key]: value } as { [P in K]?: string })
+}
+
 function durationField(node: { duration?: string; durationInSeconds?: number }): {
   durationMs?: number
 } {

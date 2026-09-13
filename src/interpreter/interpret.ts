@@ -286,10 +286,15 @@ async function gather(
       } else {
         const normalized = normalizeTestNodes(decoded.value.nodes, {
           trustedRoot: request.facts.trustedRoot,
-          ...(decoded.value.configurations[0] === undefined
-            ? {}
-            : { configurationId: decoded.value.configurations[0] }),
-          ...(decoded.value.devices[0] === undefined ? {} : { deviceId: decoded.value.devices[0] }),
+          // Only a single declared configuration or device can be attributed to
+          // every occurrence; with more than one, context must come from the
+          // nodes themselves or it is not known.
+          ...(decoded.value.configurations.length === 1 && decoded.value.configurations[0] !== undefined
+            ? { configurationId: decoded.value.configurations[0] }
+            : {}),
+          ...(decoded.value.devices.length === 1 && decoded.value.devices[0] !== undefined
+            ? { deviceId: decoded.value.devices[0] }
+            : {}),
         })
         state.occurrences = normalized.occurrences
 
@@ -331,6 +336,10 @@ async function gather(
     }
   }
 
+  // Checked after the last read as well as before each one. A deadline only
+  // ever checked beforehand lets the final operation overrun and still be
+  // classified as a pass.
+  expired()
   return state
 }
 

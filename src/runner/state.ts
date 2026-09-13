@@ -81,6 +81,11 @@ export type RunRecord = {
   /** Set when the caller cancelled while interpretation was already running. */
   cancelledDuringInterpretation?: boolean
   derivedDataMode?: "shared" | "isolated"
+  /**
+   * The Result Bundle digest recorded at stabilization. A later read compares
+   * against it to say whether it is looking at the same bytes.
+   */
+  bundleDigest?: string
   /** Isolated DerivedData has been reclaimed; retention may then evict the run. */
   derivedDataCleaned?: boolean
 }

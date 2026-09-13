@@ -1,0 +1,95 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
+    "scenario": "build-failed-partial-tests",
+    "observedShape": "complete build errors alongside a test carrying no status",
+    "note": "a trustworthy build failure must survive unrelated partial test evidence"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
+      "hasTestResults": true,
+      "logs": [
+        "build",
+        "action"
+      ]
+    },
+    "get build-results": {
+      "status": "failed",
+      "errorCount": 1,
+      "errors": [
+        {
+          "targetName": "App",
+          "message": "cannot find 'undefinedSymbol' in scope",
+          "sourceURL": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=17&StartingColumnNumber=5"
+        }
+      ]
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "C1",
+          "configurationName": "Configuration 1"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "iPhone 17",
+          "platform": "iOS Simulator",
+          "osVersion": "26.4.1"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "LoginTests",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsIn()",
+                      "nodeIdentifier": "LoginTests/testSignsIn()",
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsIn",
+                      "result": "Passed",
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsOut()",
+                      "nodeIdentifier": "LoginTests/testSignsOut()",
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsOut",
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Failed"
+    }
+  }
+}

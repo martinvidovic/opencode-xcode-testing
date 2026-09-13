@@ -76,12 +76,18 @@ export function classify(input: ClassificationInput): Classification {
       "the process exited successfully while the Result Bundle reports failures",
     )
   }
-  if (input.defect !== undefined) {
+  if (input.defect !== undefined && outranksBuildFailure(input.defect.reason)) {
     return infrastructure(input.defect.reason, input.defect.message)
   }
 
-  // 4 — trustworthy build errors. Test evidence may be partial or unavailable.
+  // 4 — trustworthy build errors. Test evidence may be partial or unavailable:
+  // an evidence defect applies only where it affects the evidence the candidate
+  // outcome needs, and a build that failed is a fact about the build.
   if (buildErrors > 0) return { outcome: "buildFailed" }
+
+  if (input.defect !== undefined) {
+    return infrastructure(input.defect.reason, input.defect.message)
+  }
 
   // 5 — testing was reached, but the Requested Scope cannot be shown to match.
   if (input.testingReached === true) {
@@ -146,6 +152,28 @@ export function classify(input: ClassificationInput): Classification {
   return infrastructure(
     "resultBundleIncomplete",
     "the Result Bundle lacks the evidence required to classify this Test Run",
+  )
+}
+
+/**
+ * Defects that make the whole Result Bundle untrustworthy, and so outrank even
+ * a complete build failure.
+ *
+ * A missing, unreadable or unsupported bundle says nothing can be believed. A
+ * contradiction says two trustworthy records disagree. Everything else — a test
+ * that carried no status, say — is a defect in evidence the build outcome does
+ * not depend on, and suppressing `buildFailed` for it would hide the thing the
+ * caller actually has to fix.
+ */
+export function outranksBuildFailure(reason: InfrastructureReason): boolean {
+  return (
+    reason === "resultBundleMissing" ||
+    reason === "resultBundleUnreadable" ||
+    reason === "unsupportedResultSchema" ||
+    reason === "contradictoryEvidence" ||
+    reason === "interpretationTimedOut" ||
+    reason === "runnerFailure" ||
+    reason === "processLaunchFailed"
   )
 }
 
