@@ -1,0 +1,108 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
+    "scenario": "multi-context",
+    "observedShape": "the same test observed under two test-plan configurations",
+    "note": "each configuration is its own counted occurrence"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
+      "hasTestResults": true,
+      "logs": [
+        "build",
+        "action"
+      ]
+    },
+    "get build-results": {
+      "status": "succeeded",
+      "errorCount": 0,
+      "errors": []
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "C1",
+          "configurationName": "Configuration 1"
+        },
+        {
+          "configurationId": "C2",
+          "configurationName": "Configuration 2"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "iPhone 17",
+          "platform": "iOS Simulator",
+          "osVersion": "26.4.1"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "LoginTests",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsIn()",
+                      "nodeIdentifier": "LoginTests/testSignsIn()",
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsIn",
+                      "result": "Passed",
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12,
+                      "configurationId": "C1"
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsIn()",
+                      "nodeIdentifier": "LoginTests/testSignsIn()",
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsIn",
+                      "result": "Failed",
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12,
+                      "configurationId": "C2",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "Login.swift:8: XCTAssertTrue failed"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Failed",
+      "totalTestCount": 2,
+      "passedTests": 1,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "expectedFailures": 0,
+      "testFailures": []
+    }
+  }
+}

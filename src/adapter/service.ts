@@ -283,7 +283,12 @@ async function superviseAndInterpret(
 
   input.hooks.onState("interpreting")
 
-  const record = readRunRecord(storage, input.record.runId) ?? input.record
+  const stabilized = stabilize(
+    storage,
+    readRunRecord(storage, input.record.runId) ?? input.record,
+    resultBundlePath,
+  )
+  const record = stabilized.record
   const processDurationMs = environment.now() - input.startedAt
 
   const { summary, index } = await interpretRun({
@@ -291,7 +296,7 @@ async function superviseAndInterpret(
       runId: record.runId,
       trustedRoot: environment.trustedRoot,
       resultBundlePresent: existsSync(resultBundlePath),
-      bundleDigestVerified: "yes",
+      bundleDigestVerified: stabilized.verified,
       toolchain: environment.toolchain,
       log: logFacts(join(directory, RUN_ARTIFACTS.rawLog)),
     },
@@ -350,7 +355,10 @@ function publishTerminal(
     join(runDirectory(storage, record.runId), SUMMARY_ARTIFACT),
     `${JSON.stringify(summary)}\n`,
   )
-  const completed = advance(storage, record, "completed", { completedAt: environment.timestamp() })
+  const completed = advance(storage, record, "completed", {
+    completedAt: environment.timestamp(),
+    bundleDigestVerified: index.bundleDigestVerified,
+  })
   reclaimIsolatedDerivedData(storage, completed)
 }
 
@@ -440,15 +448,25 @@ export async function finalizeRecovered(
   environment: ServiceEnvironment,
   runId: string,
 ): Promise<void> {
-  const record = readRunRecord(environment.storage, runId)
-  if (record === undefined) return
+  const found = readRunRecord(environment.storage, runId)
+  if (found === undefined) return
 
   const directory = runDirectory(environment.storage, runId)
   const resultBundlePath = join(directory, RUN_ARTIFACTS.resultBundle)
+
+  // A run that crashed before stabilization never recorded a digest. Recording
+  // one now is what lets any later read say whether the bytes changed.
+  const stabilized = stabilize(environment.storage, found, resultBundlePath)
+  const record = stabilized.record
   const scope = record.requestedScope ?? { kind: "all" as const }
 
   let current = record
-  for (const state of ["supervisorReady", "childRecorded", "launchAuthorized", "executionCompleted"] as const) {
+  for (const state of [
+    "supervisorReady",
+    "childRecorded",
+    "launchAuthorized",
+    "executionCompleted",
+  ] as const) {
     if (RUN_STATES.indexOf(current.state) < RUN_STATES.indexOf(state)) {
       current = advance(environment.storage, current, state)
     }
@@ -469,7 +487,10 @@ export async function finalizeRecovered(
       runId,
       trustedRoot: environment.trustedRoot,
       resultBundlePresent: existsSync(resultBundlePath),
-      bundleDigestVerified: "unknown",
+      // Verified against the digest recorded at stabilization, whether that
+      // happened on the eager path or a moment ago. A mismatch degrades
+      // bundle-backed detail without invalidating what was already read.
+      bundleDigestVerified: stabilized.verified,
       toolchain: environment.toolchain,
       log: logFacts(join(directory, RUN_ARTIFACTS.rawLog)),
     },
@@ -812,10 +833,61 @@ function queuedFailureMessage(reason: string): string {
   }
 }
 
-/** A deterministic content digest, computed once at stabilization (#8). */
-export function bundleDigest(path: string): string {
+/**
+ * Record the Result Bundle's digest once the bundle is stable.
+ *
+ * Stabilization is the lifecycle phase after the process has exited and the
+ * capture handles are closed, and it sits **outside** the eager interpretation
+ * budget deliberately: a bundle near the retention target is not something a
+ * 120-second deadline can absorb. Recording it here is what lets a later read
+ * say whether it is looking at the same bytes.
+ */
+function stabilize(
+  storage: Storage,
+  record: RunRecord,
+  bundlePath: string,
+  budgetMs = DIGEST_BUDGET_MS,
+): { record: RunRecord; verified: "yes" | "no" | "unknown" } {
+  if (!existsSync(bundlePath)) return { record, verified: "unknown" }
+
+  const digest = bundleDigest(bundlePath, budgetMs)
+  if (digest === undefined) {
+    // Verification is never skipped, but it is bounded. Saying `unknown` is
+    // how an unfinished check reaches the caller instead of a guess.
+    return { record, verified: "unknown" }
+  }
+  if (record.bundleDigest !== undefined && record.bundleDigest !== digest) {
+    // The bundle changed under us. What was read is still what was read; it is
+    // the next read that can no longer be trusted to describe the same thing.
+    return { record, verified: "no" }
+  }
+
+  const next = { ...record, bundleDigest: digest }
+  writeRunRecord(storage, next)
+  return { record: next, verified: "yes" }
+}
+
+/**
+ * How long digesting a Result Bundle may take before the answer becomes
+ * `unknown`. Bundles near the retention target make this nontrivial, and a
+ * digest that never finishes must not hold a run open.
+ */
+export const DIGEST_BUDGET_MS = 30_000
+
+/**
+ * A deterministic content digest (#8): recursive, name-ordered, and dependent
+ * on nothing but the bytes — so two machines reading the same bundle agree.
+ *
+ * Returns `undefined` when the budget runs out. Verification is never skipped;
+ * an unfinished one is reported as unfinished.
+ */
+export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string | undefined {
   const hash = createHash("sha256")
+  const deadline = Date.now() + budgetMs
+  let expired = false
+
   const walk = (current: string) => {
+    if (expired) return
     let entries: string[]
     try {
       entries = readdirSync(current).sort()
@@ -823,12 +895,17 @@ export function bundleDigest(path: string): string {
       return
     }
     for (const entry of entries) {
+      if (Date.now() >= deadline) {
+        expired = true
+        return
+      }
       const child = join(current, entry)
       hash.update(entry)
       if (statSync(child).isDirectory()) walk(child)
       else hash.update(readFileSync(child))
     }
   }
+
   walk(path)
-  return hash.digest("hex")
+  return expired ? undefined : hash.digest("hex")
 }

@@ -150,8 +150,10 @@ function collectOccurrence(
     attempts,
     failures,
     position: path,
-    ...(options.configurationId === undefined ? {} : { configurationId: options.configurationId }),
-    ...(options.deviceId === undefined ? {} : { deviceId: options.deviceId }),
+    // A node that names its own context is authoritative for that occurrence;
+    // the declared single configuration is only a fallback.
+    ...contextField("configurationId", node.configurationId ?? options.configurationId),
+    ...contextField("deviceId", node.deviceId ?? options.deviceId),
   })
 }
 
@@ -249,9 +251,19 @@ function deriveIdentity(
   const test = selectable?.test ?? reference?.test ?? node.name
 
   const parsedSuite = selectable?.suite ?? reference?.suite
+
+  // Two identifiers that disagree are not one identity. Attesting a scope on
+  // evidence that contradicts itself is exactly the false match the
+  // attestation exists to prevent.
+  const identifiersAgree =
+    selectable?.suite === undefined ||
+    reference?.suite === undefined ||
+    selectable.suite === reference.suite
+
   const complete =
     bundle !== undefined &&
     (selectable !== undefined || reference !== undefined) &&
+    identifiersAgree &&
     (ancestry.suite === undefined || parsedSuite === undefined || ancestry.suite === parsedSuite)
 
   const identity: TestIdentity = {
@@ -286,6 +298,14 @@ function parseIdentifier(identifier: string): { suite?: string; test?: string } 
   if (parts.length === 0) return undefined
   if (parts.length === 1) return { test: parts[0] }
   return { suite: parts[parts.length - 2], test: parts[parts.length - 1] }
+}
+
+/** Carry an occurrence's configuration or device only when one is known. */
+function contextField<K extends "configurationId" | "deviceId">(
+  key: K,
+  value: string | undefined,
+): { [P in K]?: string } | Record<string, never> {
+  return value === undefined ? {} : ({ [key]: value } as { [P in K]?: string })
 }
 
 /**

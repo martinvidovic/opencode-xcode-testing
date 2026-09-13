@@ -163,6 +163,9 @@ export type RawTestNode = {
   /** Locale-formatted and display-only; `durationInSeconds` is the usable one. */
   duration?: string
   durationInSeconds?: number
+  /** Present when a node names its own test-plan configuration or device. */
+  configurationId?: string
+  deviceId?: string
   children: RawTestNode[]
 }
 
@@ -242,6 +245,8 @@ function decodeNode(raw: unknown, path: string): Decoded<RawTestNode> {
       ...(typeof raw["durationInSeconds"] === "number"
         ? { durationInSeconds: raw["durationInSeconds"] }
         : {}),
+      ...optionalString(raw["configurationId"], "configurationId"),
+      ...optionalString(raw["deviceId"], "deviceId"),
       children,
     },
   }

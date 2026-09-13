@@ -50,7 +50,7 @@ import { normalizeRequestedScope } from "../domain/scope.ts"
 import type { Anomaly } from "./anomalies.ts"
 import { AnomalyLog } from "./anomalies.ts"
 import { attestScope } from "./attestation.ts"
-import { classify, type EvidenceDefect } from "./classify.ts"
+import { classify, type EvidenceDefect, type EvidenceSubject } from "./classify.ts"
 import {
   decodeBuildResults,
   decodeContentAvailability,
@@ -154,9 +154,13 @@ async function gather(
     cancelledDuringInterpretation: false,
   }
 
-  const setDefect = (reason: InfrastructureReason, message: string) => {
+  const setDefect = (
+    reason: InfrastructureReason,
+    message: string,
+    subject: EvidenceSubject = "bundle",
+  ) => {
     if (state.defect === undefined || DEFECT_RANK[reason] < DEFECT_RANK[state.defect.reason]) {
-      state.defect = { reason, message }
+      state.defect = { reason, message, subject }
     }
   }
 
@@ -243,11 +247,11 @@ async function gather(
     if (cancelled() || expired()) return state
     const response = await request.tool.run("get build-results", remaining())
     if (!response.ok) {
-      setDefect(...mapFailure(response.failure, response.message))
+      setDefect(...mapFailure(response.failure, response.message), "build")
     } else {
       const decoded = decodeBuildResults(response.payload, anomalies)
       if (!decoded.ok) {
-        setDefect(...mapDecode(decoded.defect, decoded.fieldPath, decoded.message))
+        setDefect(...mapDecode(decoded.defect, decoded.fieldPath, decoded.message), "build")
       } else {
         state.buildIssues = decoded.value.errors
         const countAgrees =
@@ -278,7 +282,11 @@ async function gather(
     if (cancelled() || expired()) return state
     const response = await request.tool.run("get test-results tests", remaining())
     if (!response.ok) {
-      setDefect("resultBundleIncomplete", "advertised test results could not be retrieved")
+      setDefect(
+        "resultBundleIncomplete",
+        "advertised test results could not be retrieved",
+        "tests",
+      )
     } else {
       const decoded = decodeTestResults(response.payload)
       if (!decoded.ok) {
@@ -286,19 +294,24 @@ async function gather(
       } else {
         const normalized = normalizeTestNodes(decoded.value.nodes, {
           trustedRoot: request.facts.trustedRoot,
-          ...(decoded.value.configurations[0] === undefined
-            ? {}
-            : { configurationId: decoded.value.configurations[0] }),
-          ...(decoded.value.devices[0] === undefined ? {} : { deviceId: decoded.value.devices[0] }),
+          // Only a single declared configuration or device can be attributed to
+          // every occurrence; with more than one, context must come from the
+          // nodes themselves or it is not known.
+          ...(decoded.value.configurations.length === 1 && decoded.value.configurations[0] !== undefined
+            ? { configurationId: decoded.value.configurations[0] }
+            : {}),
+          ...(decoded.value.devices.length === 1 && decoded.value.devices[0] !== undefined
+            ? { deviceId: decoded.value.devices[0] }
+            : {}),
         })
         state.occurrences = normalized.occurrences
 
         if (normalized.unrecognizedStatuses.length > 0) {
           // A new status literal is an incompatible critical shape, not a gap.
-          setDefect("unsupportedResultSchema", "a test reported an unrecognized status")
+          setDefect("unsupportedResultSchema", "a test reported an unrecognized status", "tests")
           state.tests = { completeness: "partial", counts: countOf(normalized.occurrences) }
         } else if (normalized.missingStatusCount > 0) {
-          setDefect("resultBundleIncomplete", "a recognized test carried no status")
+          setDefect("resultBundleIncomplete", "a recognized test carried no status", "tests")
           state.tests = { completeness: "partial", counts: countOf(normalized.occurrences) }
         } else {
           state.tests = { completeness: "complete", counts: countOf(normalized.occurrences) }
@@ -331,6 +344,10 @@ async function gather(
     }
   }
 
+  // Checked after the last read as well as before each one. A deadline only
+  // ever checked beforehand lets the final operation overrun and still be
+  // classified as a pass.
+  expired()
   return state
 }
 
