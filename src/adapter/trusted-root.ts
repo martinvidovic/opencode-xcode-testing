@@ -31,12 +31,25 @@ export type TrustedRootResolution =
  * we cannot resolve is a root we cannot make any promise about.
  */
 export function resolveTrustedRoot(context: PluginContext): TrustedRootResolution {
-  const candidate = context.worktree ?? context.directory
+  const candidate = usableWorktree(context.worktree) ?? context.directory
   try {
     return { status: "resolved", trustedRoot: canonicalizeTrustedRoot(candidate) }
   } catch {
     return { status: "failed", message: "the trusted root could not be resolved to a real directory" }
   }
+}
+
+/**
+ * A host that finds no git worktree does not omit the field — it reports the
+ * filesystem root, or an empty string. Taking either at face value would make
+ * `/` the trusted root, which silently disables the plugin in every non-git
+ * project and, worse, would key artifact storage and container discovery to the
+ * whole filesystem.
+ */
+function usableWorktree(worktree: string | undefined): string | undefined {
+  const trimmed = worktree?.trim()
+  if (trimmed === undefined || trimmed.length === 0 || trimmed === "/") return undefined
+  return trimmed
 }
 
 export function configurationPath(trustedRoot: string): string {

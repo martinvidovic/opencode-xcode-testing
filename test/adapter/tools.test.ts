@@ -11,7 +11,6 @@
 
 import { describe, expect, test } from "bun:test"
 
-import type { TestRunRequest } from "../../src/domain/request.ts"
 import type { TestToolResult } from "../../src/domain/result.ts"
 import { SCHEMA_VERSION } from "../../src/domain/result.ts"
 import {
@@ -29,9 +28,10 @@ import {
 import { RESOLVED } from "../interpreter/harness.ts"
 import { FAILED_EXIT, interpretFixture } from "../interpreter/harness.ts"
 
-const REQUEST: TestRunRequest = {
-  requestedScope: { kind: "all" },
-}
+import type { TestArguments } from "../../src/adapter/args.ts"
+
+/** The arguments a model supplies, not the domain request they map onto. */
+const ARGS: TestArguments = { scope: { kind: "all" } }
 
 const ADMITTED: AdmittedRun = {
   runId: "0f8a2c",
@@ -76,13 +76,13 @@ describe("throw semantics", () => {
       errors: [{ field: "destination", code: "required", message: "a destination is required" }],
       errorSection: { total: 1, shown: 1, truncated: false },
     }
-    const output = await executeTest(REQUEST, {}, deps(settledService(rejected)))
+    const output = await executeTest(ARGS, {}, deps(settledService(rejected)))
     expect(output).toContain("Test Run invalid")
   })
 
   test("renders `infrastructureFailed` as ordinary output", async () => {
     const { summary } = await interpretFixture("unknown-status")
-    const output = await executeTest(REQUEST, {}, deps(settledService(summary)))
+    const output = await executeTest(ARGS, {}, deps(settledService(summary)))
     expect(output).toContain("infrastructureFailed")
     expect(output).toContain("unknownTestStatus")
   })
@@ -95,7 +95,7 @@ describe("throw semantics", () => {
       reason: "executionSlotQuarantined",
       message: "the execution slot is quarantined until recovery clears it",
     }
-    const output = await executeTest(REQUEST, {}, deps(settledService(queued)))
+    const output = await executeTest(ARGS, {}, deps(settledService(queued)))
     expect(output).toContain("executionSlotQuarantined")
   })
 
@@ -107,7 +107,7 @@ describe("throw semantics", () => {
         execution: FAILED_EXIT,
       },
     })
-    const output = await executeTest(REQUEST, {}, deps(settledService(summary)))
+    const output = await executeTest(ARGS, {}, deps(settledService(summary)))
     expect(output).toContain("timedOut")
   })
 })
@@ -122,7 +122,7 @@ describe("running metadata", () => {
     }
 
     const { summary } = await interpretFixture("passed")
-    await executeTest(REQUEST, context, deps(settledService(summary)))
+    await executeTest(ARGS, context, deps(settledService(summary)))
 
     const states = seen.map((entry) => entry["state"])
     expect(states).toEqual(expect.arrayContaining([...PROTOCOL_STATES]))
@@ -135,7 +135,7 @@ describe("running metadata", () => {
     const seen: Array<Record<string, unknown>> = []
     const { summary } = await interpretFixture("passed")
     await executeTest(
-      REQUEST,
+      ARGS,
       { metadata: (update) => update.metadata !== undefined && seen.push(update.metadata) },
       deps(settledService(summary)),
     )
@@ -146,7 +146,7 @@ describe("running metadata", () => {
     const seen: Array<Record<string, unknown>> = []
     const { summary } = await interpretFixture("passed")
     await executeTest(
-      REQUEST,
+      ARGS,
       { metadata: (update) => update.metadata !== undefined && seen.push(update.metadata) },
       deps(settledService(summary)),
     )
@@ -171,7 +171,7 @@ describe("cancellation", () => {
     const context: ToolContext = { abort: { aborted: true } }
 
     const output = executeTest(
-      REQUEST,
+      ARGS,
       context,
       deps({ start: () => ({ admitted: Promise.resolve(ADMITTED), result }) }),
     )
@@ -182,7 +182,7 @@ describe("cancellation", () => {
 
   test("returns `cancelled` with unknown evidence and the run id when it does not", async () => {
     const output = await executeTest(
-      REQUEST,
+      ARGS,
       { abort: { aborted: true } },
       deps({}, { abortWaitMs: 30 }),
     )
@@ -195,7 +195,7 @@ describe("cancellation", () => {
 
   test("never abandons the run: the run id is there to inspect afterwards", async () => {
     const output = await executeTest(
-      REQUEST,
+      ARGS,
       { abort: { aborted: true } },
       deps({}, { abortWaitMs: 30 }),
     )
@@ -204,7 +204,7 @@ describe("cancellation", () => {
 
   test("reports a queued cancellation with no run id, since there is nothing to inspect", async () => {
     const output = await executeTest(
-      REQUEST,
+      ARGS,
       { abort: { aborted: true } },
       deps(
         { start: () => ({ admitted: Promise.reject(new Error("never admitted")), result: new Promise(() => {}) }) },

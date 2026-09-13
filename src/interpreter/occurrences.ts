@@ -18,7 +18,7 @@ import type { TestStatus } from "../domain/evidence.ts"
 import type { SafeLocation } from "../domain/inspection.ts"
 import { canonicalTestIdentity, type TestIdentity } from "../domain/scope.ts"
 import type { RawTestNode } from "./decode.ts"
-import { safeLocationFromSourceURL } from "./locations.ts"
+import { safeDisplayPath, safeLocationFromSourceURL } from "./locations.ts"
 
 export const TEST_BUNDLE_NODE_TYPES = new Set(["Unit test bundle", "UI test bundle"])
 export const ATTEMPT_NODE_TYPES = new Set(["Test Case Run", "Repetition"])
@@ -177,11 +177,7 @@ function collectDescendants(
     }
 
     if (child.nodeType === FAILURE_NODE_TYPE) {
-      failures.push({
-        message: child.name,
-        ...locationField(child, trustedRoot),
-        position: childPath,
-      })
+      failures.push({ ...decodeFailureMessage(child, trustedRoot), position: childPath })
     }
 
     collectDescendants(child, childPath, trustedRoot, attempts, failures, outcome)
@@ -310,6 +306,44 @@ function durationField(node: { duration?: string; durationInSeconds?: number }):
 function parseDuration(duration: string): number | undefined {
   const parsed = Number.parseFloat(duration.replace(",", "."))
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+/**
+ * A leading `<file>:<line>: ` that XCTest prefixes onto a failure message.
+ *
+ * Observed at schema 0.1.0, a `Failure Message` node has **no**
+ * `Source Code Reference` child — the location is in the message text, and
+ * nowhere else. Leaving it there would mean every real failure rendered with no
+ * location at all, and would also leave the prefix in the message, where it
+ * defeats deduplication against the summary's copy (which carries no prefix).
+ */
+const MESSAGE_LOCATION = /^([^\s:]+):(\d+)(?::(\d+))?:\s+/
+
+export function decodeFailureMessage(
+  node: RawTestNode,
+  trustedRoot: string,
+): { message: string; location?: SafeLocation } {
+  // An explicit reference node wins where one exists; the text is the fallback
+  // that real payloads actually take.
+  const explicit = locationField(node, trustedRoot)
+  const match = MESSAGE_LOCATION.exec(node.name)
+
+  if (match === null) return { message: node.name, ...explicit }
+
+  const line = Number.parseInt(match[2] ?? "", 10)
+  const column = match[3] === undefined ? undefined : Number.parseInt(match[3], 10)
+  const message = node.name.slice(match[0].length)
+
+  if (explicit.location !== undefined) return { message, location: explicit.location }
+
+  return {
+    message,
+    location: {
+      path: safeDisplayPath(match[1] ?? "", trustedRoot),
+      ...(Number.isInteger(line) && line > 0 ? { line } : {}),
+      ...(column !== undefined && Number.isInteger(column) && column > 0 ? { column } : {}),
+    },
+  }
 }
 
 function locationField(node: RawTestNode, trustedRoot: string): { location?: SafeLocation } {

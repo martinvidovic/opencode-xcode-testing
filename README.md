@@ -63,7 +63,22 @@ configuration, so pick a location you will not move.
 
 ```bash
 git clone https://github.com/martinvidovic/opencode-xcode-testing.git
+cd opencode-xcode-testing
+bun scripts/link-host-package.ts
 ```
+
+### Why that second command is not optional
+
+A source-loaded plugin resolves its imports from **its own** location, not from
+OpenCode's config directory — so a checkout with no `node_modules` cannot find
+`@opencode-ai/plugin`, and the host swallows the module-load error. The result
+is a plugin that loads nothing and says nothing, which is indistinguishable from
+a project you have not enabled yet.
+
+`link-host-package.ts` symlinks the package the host already installed for
+itself. It is a symlink rather than an install because the package is
+host-provided at runtime and this repository commits no manifest for it. Run
+OpenCode once first if the script reports the package is not there yet.
 
 ### Global install (the documented default)
 
@@ -258,6 +273,29 @@ bun scripts/freshness-check.ts
 The freshness check is **non-fatal by design**. Drift means the fixtures are
 stale, not that the tool is wrong, and a check that broke the build on a routine
 Xcode update would be switched off within a week.
+
+### The acceptance gate
+
+`bun test` needs nothing but Bun. The acceptance gate needs a real machine —
+Xcode, a simulator, and OpenCode — because it is the only thing that proves the
+whole path works rather than that each piece agrees with its own tests:
+
+```bash
+bun scripts/acceptance-gate.ts            # everything
+bun scripts/acceptance-gate.ts --layer4   # runner + interpreter, real xcodebuild
+bun scripts/acceptance-gate.ts --b1       # headless registration, credential-free
+bun scripts/acceptance-gate.ts --b2       # execution through a scripted model turn
+```
+
+It generates its own Xcode project, so it depends on nothing private and
+nothing committed beyond this repository. Every run writes a durable report —
+observed toolchain, host version, resolved runtime, destination, per-scenario
+results and freshness drift — into the tool-managed storage root, never
+anywhere this repository could accidentally track it.
+
+No usable simulator is a **failure with a diagnostic**, never a silent skip: a
+gate that passes because it found nothing to run on reports green on a machine
+where nothing was verified.
 
 ## Design record
 

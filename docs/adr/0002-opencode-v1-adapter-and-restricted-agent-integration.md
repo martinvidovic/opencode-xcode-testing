@@ -300,6 +300,12 @@ manual checklist is **recorded** rather than silently accepted, and that checkli
 gate. **The map destination is never claimable without execution-level validation passing in some
 recorded form.**
 
+> **Resolved at implementation time (issue #14): the stub-provider route works, and (b2) gates with
+> the full scenario set.** A local OpenAI-compatible server configured through `provider.stub.npm`
+> = `@ai-sdk/openai-compatible` plus `options.baseURL` emits scripted tool calls, and the host
+> executes our tools from a real model turn — deterministically, credential-free, with no network.
+> No degradation was needed, and no manual checklist replaces it.
+
 Cancellation stays **report-only**, matching ADR 0001's treatment of timing-sensitive cases; the
 stub-process suite proves the supervision machinery deterministically. The concurrent-instance
 assertion joins (b1) only if headless drivability permits two instances; otherwise it stays in the
@@ -379,6 +385,28 @@ Both of ADR 0001's open deferrals are closed here.
   rather than silently widening what an agent can do.
 - Adapter wiring is validated end-to-end for the first time; map #1's destination becomes claimable
   only once that gate passes.
+
+## Established at implementation time
+
+Three facts the adapter-inclusive gate (issue #14) settled, each of which the ADR had either
+assumed or left open.
+
+1. **A source-loaded plugin must be able to resolve `@opencode-ai/plugin` from its own checkout.**
+   The ADR expected an unresolved import to "fail loudly"; in practice the host swallows the
+   module-load error, and the plugin loads nothing and says nothing — indistinguishable from a
+   project that has not opted in. Installation therefore has a scripted step
+   (`scripts/link-host-package.ts`) that symlinks the package the host already installed for
+   itself. This does not make it a repository dependency: nothing is committed, and shipped code
+   still imports it exactly once, in `src/adapter`.
+
+2. **`worktree` is not always a project root.** A host that finds no git worktree reports `/`
+   rather than omitting the field. Taking it at face value makes the filesystem root the trusted
+   root, which silently disables the plugin in every non-git project and would key artifact storage
+   and container discovery to the whole filesystem. The trusted root now treats `/` and the empty
+   string as absent and falls back to `context.directory`.
+
+3. **The stub-provider route for (b2) works**, so execution-level validation gates with the full
+   scenario set rather than degrading to a checklist. See the deferral note above.
 
 ## Risks accepted
 
