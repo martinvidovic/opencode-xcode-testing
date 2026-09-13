@@ -4,8 +4,8 @@
     "decoderVersion": 1,
     "xcresulttoolVersion": "24757",
     "legacyCommandsFormatVersion": "3.58",
-    "xcodeVersion": "26.0",
-    "xcodeBuild": "17A400",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
     "scenario": "unverifiable-identity",
     "observedShape": "a counted Test Case carrying no Xcode identifier",
     "note": "the occurrence is retained for diagnostics but cannot attest scope"
@@ -16,9 +16,13 @@
       "creatingApplication": "Xcode"
     },
     "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
       "hasTestResults": true,
-      "hasBuildResults": true,
-      "hasLogs": true
+      "logs": [
+        "build",
+        "action"
+      ]
     },
     "get build-results": {
       "status": "succeeded",
@@ -57,7 +61,8 @@
                       "nodeType": "Test Case",
                       "name": "testSignsIn()",
                       "result": "Passed",
-                      "duration": "0.12s"
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12
                     }
                   ]
                 }

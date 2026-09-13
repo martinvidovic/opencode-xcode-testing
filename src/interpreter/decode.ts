@@ -30,10 +30,18 @@ function fail(defect: DecodeFailure["defect"], fieldPath: string, message: strin
 
 // --- content availability -------------------------------------------------
 
-/** The availability claim, and nothing more. It never classifies on its own. */
+/**
+ * The availability claim, and nothing more. It never classifies on its own.
+ *
+ * Observed at schema `0.1.0`, the payload is
+ * `{ hasCoverage, hasDiagnostics, hasTestResults, logs: [...] }` — there is no
+ * `hasBuildResults`, and log availability is an array of log names rather than
+ * a boolean. Build results are therefore always attemptable, and `hasLogs` is
+ * derived. Unknown additive fields are ignored, per the capability-based
+ * support rule.
+ */
 export type ContentAvailability = {
   hasTestResults: boolean
-  hasBuildResults: boolean
   hasLogs: boolean
 }
 
@@ -42,18 +50,25 @@ export function decodeContentAvailability(payload: unknown): Decoded<ContentAvai
     return fail("unsupportedSchema", "", "content availability is not an object")
   }
 
-  const fields: Array<keyof ContentAvailability> = ["hasTestResults", "hasBuildResults", "hasLogs"]
-  const value = {} as ContentAvailability
-
-  for (const field of fields) {
-    const raw = payload[field]
-    if (typeof raw !== "boolean") {
-      return fail("unsupportedSchema", field, `required availability field is ${describe(raw)}`)
-    }
-    value[field] = raw
+  const hasTestResults = payload["hasTestResults"]
+  if (typeof hasTestResults !== "boolean") {
+    return fail(
+      "unsupportedSchema",
+      "hasTestResults",
+      `required availability field is ${describe(hasTestResults)}`,
+    )
   }
 
-  return { ok: true, value }
+  const logs = payload["logs"]
+  const declaredHasLogs = payload["hasLogs"]
+  const hasLogs =
+    typeof declaredHasLogs === "boolean"
+      ? declaredHasLogs
+      : Array.isArray(logs)
+        ? logs.length > 0
+        : false
+
+  return { ok: true, value: { hasTestResults, hasLogs } }
 }
 
 // --- build results --------------------------------------------------------
@@ -145,7 +160,9 @@ export type RawTestNode = {
   nodeIdentifier?: string
   nodeIdentifierURL?: string
   result?: string
+  /** Locale-formatted and display-only; `durationInSeconds` is the usable one. */
   duration?: string
+  durationInSeconds?: number
   children: RawTestNode[]
 }
 
@@ -222,6 +239,9 @@ function decodeNode(raw: unknown, path: string): Decoded<RawTestNode> {
       ...optionalString(raw["nodeIdentifierURL"], "nodeIdentifierURL"),
       ...(result === undefined ? {} : { result }),
       ...optionalString(raw["duration"], "duration"),
+      ...(typeof raw["durationInSeconds"] === "number"
+        ? { durationInSeconds: raw["durationInSeconds"] }
+        : {}),
       children,
     },
   }

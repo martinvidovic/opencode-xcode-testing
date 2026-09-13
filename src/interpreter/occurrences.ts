@@ -146,7 +146,7 @@ function collectOccurrence(
     identityComplete: identity.complete,
     status: aggregated,
     ...(node.result === undefined ? {} : { sourceResult: node.result }),
-    ...durationField(node.duration),
+    ...durationField(node),
     attempts,
     failures,
     position: path,
@@ -172,7 +172,7 @@ function collectDescendants(
         ordinal: attempts.length,
         status: status === "missing" ? "unknown" : status,
         ...(child.result === undefined ? {} : { sourceResult: child.result }),
-        ...durationField(child.duration),
+        ...durationField(child),
       })
     }
 
@@ -231,22 +231,32 @@ function mapStatus(result: string | undefined, outcome: NormalizationOutcome): T
 /**
  * Identity comes from validated Xcode identifiers, cross-checked against
  * bundle/suite ancestry. Display names are never trusted on their own.
+ *
+ * The *components* are taken from `nodeIdentifier`, because that is the
+ * `-only-testing` spelling — observed as `CalculatorTests/testAdds()`. The
+ * `nodeIdentifierURL` (`test://com.apple.xcode/App/AppTests/CalculatorTests/testAdds`)
+ * is a stable global reference but drops the argument parentheses, so an
+ * identity built from it could not be compared against a caller's selection,
+ * and scope attestation would report a mismatch for a test that genuinely ran.
+ * The URL is used to cross-check the ancestry and is retained as the source
+ * identifier when it differs.
  */
 function deriveIdentity(
   node: RawTestNode,
   ancestry: Ancestry,
 ): { identity: TestIdentity; complete: boolean } {
-  const source = node.nodeIdentifierURL ?? node.nodeIdentifier
   const bundle = ancestry.bundle
-  const parsed = source === undefined ? undefined : parseIdentifier(source)
+  const selectable = node.nodeIdentifier === undefined ? undefined : parseIdentifier(node.nodeIdentifier)
+  const reference = node.nodeIdentifierURL === undefined ? undefined : parseIdentifier(node.nodeIdentifierURL)
 
-  const suite = parsed?.suite ?? ancestry.suite
-  const test = parsed?.test ?? node.name
+  const suite = selectable?.suite ?? reference?.suite ?? ancestry.suite
+  const test = selectable?.test ?? reference?.test ?? node.name
 
+  const parsedSuite = selectable?.suite ?? reference?.suite
   const complete =
     bundle !== undefined &&
-    parsed !== undefined &&
-    (ancestry.suite === undefined || parsed.suite === undefined || ancestry.suite === parsed.suite)
+    (selectable !== undefined || reference !== undefined) &&
+    (ancestry.suite === undefined || parsedSuite === undefined || ancestry.suite === parsedSuite)
 
   const identity: TestIdentity = {
     bundle: bundle ?? "",
@@ -259,6 +269,7 @@ function deriveIdentity(
     }),
   }
 
+  const source = node.nodeIdentifierURL ?? node.nodeIdentifier
   const canonicalSource = source === undefined ? undefined : stripIdentifierScheme(source)
   if (canonicalSource !== undefined && canonicalSource !== identity.canonical) {
     identity.sourceIdentifier = canonicalSource
@@ -281,12 +292,24 @@ function parseIdentifier(identifier: string): { suite?: string; test?: string } 
   return { suite: parts[parts.length - 2], test: parts[parts.length - 1] }
 }
 
-function durationField(duration: string | undefined): { durationMs?: number } {
-  if (duration === undefined) return {}
-  const seconds = Number.parseFloat(duration)
+/**
+ * Prefer `durationInSeconds`. The sibling `duration` string is formatted for
+ * display in the user's locale — `"0,0019s"` on a comma-decimal machine — so
+ * parsing it would silently produce zero for some people and not others.
+ */
+function durationField(node: { duration?: string; durationInSeconds?: number }): {
+  durationMs?: number
+} {
+  const seconds =
+    node.durationInSeconds ?? (node.duration === undefined ? undefined : parseDuration(node.duration))
   // A malformed duration degrades only this detail; it never touches a status.
-  if (!Number.isFinite(seconds) || seconds < 0) return {}
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return {}
   return { durationMs: Math.round(seconds * 1000) }
+}
+
+function parseDuration(duration: string): number | undefined {
+  const parsed = Number.parseFloat(duration.replace(",", "."))
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 function locationField(node: RawTestNode, trustedRoot: string): { location?: SafeLocation } {

@@ -81,16 +81,63 @@ describe("canonical identity", () => {
         suite: "LoginTests",
         test: "testSignsIn()",
         canonical: "AppTests/LoginTests/testSignsIn()",
-        sourceIdentifier: "LoginTests/testSignsIn()",
+        sourceIdentifier: "com.apple.xcode/App/AppTests/LoginTests/testSignsIn",
       },
       {
         bundle: "AppTests",
         suite: "LoginTests",
         test: "testSignsOut()",
         canonical: "AppTests/LoginTests/testSignsOut()",
-        sourceIdentifier: "LoginTests/testSignsOut()",
+        sourceIdentifier: "com.apple.xcode/App/AppTests/LoginTests/testSignsOut",
       },
     ])
+  })
+
+  test("keeps the selectable spelling, not the reference URL's", async () => {
+    // `nodeIdentifierURL` drops the argument parentheses. An identity built
+    // from it could never be compared against a caller's `-only-testing`
+    // selection, so a test that genuinely ran would attest as a mismatch.
+    const { summary } = await interpretFixture("passed", {
+      scope: {
+        kind: "selected",
+        tests: [{ bundle: "AppTests", suite: "LoginTests", test: "testSignsIn()" }],
+      },
+    })
+    expect(summary.scope.attestations[0]).toMatchObject({ verdict: "matched", matchedTestCount: 1 })
+  })
+
+  test("retains the reference URL as the source identifier", async () => {
+    const { index } = await interpretFixture("passed")
+    expect(index.occurrences[0]?.identity.sourceIdentifier).toContain("com.apple.xcode")
+  })
+})
+
+describe("durations", () => {
+  test("come from the numeric field, not the locale-formatted display string", async () => {
+    // The sibling `duration` reads "0,12s" on a comma-decimal machine, which
+    // would parse to zero for some people and not others.
+    const { index } = await interpretFixture("passed")
+    expect(index.occurrences[0]?.durationMs).toBe(120)
+  })
+
+  test("fall back to the display string, tolerating either decimal separator", async () => {
+    const { index } = await interpretFixture("attempts", { request: { execution: FAILED_EXIT } })
+    expect(index.occurrences[0]?.attempts.map((attempt) => attempt.durationMs)).toEqual([200, 100])
+  })
+})
+
+describe("content availability", () => {
+  test("is decoded from the shape xcresulttool actually emits", async () => {
+    // Observed at schema 0.1.0: no `hasBuildResults`, and `logs` is an array of
+    // log names rather than a boolean.
+    const { summary } = await interpretFixture("passed")
+    expect(summary.outcome).toBe("passed")
+  })
+
+  test("makes build results always attemptable, since it claims nothing about them", async () => {
+    const commands: string[] = []
+    await interpretFixture("passed", { reader: { onRun: (command) => commands.push(command) } })
+    expect(commands).toContain("get build-results")
   })
 })
 

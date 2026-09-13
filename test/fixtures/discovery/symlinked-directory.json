@@ -1,0 +1,30 @@
+{
+  "provenance": {
+    "scenario": "symlinked-directory",
+    "covers": "a symlinked directory is never followed out of the trusted root"
+  },
+  "tree": {
+    "dirs": [
+      "outside/Sample.xcodeproj",
+      "outside/Sample.xcodeproj/xcshareddata/xcschemes"
+    ],
+    "files": {
+      "outside/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "outside/Sample.xcodeproj/xcshareddata/xcschemes/Demo.xcscheme": "<Scheme/>\n"
+    },
+    "symlinks": {
+      "Modules": "outside"
+    }
+  },
+  "expect": {
+    "container": {
+      "status": "found",
+      "kind": "project",
+      "path": "outside/Sample.xcodeproj"
+    },
+    "scheme": {
+      "status": "found",
+      "value": "Demo"
+    }
+  }
+}

@@ -161,8 +161,8 @@ describe("every committed fixture", () => {
         decoderVersion: 1,
         xcresulttoolVersion: "24757",
         legacyCommandsFormatVersion: "3.58",
-        xcodeVersion: "26.0",
-        xcodeBuild: "17A400",
+        xcodeVersion: "26.4.1",
+        xcodeBuild: "17E202",
       })
       expect(typeof provenance.observedShape).toBe("string")
       expect(provenance.observedShape.length).toBeGreaterThan(0)

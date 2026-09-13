@@ -1,0 +1,31 @@
+{
+  "provenance": {
+    "scenario": "multiple-shared-schemes",
+    "covers": "two shared schemes require an explicit choice"
+  },
+  "tree": {
+    "dirs": [
+      "Example.xcodeproj",
+      "Example.xcodeproj/xcshareddata/xcschemes"
+    ],
+    "files": {
+      "Example.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "Example.xcodeproj/xcshareddata/xcschemes/App.xcscheme": "<Scheme/>\n",
+      "Example.xcodeproj/xcshareddata/xcschemes/Demo.xcscheme": "<Scheme/>\n"
+    }
+  },
+  "expect": {
+    "container": {
+      "status": "found",
+      "kind": "project",
+      "path": "Example.xcodeproj"
+    },
+    "scheme": {
+      "status": "ambiguous",
+      "candidates": [
+        "App",
+        "Demo"
+      ]
+    }
+  }
+}

@@ -235,9 +235,11 @@ async function gather(
     return state
   }
 
-  // Build results. The build facet is authoritative, so a failure to read one
-  // that availability advertised is incompleteness, not silence.
-  if (availability.value.hasBuildResults) {
+  // Build results. Availability makes no claim about them — the observed
+  // payload has no `hasBuildResults` field — so they are always retrieved, and
+  // a failure to read the authoritative build facet is incompleteness rather
+  // than silence.
+  {
     if (cancelled() || expired()) return state
     const response = await request.tool.run("get build-results", remaining())
     if (!response.ok) {

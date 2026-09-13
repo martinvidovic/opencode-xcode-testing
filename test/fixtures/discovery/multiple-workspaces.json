@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "scenario": "multiple-workspaces",
+    "covers": "two workspaces are structured ambiguity, never a guess"
+  },
+  "tree": {
+    "dirs": [
+      "Example.xcworkspace",
+      "Modules/Sample.xcworkspace"
+    ],
+    "files": {
+      "Example.xcworkspace/contents.xcworkspacedata": "<Workspace/>\n",
+      "Modules/Sample.xcworkspace/contents.xcworkspacedata": "<Workspace/>\n"
+    },
+    "symlinks": {}
+  },
+  "expect": {
+    "container": {
+      "status": "ambiguous",
+      "candidates": [
+        "Example.xcworkspace",
+        "Modules/Sample.xcworkspace"
+      ]
+    }
+  }
+}

@@ -4,8 +4,8 @@
     "decoderVersion": 1,
     "xcresulttoolVersion": "24757",
     "legacyCommandsFormatVersion": "3.58",
-    "xcodeVersion": "26.0",
-    "xcodeBuild": "17A400",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
     "scenario": "availability-contradiction",
     "observedShape": "hasTestResults false while the summary reports tests"
   },
@@ -15,9 +15,13 @@
       "creatingApplication": "Xcode"
     },
     "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
       "hasTestResults": false,
-      "hasBuildResults": true,
-      "hasLogs": true
+      "logs": [
+        "build",
+        "action"
+      ]
     },
     "get build-results": {
       "status": "succeeded",

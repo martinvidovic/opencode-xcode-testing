@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "scenario": "multiple-projects",
+    "covers": "projects are considered only when no workspace exists, and two are ambiguous"
+  },
+  "tree": {
+    "dirs": [
+      "Example.xcodeproj",
+      "Modules/Sample.xcodeproj"
+    ],
+    "files": {
+      "Example.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "Modules/Sample.xcodeproj/project.pbxproj": "// generic fixture\n"
+    },
+    "symlinks": {}
+  },
+  "expect": {
+    "container": {
+      "status": "ambiguous",
+      "candidates": [
+        "Example.xcodeproj",
+        "Modules/Sample.xcodeproj"
+      ]
+    }
+  }
+}
