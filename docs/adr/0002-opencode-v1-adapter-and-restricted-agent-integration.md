@@ -408,6 +408,25 @@ assumed or left open.
 3. **The stub-provider route for (b2) works**, so execution-level validation gates with the full
    scenario set rather than degrading to a checklist. See the deferral note above.
 
+### Test seams in shipped interfaces
+
+ADR 0001 dropped its documented size-injection seam in favour of exercising the
+real mechanism, and that direction still holds wherever the real mechanism is
+reachable. Two seams nonetheless live in shipped interfaces, recorded here so
+they are deliberate rather than accidental:
+
+- `ServiceEnvironment.xcresultToolFor` — how a Result Bundle is read. The
+  recovery path interprets artifacts left by a process that is gone; without
+  this, exercising it would require a machine with Xcode, which the unit suite
+  must not.
+- `AdmissionOptions.newRunId` — how a run id is allocated. A collision is
+  otherwise astronomically rare, and the property under test is precisely what
+  happens when one occurs.
+
+Both default to the real implementation and are overridden only by tests. Where
+a real mechanism *is* reachable — locks, atomic renames, apparent file size —
+it continues to be used directly.
+
 ## Risks accepted
 
 - The stub-provider route for (b2) is mechanically available but unverified at decision time. The
