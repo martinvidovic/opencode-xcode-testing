@@ -1,0 +1,37 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.0",
+    "xcodeBuild": "17A400",
+    "scenario": "build-failed",
+    "observedShape": "canonical"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasTestResults": false,
+      "hasBuildResults": true,
+      "hasLogs": true
+    },
+    "get build-results": {
+      "status": "failed",
+      "errorCount": 1,
+      "errors": [
+        {
+          "targetName": "App",
+          "message": "cannot find 'undefinedSymbol' in scope",
+          "sourceURL": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=17&StartingColumnNumber=5"
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Failed"
+    }
+  }
+}

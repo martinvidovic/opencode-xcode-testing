@@ -1,0 +1,81 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.0",
+    "xcodeBuild": "17A400",
+    "scenario": "unsupported-status",
+    "observedShape": "a status literal no decoder version recognizes"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasTestResults": true,
+      "hasBuildResults": true,
+      "hasLogs": true
+    },
+    "get build-results": {
+      "status": "succeeded",
+      "errorCount": 0,
+      "errors": []
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "C1",
+          "configurationName": "Configuration 1"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "Simulator",
+          "platform": "iOS Simulator",
+          "osVersion": "26.0"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "LoginTests",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsIn()",
+                      "nodeIdentifier": "LoginTests/testSignsIn()",
+                      "result": "Passed",
+                      "duration": "0.12s"
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsOut()",
+                      "nodeIdentifier": "LoginTests/testSignsOut()",
+                      "result": "Indeterminate",
+                      "duration": "0.12s"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Passed"
+    }
+  }
+}
