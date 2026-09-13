@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -207,4 +207,29 @@ describe("cancellation before admission", () => {
       expect(readQueue(h.environment.storage).activeRunId).toBeUndefined()
     })
   }, 30_000)
+})
+
+describe("across a sequence of runs", () => {
+  test("leaks neither the execution slot nor an unfinished run", async () => {
+    await withHarness(STUB_SUPERVISOR, async (h) => {
+      for (let index = 0; index < 3; index += 1) {
+        const cancelled = index === 1
+        await h.service.start(
+          REQUEST,
+          noop,
+          cancelled ? { aborted: true, whenAborted: Promise.resolve() } : undefined,
+        ).result
+      }
+
+      const state = readQueue(h.environment.storage)
+      expect(state.activeRunId).toBeUndefined()
+      expect(state.tickets).toEqual([])
+      expect(state.quarantine).toBeUndefined()
+
+      // Every run reached a terminal state; none is left looking in progress.
+      for (const runId of readdirSync(h.environment.storage.runsDir)) {
+        expect(readRunRecord(h.environment.storage, runId)?.state).toBe("completed")
+      }
+    })
+  }, 60_000)
 })
