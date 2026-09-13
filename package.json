@@ -1,0 +1,10 @@
+{
+  "name": "opencode-xcode-testing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A local OpenCode capability for running scoped Xcode tests while exposing only trustworthy, compact results to the model.",
+  "scripts": {
+    "test": "bun test"
+  }
+}
