@@ -1,0 +1,23 @@
+Test Run buildFailed: 1 build error
+
+run            run-0000
+
+container      project Example.xcodeproj (discovery)
+scheme         App (discovery)
+destination    iOS Simulator / iPhone 17 (configuration)
+scope          selected, notReached, 1 selection, digest 7df72986cc243d58
+tests          unavailable
+build          1 error (complete)
+process        exit 65, exec yes, terminated by none, descendants exited yes
+
+scope attestations (1):
+  AppTests/LoginTests: notReached
+
+build errors (1):
+  Sources/App/Login.swift:17:5
+    cannot find 'undefinedSymbol' in scope
+    inspect 5befb3d3ac4ef4781d8d515e0c970cf0
+
+timing         queued 0ms, startup 100ms, process 4000ms, interpretation 0ms, total 4100ms
+toolchain      Xcode 26.4.1 (17E202), xcresulttool 24757, schema 0.1.0, decoder 1
+inspect        scope=unavailable failures=unavailable buildErrors=available tests=unavailable log=available

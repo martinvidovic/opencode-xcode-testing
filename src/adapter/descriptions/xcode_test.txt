@@ -1,0 +1,35 @@
+Run Xcode tests for this project and report a trustworthy, compact result.
+
+Runs `xcodebuild test` against an explicit Requested Scope. Full diagnostics are
+retained on disk, outside this context; what comes back is a compact summary
+with enough evidence to reject a false success.
+
+Scope the run as narrowly as the task allows. Running one suite is far faster
+than running everything, and the result proves the scope actually matched — a
+filter that named nothing is reported as a mismatch, never as a pass.
+
+The result is exactly one of six outcomes, and they are not interchangeable:
+
+  passed                the requested tests ran and all of them passed
+  testFailed            the tests ran and at least one failed
+  buildFailed           the build failed, so the tests never ran
+  infrastructureFailed  the tool could not establish what happened; a stable
+                        reason says why. This is neither a pass nor a failure
+  cancelled             the caller cancelled the run
+  timedOut              the run crossed its deadline
+
+A seventh result, invalid, means the request itself was rejected: no Test Run
+was started, nothing was built, and there is no run id. Fix the named fields and
+call again.
+
+Never report infrastructureFailed as either success or test failure. It means
+the evidence was missing, contradictory, or unverifiable — fix the reason it
+gives before drawing any conclusion about the tests.
+
+Every run returns a run id. Use xcode_test_inspect with that id to read failure
+detail, the full test list, build errors, or logs. Do not run the tests again to
+see more: the evidence is already retained, and a rerun tells you less than the
+evidence you already have.
+
+Container, scheme, destination and timeout are resolved from project
+configuration when omitted. Supply them only to override.

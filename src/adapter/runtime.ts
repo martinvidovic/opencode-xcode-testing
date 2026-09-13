@@ -1,0 +1,118 @@
+/**
+ * Runtime resolution (ADR 0002).
+ *
+ * The plugin ships as source with no build step, so the supervisor entrypoint
+ * is spawned as TypeScript and needs a runtime that can actually execute it.
+ * Every candidate is **probed and verified** rather than assumed, because the
+ * one that looks most obviously correct is the one that fails: the shipped
+ * `opencode` is a Bun-compiled single-file executable, so it reports a Bun
+ * version and cannot run a `.ts` file.
+ *
+ * There is no silent fallback anywhere in this file. An explicitly configured
+ * runtime that does not work is a hard error — a setting that quietly degrades
+ * is worse than one that fails, because it fails somewhere else, later.
+ */
+
+import { isAbsolute, resolve } from "node:path"
+
+export type RuntimeSource = "configuration" | "host" | "path"
+
+/** A probe must prove the candidate executes a trivial script, not merely exist. */
+export type RuntimeProbe = (candidate: string) => { usable: boolean; version?: string }
+
+export type RuntimeResolution =
+  | { status: "resolved"; path: string; source: RuntimeSource; version?: string }
+  | {
+      status: "failed"
+      reason: "runnerFailure"
+      message: string
+      /** What was tried, in order, so the diagnostic names the actual attempts. */
+      probed: string[]
+    }
+
+export type RuntimeInput = {
+  trustedRoot: string
+  /** The optional `runtime` field. Machine-local; relative resolves against the root. */
+  configured?: string
+  /** `process.execPath` — expected to fall through, for the reason above. */
+  hostExecutable: string
+  /** How `bun` is found on `PATH`, or `undefined` when it is not there. */
+  pathCandidate?: string
+  probe: RuntimeProbe
+}
+
+export function resolveRuntime(input: RuntimeInput): RuntimeResolution {
+  const probed: string[] = []
+
+  if (input.configured !== undefined) {
+    const path = isAbsolute(input.configured)
+      ? input.configured
+      : resolve(input.trustedRoot, input.configured)
+    probed.push(path)
+
+    const result = input.probe(path)
+    if (result.usable) {
+      return {
+        status: "resolved",
+        path,
+        source: "configuration",
+        ...(result.version === undefined ? {} : { version: result.version }),
+      }
+    }
+    // Set but unusable is a hard error, never a fallback.
+    return {
+      status: "failed",
+      reason: "runnerFailure",
+      message:
+        "the configured runtime could not execute a TypeScript file. Set `runtime` in .opencode/xcode-test.json to a working Bun, or remove it to fall back to discovery.",
+      probed,
+    }
+  }
+
+  for (const candidate of [input.hostExecutable, input.pathCandidate]) {
+    if (candidate === undefined) continue
+    probed.push(candidate)
+    const result = input.probe(candidate)
+    if (!result.usable) continue
+    return {
+      status: "resolved",
+      path: candidate,
+      source: candidate === input.hostExecutable ? "host" : "path",
+      ...(result.version === undefined ? {} : { version: result.version }),
+    }
+  }
+
+  return {
+    status: "failed",
+    reason: "runnerFailure",
+    message:
+      "no usable Bun runtime was found. Install Bun (https://bun.sh) so it is on PATH, or set `runtime` in .opencode/xcode-test.json to its absolute path. A Homebrew-installed opencode is a compiled binary and cannot run TypeScript.",
+    probed,
+  }
+}
+
+/**
+ * A cached probe result, revalidated by `stat` rather than re-spawned.
+ *
+ * This is #8's identity-recheck philosophy applied to the runtime: first start
+ * pays the full probe, later starts pay a stat. Re-probing on every session
+ * would spend a subprocess proving something that has not changed.
+ */
+export type RuntimeCacheEntry = {
+  path: string
+  mtimeMs: number
+  size: number
+  version?: string
+}
+
+export function cacheIsValid(
+  entry: RuntimeCacheEntry | undefined,
+  observed: { path: string; mtimeMs: number; size: number } | undefined,
+): boolean {
+  if (entry === undefined || observed === undefined) return false
+  return (
+    entry.path === observed.path &&
+    entry.mtimeMs === observed.mtimeMs &&
+    entry.size === observed.size
+  )
+}

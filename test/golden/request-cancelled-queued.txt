@@ -1,0 +1,6 @@
+Test Run cancelled while queued
+
+No Test Run was started, so there is no run to inspect.
+
+queued-at      2026-09-13T10:00:00.000Z
+queue          1250ms

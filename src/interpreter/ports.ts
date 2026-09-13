@@ -7,40 +7,18 @@
  * from committed synthetic payloads, with no Xcode and no host present.
  */
 
+import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { XcresultCommand } from "./anomalies.ts"
 
 /**
  * The toolchain a Result Bundle was produced by and must be read back with.
  *
- * A path or version match without the binary digest is insufficient: an
- * installation replaced in place keeps both and changes neither.
+ * Defined in the domain, because the runner freezes it for the child and the
+ * interpreter reads the bundle back with it — both have to mean the same thing
+ * by "the same toolchain", and the runner may not import this module.
  */
-export type ToolchainIdentity = {
-  /** Canonical effective developer directory. Private; never model-facing. */
-  developerDirectory: string
-  xcodeVersion: string
-  xcodeBuild: string
-  /** Canonical resolved path. Private; never model-facing. */
-  xcresulttoolPath: string
-  xcresulttoolVersion: string
-  /** SHA-256 of the `xcresulttool` executable. Private; never model-facing. */
-  xcresulttoolDigest: string
-  /** The structured schema version this installation supports. */
-  schemaVersion: string
-}
-
-/** Every identity fact must match. There is no partial credit here. */
-export function toolchainIdentityMatches(a: ToolchainIdentity, b: ToolchainIdentity): boolean {
-  return (
-    a.developerDirectory === b.developerDirectory &&
-    a.xcodeVersion === b.xcodeVersion &&
-    a.xcodeBuild === b.xcodeBuild &&
-    a.xcresulttoolPath === b.xcresulttoolPath &&
-    a.xcresulttoolVersion === b.xcresulttoolVersion &&
-    a.xcresulttoolDigest === b.xcresulttoolDigest &&
-    a.schemaVersion === b.schemaVersion
-  )
-}
+export type { ToolchainIdentity } from "../domain/toolchain.ts"
+export { toolchainIdentityMatches } from "../domain/toolchain.ts"
 
 /** Why a structured read did not produce a payload. */
 export type XcresultFailure =

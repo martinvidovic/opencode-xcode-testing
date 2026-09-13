@@ -1,0 +1,6 @@
+Test Run infrastructureFailed while queued: executionSlotQuarantined
+
+the execution slot is quarantined until recovery clears it
+
+queued-at      2026-09-13T10:00:00.000Z
+queue          40ms

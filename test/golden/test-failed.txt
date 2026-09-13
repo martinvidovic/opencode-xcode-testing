@@ -1,0 +1,25 @@
+Test Run testFailed: 1 test failed of 3
+
+run            run-0000
+
+container      project Example.xcodeproj (discovery)
+scheme         App (discovery)
+destination    iOS Simulator / iPhone 17 (configuration)
+scope          all, matched, digest 01d1d67c18498c24
+tests          3 total, 1 passed, 1 failed, 1 skipped (complete)
+build          0 errors (complete)
+process        exit 65, exec yes, terminated by none, descendants exited yes
+
+failures (1):
+  Sources/App/Login.swift:42:9
+    XCTAssertEqual failed: ("denied") is not equal to ("granted")
+    inspect 70cdf6a3db224f7339d28318dbceb101
+
+timing         queued 0ms, startup 100ms, process 4000ms, interpretation 0ms, total 4100ms
+toolchain      Xcode 26.4.1 (17E202), xcresulttool 24757, schema 0.1.0, decoder 1
+inspect        scope=available failures=available buildErrors=available tests=available log=available
+
+observed tests (3):
+  AppTests/LoginTests/testSignsIn()
+  AppTests/LoginTests/testRejectsBadPassword()
+  AppTests/LoginTests/testSkipsOnDevice()
