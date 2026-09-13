@@ -70,7 +70,6 @@ export type ServiceEnvironment = {
   configuration?: ConfigurationOutcome
   toolchain: ToolchainIdentity
   /** The verified Bun that can execute the supervisor entrypoint. */
-  runtimePath: string
   supervisorEntrypoint: string
   now(): number
   timestamp(): string
@@ -90,11 +89,20 @@ export type ServiceEnvironment = {
    * which does not begin until launch is authorized.
    */
   handshakeDeadlineMs?: number
-  /**
-   * Facts about how this run was made possible. The path is machine-local and
-   * stays in durable metadata; the versions are safe to surface.
-   */
-  runtimeVersion?: string
+  /** How this run was made possible. */
+  runtime: RuntimeFacts
+}
+
+/**
+ * The runtime that executed the supervisor and the host that asked for it.
+ *
+ * The path is machine-local and stays in durable metadata; the versions are
+ * safe to surface, because a model can act on *which* Bun ran the supervisor
+ * and can do nothing at all with where it lives.
+ */
+export type RuntimeFacts = {
+  path: string
+  version?: string
   hostVersion?: string
 }
 
@@ -118,16 +126,15 @@ export function unavailableService(message: string): TestToolService {
     schemaVersion: SCHEMA_VERSION,
     outcome: "infrastructureFailed",
     phase: "resolving",
-    reason: "unexpectedResolutionFailure",
+    reason: "runnerFailure",
     message,
   })
 
   return {
     start() {
-      const admitted = Promise.reject(new Error(message)) as RunHandle["admitted"]
-      // Nobody may be listening; a rejection with no handler is not a defect.
-      admitted.catch(() => {})
-      return { admitted, result: Promise.resolve(refuse()) }
+      // Admission never happens, and never throwing for a domain outcome means
+      // it does not reject either — the result carries the whole answer.
+      return { admitted: new Promise<never>(() => {}), result: Promise.resolve(refuse()) }
     },
     inspect: () => Promise.resolve({ status: "invalid", message }),
     recover: () => Promise.resolve({ status: "failed", message }),
@@ -208,13 +215,13 @@ function startRun(
           resolved: resolution.resolved,
           requestedScope: request.requestedScope,
           owner: selfIdentity(),
-          runtimePath: environment.runtimePath,
-          ...(environment.runtimeVersion === undefined
+          runtimePath: environment.runtime.path,
+          ...(environment.runtime.version === undefined
             ? {}
-            : { runtimeVersion: environment.runtimeVersion }),
-          ...(environment.hostVersion === undefined
+            : { runtimeVersion: environment.runtime.version }),
+          ...(environment.runtime.hostVersion === undefined
             ? {}
-            : { hostVersion: environment.hostVersion }),
+            : { hostVersion: environment.runtime.hostVersion }),
         })
         return true
       },
@@ -318,7 +325,10 @@ async function superviseAndInterpret(
   })
 
   if (!supervision.ok) {
-    const summary = runnerFailureSummary(environment, input, supervision.message, supervision.phase)
+    const summary = withRuntimeProvenance(
+      environment,
+      runnerFailureSummary(environment, input, supervision.message, supervision.phase),
+    )
     publishTerminal(environment, input.record, summary, emptyIndex(input.record.runId))
     return summary
   }
@@ -387,15 +397,24 @@ function withRuntimeProvenance<T extends { provenance?: ResultProvenance }>(
   environment: ServiceEnvironment,
   summary: T,
 ): T {
-  if (summary.provenance === undefined) return summary
   return {
     ...summary,
     provenance: {
+      // A run that never reached a Result Bundle still knows which toolchain
+      // and runtime it was asked from, and saying so is how the report
+      // explains itself. An interpreted summary overwrites all of it.
+      xcodeVersion: environment.toolchain.xcodeVersion,
+      xcodeBuild: environment.toolchain.xcodeBuild,
+      xcresulttoolVersion: environment.toolchain.xcresulttoolVersion,
+      requestedSchemaVersion: REQUESTED_SCHEMA_VERSION,
+      interpreterDecoderVersion: DECODER_VERSION,
       ...summary.provenance,
-      ...(environment.runtimeVersion === undefined
+      ...(environment.runtime.version === undefined
         ? {}
-        : { runtimeVersion: environment.runtimeVersion }),
-      ...(environment.hostVersion === undefined ? {} : { hostVersion: environment.hostVersion }),
+        : { runtimeVersion: environment.runtime.version }),
+      ...(environment.runtime.hostVersion === undefined
+        ? {}
+        : { hostVersion: environment.runtime.hostVersion }),
     },
   }
 }
@@ -716,7 +735,7 @@ function runSupervisor(
   },
 ): Promise<SupervisionOutcome> {
   return new Promise((resolve) => {
-    const child = spawn(environment.runtimePath, [environment.supervisorEntrypoint], {
+    const child = spawn(environment.runtime.path, [environment.supervisorEntrypoint], {
       cwd: environment.trustedRoot,
       env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
       // Detached so it outlives this call, with a private inherited control

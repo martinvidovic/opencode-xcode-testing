@@ -67,7 +67,7 @@ function harness(entrypoint: string): Harness {
     trustedRoot: repo.root,
     homeDir: home,
     toolchain: identityFor(loadFixture("passed")),
-    runtimePath,
+    runtime: { path: runtimePath },
     supervisorEntrypoint: entrypoint,
     now: () => Date.now(),
     timestamp: () => new Date().toISOString(),

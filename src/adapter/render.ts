@@ -268,6 +268,10 @@ function provenanceText(provenance: ResultProvenance): string {
     `xcresulttool ${provenance.xcresulttoolVersion}`,
     `schema ${provenance.requestedSchemaVersion}`,
     `decoder ${provenance.interpreterDecoderVersion}`,
+    // Versions only. The runtime's path is machine-local, and a model can do
+    // nothing with where a binary lives.
+    ...(provenance.runtimeVersion === undefined ? [] : [`runtime ${provenance.runtimeVersion}`]),
+    ...(provenance.hostVersion === undefined ? [] : [`host ${provenance.hostVersion}`]),
   ].join(", ")
 }
 

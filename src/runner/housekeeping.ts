@@ -33,7 +33,13 @@ export type Registry = {
    * re-spawned. First start pays for a subprocess; later starts pay for a
    * stat, which is the identity-recheck philosophy #8 applies to toolchains.
    */
-  runtime?: { path: string; mtimeMs: number; size: number; version?: string }
+  runtime?: {
+    path: string
+    mtimeMs: number
+    size: number
+    source: "configuration" | "host" | "path"
+    version?: string
+  }
 }
 
 const EMPTY_REGISTRY: Registry = { schemaVersion: 1, roots: {} }

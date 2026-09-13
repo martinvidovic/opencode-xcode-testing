@@ -68,12 +68,18 @@ export type RequestCancelled = {
   queueDurationMs?: number
 }
 
-/** Resolution, discovery, or admission failed operationally. */
+/**
+ * Resolution, discovery, or admission failed operationally.
+ *
+ * `runnerFailure` appears here as well as on an admitted run: a runtime that
+ * cannot execute the supervisor is a runner failure discovered before any Test
+ * Run exists, and ADR 0002 mandates that exact diagnostic for it.
+ */
 export type RequestResolutionFailed = {
   schemaVersion: SchemaVersion
   outcome: "infrastructureFailed"
   phase: ResolutionPhase
-  reason: ResolutionFailureReason | QueuedFailureReason
+  reason: ResolutionFailureReason | QueuedFailureReason | "runnerFailure"
   message: string
   queuedAt?: string
   queueDurationMs?: number

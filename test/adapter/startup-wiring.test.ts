@@ -8,17 +8,19 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { resolveBudget } from "../../src/adapter/budget.ts"
-import { cacheIsValid } from "../../src/adapter/runtime.ts"
+import { cachedRuntime, cacheIsValid, rememberRuntime } from "../../src/adapter/runtime.ts"
+import { renderTestToolResult } from "../../src/adapter/output.ts"
+import { FAILED_EXIT, interpretFixture } from "../interpreter/harness.ts"
 import { unavailableService } from "../../src/adapter/service.ts"
 import type { ResultProvenance } from "../../src/domain/result.ts"
 import { readProjectConfiguration } from "../../src/adapter/trusted-root.ts"
 import { resolveTestRun } from "../../src/runner/resolution.ts"
-import { storageFor, storageForRootKey } from "../../src/runner/paths.ts"
+import { prepareStorage, storageFor, storageForRootKey, type Storage } from "../../src/runner/paths.ts"
 
 function project(build: (root: string) => void = () => {}): { root: string; dispose(): void } {
   const root = mkdtempSync(join(tmpdir(), "xcode-test-startup-"))
@@ -163,7 +165,7 @@ describe("an unavailable Test Tool family", () => {
 
 describe("the runtime probe cache", () => {
   test("is valid only while the binary is byte-for-byte the one probed", () => {
-    const entry = { path: "/opt/bun", mtimeMs: 10, size: 20, version: "1.4.0" }
+    const entry = { path: "/opt/bun", mtimeMs: 10, size: 20, source: "path" as const, version: "1.4.0" }
     expect(cacheIsValid(entry, { path: "/opt/bun", mtimeMs: 10, size: 20 })).toBe(true)
     expect(cacheIsValid(entry, { path: "/opt/bun", mtimeMs: 11, size: 20 })).toBe(false)
     expect(cacheIsValid(entry, { path: "/opt/bun", mtimeMs: 10, size: 21 })).toBe(false)
@@ -172,19 +174,74 @@ describe("the runtime probe cache", () => {
 })
 
 describe("runtime and host provenance", () => {
-  test("surfaces versions and never a path", () => {
-    // A model can act on "which Bun"; it cannot act on where that Bun lives,
-    // and the path is machine-local.
-    const provenance: ResultProvenance = {
-      xcodeVersion: "26.4.1",
-      xcodeBuild: "17E202",
-      xcresulttoolVersion: "24757",
-      requestedSchemaVersion: "0.1.0",
-      interpreterDecoderVersion: 1,
-      runtimeVersion: "1.4.0",
-      hostVersion: "1.18.29",
-    }
+  /** The rendered text, which is the model's entire view of a Test Run. */
+  async function renderWithRuntime(runtime: Partial<ResultProvenance>): Promise<string> {
+    const { summary } = await interpretFixture("test-failed", { request: { execution: FAILED_EXIT } })
+    return renderTestToolResult({
+      ...summary,
+      provenance: { ...(summary.provenance as ResultProvenance), ...runtime },
+    }).text
+  }
 
-    expect(Object.values(provenance).some((value) => String(value).startsWith("/"))).toBe(false)
+  test("reaches the model at all", async () => {
+    // Recording the versions and then never rendering them is the same as not
+    // recording them: the summary is not something anyone else reads.
+    const text = await renderWithRuntime({ runtimeVersion: "1.4.0", hostVersion: "1.18.29" })
+    expect(text).toContain("runtime 1.4.0")
+    expect(text).toContain("host 1.18.29")
+  })
+
+  test("is versions only, never a path", async () => {
+    // A model can act on "which Bun"; it can do nothing with where that Bun
+    // lives, and the path is machine-local.
+    const text = await renderWithRuntime({ runtimeVersion: "/opt/homebrew/bin/bun" })
+    expect(text).toContain("runtime /opt/homebrew/bin/bun")
+
+    const absent = await renderWithRuntime({})
+    expect(absent).not.toContain("runtime ")
+    expect(absent).not.toContain("host ")
+  })
+})
+
+describe("the remembered runtime", () => {
+  function storage(): Storage {
+    const home = mkdtempSync(join(tmpdir(), "xcode-test-registry-"))
+    const created = storageFor(home, home)
+    prepareStorage(created)
+    return created
+  }
+
+  test("is returned only while the binary is the one that was probed", () => {
+    const store = storage()
+    const binary = join(store.toolRoot, "bun")
+    writeFileSync(binary, "#!/bin/sh\n")
+
+    rememberRuntime(store, { status: "resolved", path: binary, source: "path", version: "1.4.0" })
+    expect(cachedRuntime(store)).toEqual({
+      status: "resolved",
+      path: binary,
+      source: "path",
+      version: "1.4.0",
+    })
+
+    // A replaced binary is a different runtime, whatever its path says.
+    writeFileSync(binary, "#!/bin/sh\necho replaced\n")
+    utimesSync(binary, new Date(0), new Date(0))
+    expect(cachedRuntime(store)).toBeUndefined()
+  })
+
+  test("keeps the source it was found by, rather than guessing one", () => {
+    // `host` and `path` are not interchangeable: a cache that reported every
+    // hit as `path` would misattribute where the runtime came from.
+    const store = storage()
+    const binary = join(store.toolRoot, "bun")
+    writeFileSync(binary, "#!/bin/sh\n")
+
+    rememberRuntime(store, { status: "resolved", path: binary, source: "host" })
+    expect(cachedRuntime(store)?.source).toBe("host")
+  })
+
+  test("is absent when nothing has been remembered", () => {
+    expect(cachedRuntime(storage())).toBeUndefined()
   })
 })

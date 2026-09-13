@@ -91,24 +91,30 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     return outcome as T
   }
 
-  // User-wide housekeeping is deliberately **not** gated on enablement. It
-  // exists for roots whose repositories moved, disappeared, or were de-marked,
-  // and gating it on the marker would mean exactly those roots are never
-  // reclaimed. It is still bounded, and its own hourly interval guard is what
-  // keeps an unconfigured project from paying for it on every session start.
-  const housekeeping = bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, ports.runHousekeeping())
-
   // Gate one. "This is not an Xcode project" is a normal state, not a
   // diagnostic, so an unmarked root registers nothing and says nothing.
-  if (!ports.markerExists()) {
+  const marked = ports.markerExists()
+
+  // Gate two, evaluated only behind gate one. Missing shipped files mean a
+  // partial checkout; registering tools that cannot work would surface as a
+  // confusing failure at first run instead.
+  const missing = marked ? ports.requiredFiles().filter((path) => !ports.regularFileExists(path)) : []
+
+  // Both gates are sub-millisecond and run first, in order, because only they
+  // can short-circuit what follows. Housekeeping starts after them but is
+  // deliberately **not** gated on enablement: it exists for roots whose
+  // repositories moved, disappeared, or were de-marked, and gating it on the
+  // marker would mean exactly those roots are never reclaimed.
+  const housekeeping = bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, ports.runHousekeeping())
+
+  if (!marked) {
     await housekeeping
     return { status: "disabled" }
   }
 
-  // Gate two. Missing shipped files mean a partial checkout; registering tools
-  // that cannot work would surface as a confusing failure at first run instead.
-  const missing = ports.requiredFiles().filter((path) => !ports.regularFileExists(path))
   if (missing.length > 0) {
+    // Nothing is left running behind the return.
+    await housekeeping
     return {
       status: "structuralFailure",
       missing,

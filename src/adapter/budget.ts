@@ -29,6 +29,25 @@ export const SAFETY_MARGIN_BYTES = 2_048
 
 export type HostOutputLimits = { max_lines?: number; max_bytes?: number } | undefined
 
+/**
+ * The host's effective `tool_output` limits, or undefined when they cannot be
+ * read.
+ *
+ * Undefined is not "no limits": the host does not materialize its own
+ * defaults, so `resolveBudget` applies the documented ones. A host that cannot
+ * be asked is therefore treated exactly like a host that was never configured,
+ * which is the conservative reading of both.
+ */
+export async function readOutputLimits(client: {
+  config: { get(): Promise<{ data?: { tool_output?: HostOutputLimits } }> }
+}): Promise<HostOutputLimits> {
+  try {
+    return (await client.config.get()).data?.tool_output
+  } catch {
+    return undefined
+  }
+}
+
 export type Budget = { maxLines: number; maxBytes: number }
 
 /**
@@ -40,9 +59,12 @@ export function resolveBudget(limits: HostOutputLimits): Budget {
   const hostLines = limits?.max_lines ?? HOST_DEFAULT_MAX_LINES
   const hostBytes = limits?.max_bytes ?? HOST_DEFAULT_MAX_BYTES
 
+  // The host's own limit is part of the minimum, not only the margined one:
+  // flooring above it would put us back over the very line the margin exists
+  // to keep us under, absurdly small limits included.
   return {
-    maxLines: Math.max(1, Math.min(SELF_CAP_LINES, hostLines - SAFETY_MARGIN_LINES)),
-    maxBytes: Math.max(64, Math.min(SELF_CAP_BYTES, hostBytes - SAFETY_MARGIN_BYTES)),
+    maxLines: Math.max(1, Math.min(SELF_CAP_LINES, hostLines - SAFETY_MARGIN_LINES, hostLines)),
+    maxBytes: Math.max(1, Math.min(SELF_CAP_BYTES, hostBytes - SAFETY_MARGIN_BYTES, hostBytes)),
   }
 }
 

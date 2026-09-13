@@ -53,7 +53,7 @@ export type ConfigurationOutcome =
 export type ResolutionEnvironment = {
   /** Canonical, adapter-supplied, and never derived from an argument. */
   trustedRoot: string
-  configuration?: ProjectConfiguration | ConfigurationOutcome
+  configuration?: ConfigurationOutcome
   discover?: {
     container(trustedRoot: string): DiscoveryOutcome<XcodeContainer>
     scheme(trustedRoot: string, container: XcodeContainer): DiscoveryOutcome<string>
@@ -402,10 +402,6 @@ export function reject(errors: RequestError[]): RequestRejected {
   }
 }
 
-/** Normalize the two shapes a caller may supply into one. */
 function configurationOf(environment: ResolutionEnvironment): ConfigurationOutcome {
-  const supplied = environment.configuration
-  if (supplied === undefined) return { status: "absent" }
-  if ("status" in supplied) return supplied
-  return { status: "loaded", configuration: supplied }
+  return environment.configuration ?? { status: "absent" }
 }

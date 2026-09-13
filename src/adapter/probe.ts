@@ -8,7 +8,7 @@
  * all. Only running one distinguishes them.
  */
 
-import { spawn, spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -65,11 +65,13 @@ function run(command: string, args: string[]): Promise<{ ok: boolean; stdout: st
   })
 }
 
-/** Where `bun` is on `PATH`, or `undefined` when it is not there at all. */
-export function bunOnPath(): string | undefined {
-  const result = spawnSync("/usr/bin/env", ["bun", "--version"], {
-    encoding: "utf8",
-    timeout: PROBE_TIMEOUT_MS,
-  })
-  return result.status === 0 ? "bun" : undefined
+/**
+ * Where `bun` is on `PATH`, or `undefined` when it is not there at all.
+ *
+ * Asynchronous for the same reason the probe is: startup runs it under a
+ * shared deadline, and a blocking call cannot be bounded by a timer that
+ * cannot fire until the call has already returned.
+ */
+export async function bunOnPath(): Promise<string | undefined> {
+  return (await run("/usr/bin/env", ["bun", "--version"])).ok ? "bun" : undefined
 }

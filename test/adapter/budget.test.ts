@@ -16,6 +16,7 @@ import {
   HOST_DEFAULT_MAX_BYTES,
   HOST_DEFAULT_MAX_LINES,
   lineCount,
+  readOutputLimits,
   resolveBudget,
   SAFETY_MARGIN_BYTES,
   SAFETY_MARGIN_LINES,
@@ -27,6 +28,26 @@ import {
 import { block, PRIORITY } from "../../src/adapter/document.ts"
 import { renderTestToolResult } from "../../src/adapter/output.ts"
 import { FAILED_EXIT, interpretFixture } from "../interpreter/harness.ts"
+
+describe("reading the host's limits", () => {
+  const clientReturning = (data: unknown) => ({ config: { get: async () => data as never } })
+
+  test("takes the effective limits the host reports", async () => {
+    const limits = await readOutputLimits(
+      clientReturning({ data: { tool_output: { max_lines: 100, max_bytes: 4_096 } } }),
+    )
+    expect(limits).toEqual({ max_lines: 100, max_bytes: 4_096 })
+  })
+
+  test("treats a host that cannot be asked as one that was never configured", async () => {
+    // Not "no limits": `resolveBudget` then applies the documented defaults,
+    // which is the only reading that keeps host truncation unreachable.
+    const throwing = { config: { get: () => Promise.reject(new Error("no config route")) } }
+    expect(await readOutputLimits(throwing)).toBeUndefined()
+    expect(await readOutputLimits(clientReturning({}))).toBeUndefined()
+    expect(await readOutputLimits(clientReturning({ data: {} }))).toBeUndefined()
+  })
+})
 
 describe("resolving the budget", () => {
   test("applies the documented defaults, because the host does not materialize them", () => {
@@ -59,6 +80,16 @@ describe("resolving the budget", () => {
     const budget = resolveBudget({ max_lines: 1, max_bytes: 1 })
     expect(budget.maxLines).toBeGreaterThan(0)
     expect(budget.maxBytes).toBeGreaterThan(0)
+  })
+
+  test("stays under an absurdly small host limit rather than over it", () => {
+    // The whole point of the budget is that host truncation is unreachable.
+    // A floor that sat *above* the host's limit would reach it — and the host
+    // replaces truncated output with a path the model cannot open.
+    for (const bytes of [1, 16, 63, 64, 100]) {
+      expect(resolveBudget({ max_bytes: bytes }).maxBytes).toBeLessThanOrEqual(bytes)
+    }
+    expect(resolveBudget({ max_lines: 1 }).maxLines).toBeLessThanOrEqual(1)
   })
 })
 

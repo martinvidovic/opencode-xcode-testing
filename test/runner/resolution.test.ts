@@ -31,7 +31,9 @@ function resolve(
   try {
     const environment: ResolutionEnvironment = {
       trustedRoot: repo.root,
-      ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
+      ...(options.configuration === undefined
+        ? {}
+        : { configuration: { status: "loaded" as const, configuration: options.configuration } }),
     }
     return {
       outcome: resolveTestRun(

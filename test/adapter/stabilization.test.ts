@@ -40,7 +40,7 @@ function environmentFor(box: Sandbox): ServiceEnvironment {
     trustedRoot: "/workspace",
     homeDir: box.homeDir,
     toolchain: identityFor(loadFixture("passed")),
-    runtimePath: "/opt/bun",
+    runtime: { path: "/opt/bun" },
     supervisorEntrypoint: "/repo/src/runner/supervisor-entry.ts",
     now: () => 0,
     timestamp: () => "2026-09-13T12:00:00.000Z",
