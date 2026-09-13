@@ -1,0 +1,111 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.0",
+    "xcodeBuild": "17A400",
+    "scenario": "test-failed",
+    "observedShape": "testFailures declared as a single object rather than an array",
+    "defect": "testFailures-arity"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasTestResults": true,
+      "hasBuildResults": true,
+      "hasLogs": true
+    },
+    "get build-results": {
+      "status": "succeeded",
+      "errorCount": 0,
+      "errors": []
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "C1",
+          "configurationName": "Configuration 1"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "Simulator",
+          "platform": "iOS Simulator",
+          "osVersion": "26.0"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "LoginTests",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsIn()",
+                      "nodeIdentifier": "LoginTests/testSignsIn()",
+                      "result": "Passed",
+                      "duration": "0.12s"
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testRejectsBadPassword()",
+                      "nodeIdentifier": "LoginTests/testRejectsBadPassword()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed: (\"denied\") is not equal to (\"granted\")",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=42&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSkipsOnDevice()",
+                      "nodeIdentifier": "LoginTests/testSkipsOnDevice()",
+                      "result": "Skipped",
+                      "duration": "0.12s"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Failed",
+      "totalTestCount": 3,
+      "passedTests": 1,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "testFailures": {
+        "testName": "testRejectsBadPassword()",
+        "targetName": "AppTests",
+        "failureText": "XCTAssertEqual failed: (\"denied\") is not equal to (\"granted\")"
+      }
+    }
+  }
+}

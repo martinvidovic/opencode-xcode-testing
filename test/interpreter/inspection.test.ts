@@ -1,0 +1,230 @@
+/**
+ * Failure caps, facet paging, and cursor semantics (#7, #8).
+ */
+
+import { describe, expect, test } from "bun:test"
+import { randomBytes } from "node:crypto"
+
+import type { InspectRunRequest } from "../../src/domain/inspection.ts"
+import { INSPECTION_PAGE_MAX } from "../../src/domain/limits.ts"
+import { CURSOR_ORDERING_VERSION, decodeCursor, encodeCursor } from "../../src/interpreter/cursor.ts"
+import type { NormalizedIndex } from "../../src/interpreter/index-model.ts"
+import { inspectIndex } from "../../src/interpreter/paging.ts"
+import { FAILED_EXIT, interpretFixture } from "./harness.ts"
+
+const SECRET = Buffer.alloc(32, 7)
+
+async function manyFailures(): Promise<NormalizedIndex> {
+  const { index } = await interpretFixture("many-failures", { request: { execution: FAILED_EXIT } })
+  return index
+}
+
+function inspect(index: NormalizedIndex, request: Partial<InspectRunRequest>) {
+  return inspectIndex(
+    index,
+    { runId: index.runId, facet: "failures", ...request } as InspectRunRequest,
+    SECRET,
+  )
+}
+
+describe("summary caps", () => {
+  test("hold aggregate counts uncapped while the shown records are bounded", async () => {
+    const { summary } = await interpretFixture("many-failures", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(summary.tests.counts?.failed).toBe(25)
+    expect(summary.diagnostics.testFailureSection).toEqual({
+      total: 25,
+      shown: 20,
+      truncated: true,
+    })
+    expect(summary.diagnostics.testFailures).toHaveLength(20)
+    expect(summary.diagnostics.observedTestSection).toEqual({
+      total: 25,
+      shown: 20,
+      truncated: true,
+    })
+  })
+})
+
+describe("facet paging", () => {
+  test("walks the whole facet through cursors without repeating a record", async () => {
+    const index = await manyFailures()
+    const seen: string[] = []
+    let cursor: string | undefined
+
+    for (let page = 0; page < 10; page += 1) {
+      const response = inspect(index, { limit: 10, ...(cursor === undefined ? {} : { cursor }) })
+      expect(response.status).toBe("available")
+      if (response.status !== "available") break
+      seen.push(...response.data.records.map((record) => (record as { id: string }).id))
+      cursor = response.truncation.nextCursor
+      if (cursor === undefined) break
+    }
+
+    expect(seen).toHaveLength(25)
+    expect(new Set(seen).size).toBe(25)
+    expect(seen).toEqual(index.testFailures.map((record) => record.id))
+  })
+
+  test("reports hasMore and stops offering a cursor on the last page", async () => {
+    const index = await manyFailures()
+    const first = inspect(index, { limit: 20 })
+    expect(first.status === "available" && first.truncation.hasMore).toBe(true)
+
+    const cursor = first.status === "available" ? first.truncation.nextCursor : undefined
+    const last = inspect(index, { limit: 20, ...(cursor === undefined ? {} : { cursor }) })
+    expect(last.status === "available" && last.truncation.hasMore).toBe(false)
+    expect(last.status === "available" && last.truncation.nextCursor).toBeUndefined()
+  })
+
+  test("defaults to twenty records and refuses more than a hundred", async () => {
+    const index = await manyFailures()
+    const defaulted = inspect(index, {})
+    expect(defaulted.status === "available" && defaulted.data.records).toHaveLength(20)
+    expect(inspect(index, { limit: INSPECTION_PAGE_MAX + 1 })).toMatchObject({ status: "invalid" })
+    expect(inspect(index, { limit: 0 })).toMatchObject({ status: "invalid" })
+  })
+
+  test("answers an empty facet authoritatively when the evidence is complete", async () => {
+    const { index } = await interpretFixture("passed")
+    const response = inspect(index, { facet: "failures" })
+    expect(response).toMatchObject({ status: "available", completeness: "complete" })
+    expect(response.status === "available" && response.data.records).toEqual([])
+  })
+
+  test("reports an incomplete facet as incomplete, so an empty page proves nothing", async () => {
+    const { index } = await interpretFixture("missing-status", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(inspect(index, { facet: "tests" })).toMatchObject({ status: "incomplete" })
+  })
+
+  test("reports a facet that was never produced as unsupported", async () => {
+    const { index } = await interpretFixture("build-failed", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(inspect(index, { facet: "tests" })).toMatchObject({ status: "unsupported" })
+  })
+
+  test("never serves log content from the index", async () => {
+    const index = await manyFailures()
+    expect(inspect(index, { facet: "log" })).toMatchObject({ status: "unsupported", facet: "log" })
+  })
+})
+
+describe("focused records", () => {
+  test("resolve a diagnostic by id", async () => {
+    const index = await manyFailures()
+    const id = index.testFailures[3]?.id ?? ""
+    const response = inspect(index, { diagnosticId: id })
+    expect(response.status === "available" && response.data.records).toEqual([
+      index.testFailures[3],
+    ])
+  })
+
+  test("report notFound without revealing which run holds the id", async () => {
+    const index = await manyFailures()
+    expect(inspect(index, { diagnosticId: "nope" })).toEqual({
+      status: "notFound",
+      subject: "diagnostic",
+    })
+    expect(inspect(index, { facet: "tests", testId: "nope" })).toEqual({
+      status: "notFound",
+      subject: "test",
+    })
+  })
+
+  test("reject being combined with a cursor", async () => {
+    const index = await manyFailures()
+    const first = inspect(index, { limit: 10 })
+    const cursor = first.status === "available" ? (first.truncation.nextCursor ?? "") : ""
+    expect(inspect(index, { cursor, diagnosticId: "x" })).toMatchObject({ status: "invalid" })
+  })
+})
+
+describe("cursors", () => {
+  test("round-trip under the issuing secret", () => {
+    const payload = {
+      runId: "run-0000",
+      facet: "failures" as const,
+      orderingVersion: CURSOR_ORDERING_VERSION,
+      position: 40,
+    }
+    expect(decodeCursor(SECRET, encodeCursor(SECRET, payload))).toEqual({ ok: true, payload })
+  })
+
+  test("are deterministic, so recovery re-derives the same token", () => {
+    const payload = {
+      runId: "run-0000",
+      facet: "tests" as const,
+      orderingVersion: CURSOR_ORDERING_VERSION,
+      position: 20,
+    }
+    expect(encodeCursor(SECRET, payload)).toBe(encodeCursor(SECRET, payload))
+  })
+
+  test("disclose nothing about the run or the position", () => {
+    const token = encodeCursor(SECRET, {
+      runId: "run-0000",
+      facet: "failures",
+      orderingVersion: CURSOR_ORDERING_VERSION,
+      position: 40,
+    })
+    expect(token).not.toContain("run-0000")
+    expect(token).not.toContain("failures")
+  })
+
+  test("fail authentication under a different secret", () => {
+    const token = encodeCursor(SECRET, {
+      runId: "run-0000",
+      facet: "failures",
+      orderingVersion: CURSOR_ORDERING_VERSION,
+      position: 1,
+    })
+    expect(decodeCursor(randomBytes(32), token)).toEqual({ ok: false, reason: "invalid" })
+  })
+
+  test("are invalid against another run or another facet", async () => {
+    const index = await manyFailures()
+    const otherRun = encodeCursor(SECRET, {
+      runId: "run-9999",
+      facet: "failures",
+      orderingVersion: CURSOR_ORDERING_VERSION,
+      position: 1,
+    })
+    const otherFacet = encodeCursor(SECRET, {
+      runId: index.runId,
+      facet: "tests",
+      orderingVersion: CURSOR_ORDERING_VERSION,
+      position: 1,
+    })
+    expect(inspect(index, { cursor: otherRun })).toMatchObject({ status: "invalid" })
+    expect(inspect(index, { cursor: otherFacet })).toMatchObject({ status: "invalid" })
+  })
+
+  test("are invalid under an unsupported ordering version", async () => {
+    const index = await manyFailures()
+    const stale = encodeCursor(SECRET, {
+      runId: index.runId,
+      facet: "failures",
+      orderingVersion: CURSOR_ORDERING_VERSION + 1,
+      position: 1,
+    })
+    expect(inspect(index, { cursor: stale })).toMatchObject({ status: "invalid" })
+  })
+
+  test("reject a garbage token rather than silently restarting the page", async () => {
+    const index = await manyFailures()
+    expect(inspect(index, { cursor: "not-a-cursor" })).toMatchObject({ status: "invalid" })
+  })
+})
+
+describe("an inspection for another run", () => {
+  test("is notFound, not an empty page", async () => {
+    const index = await manyFailures()
+    expect(
+      inspectIndex(index, { runId: "run-9999", facet: "failures" }, SECRET),
+    ).toEqual({ status: "notFound", subject: "run" })
+  })
+})

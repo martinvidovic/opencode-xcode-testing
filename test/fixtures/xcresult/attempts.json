@@ -1,0 +1,105 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.0",
+    "xcodeBuild": "17A400",
+    "scenario": "attempts",
+    "observedShape": "Test Case Run and Repetition descendants beneath one occurrence"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasTestResults": true,
+      "hasBuildResults": true,
+      "hasLogs": true
+    },
+    "get build-results": {
+      "status": "succeeded",
+      "errorCount": 0,
+      "errors": []
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "C1",
+          "configurationName": "Configuration 1"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "Simulator",
+          "platform": "iOS Simulator",
+          "osVersion": "26.0"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "LoginTests",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testFlakyLogin()",
+                      "nodeIdentifier": "LoginTests/testFlakyLogin()",
+                      "result": "Passed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Test Case Run",
+                          "name": "Attempt 1",
+                          "result": "Failed",
+                          "duration": "0.20s",
+                          "children": [
+                            {
+                              "nodeType": "Failure Message",
+                              "name": "XCTAssertTrue failed",
+                              "children": [
+                                {
+                                  "nodeType": "Source Code Reference",
+                                  "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=11&StartingColumnNumber=9"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "nodeType": "Repetition",
+                          "name": "Attempt 2",
+                          "result": "Passed",
+                          "duration": "0.10s"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Passed",
+      "totalTestCount": 1,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "expectedFailures": 0
+    }
+  }
+}

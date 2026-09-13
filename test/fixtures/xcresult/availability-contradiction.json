@@ -1,0 +1,36 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.0",
+    "xcodeBuild": "17A400",
+    "scenario": "availability-contradiction",
+    "observedShape": "hasTestResults false while the summary reports tests"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasTestResults": false,
+      "hasBuildResults": true,
+      "hasLogs": true
+    },
+    "get build-results": {
+      "status": "succeeded",
+      "errorCount": 0,
+      "errors": []
+    },
+    "get test-results summary": {
+      "result": "Passed",
+      "totalTestCount": 2,
+      "passedTests": 2,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "expectedFailures": 0
+    }
+  }
+}

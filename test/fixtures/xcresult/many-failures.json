@@ -1,0 +1,549 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.0",
+    "xcodeBuild": "17A400",
+    "scenario": "many-failures",
+    "observedShape": "canonical",
+    "note": "exercises the summary caps and cursor paging"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasTestResults": true,
+      "hasBuildResults": true,
+      "hasLogs": true
+    },
+    "get build-results": {
+      "status": "succeeded",
+      "errorCount": 0,
+      "errors": []
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "C1",
+          "configurationName": "Configuration 1"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "Simulator",
+          "platform": "iOS Simulator",
+          "osVersion": "26.0"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "LoginTests",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase00()",
+                      "nodeIdentifier": "LoginTests/testCase00()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 0",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=100&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase01()",
+                      "nodeIdentifier": "LoginTests/testCase01()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 1",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=101&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase02()",
+                      "nodeIdentifier": "LoginTests/testCase02()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 2",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=102&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase03()",
+                      "nodeIdentifier": "LoginTests/testCase03()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 3",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=103&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase04()",
+                      "nodeIdentifier": "LoginTests/testCase04()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 4",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=104&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase05()",
+                      "nodeIdentifier": "LoginTests/testCase05()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 5",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=105&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase06()",
+                      "nodeIdentifier": "LoginTests/testCase06()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 6",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=106&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase07()",
+                      "nodeIdentifier": "LoginTests/testCase07()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 7",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=107&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase08()",
+                      "nodeIdentifier": "LoginTests/testCase08()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 8",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=108&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase09()",
+                      "nodeIdentifier": "LoginTests/testCase09()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 9",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=109&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase10()",
+                      "nodeIdentifier": "LoginTests/testCase10()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 10",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=110&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase11()",
+                      "nodeIdentifier": "LoginTests/testCase11()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 11",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=111&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase12()",
+                      "nodeIdentifier": "LoginTests/testCase12()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 12",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=112&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase13()",
+                      "nodeIdentifier": "LoginTests/testCase13()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 13",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=113&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase14()",
+                      "nodeIdentifier": "LoginTests/testCase14()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 14",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=114&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase15()",
+                      "nodeIdentifier": "LoginTests/testCase15()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 15",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=115&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase16()",
+                      "nodeIdentifier": "LoginTests/testCase16()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 16",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=116&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase17()",
+                      "nodeIdentifier": "LoginTests/testCase17()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 17",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=117&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase18()",
+                      "nodeIdentifier": "LoginTests/testCase18()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 18",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=118&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase19()",
+                      "nodeIdentifier": "LoginTests/testCase19()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 19",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=119&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase20()",
+                      "nodeIdentifier": "LoginTests/testCase20()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 20",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=120&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase21()",
+                      "nodeIdentifier": "LoginTests/testCase21()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 21",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=121&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase22()",
+                      "nodeIdentifier": "LoginTests/testCase22()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 22",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=122&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase23()",
+                      "nodeIdentifier": "LoginTests/testCase23()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 23",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=123&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testCase24()",
+                      "nodeIdentifier": "LoginTests/testCase24()",
+                      "result": "Failed",
+                      "duration": "0.12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed in case 24",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=124&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Failed",
+      "totalTestCount": 25,
+      "passedTests": 0,
+      "failedTests": 25,
+      "skippedTests": 0,
+      "expectedFailures": 0,
+      "testFailures": []
+    }
+  }
+}

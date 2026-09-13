@@ -93,6 +93,19 @@ export type TestRunTiming = {
   totalDurationMs: number
 }
 
+/**
+ * Compact, non-path provenance for the evidence behind a result (#8).
+ * Developer-directory paths, executable paths and binary digests stay private.
+ */
+export type ResultProvenance = {
+  xcodeVersion: string
+  xcodeBuild: string
+  xcresulttoolVersion: string
+  /** The structured schema version explicitly requested, not the tool default. */
+  requestedSchemaVersion: string
+  interpreterDecoderVersion: number
+}
+
 /** Facts every admitted Test Run reports, whatever its outcome. */
 export type TestRunEnvelope = {
   schemaVersion: SchemaVersion
@@ -106,6 +119,8 @@ export type TestRunEnvelope = {
   build: BuildEvidence
   tests: TestEvidence
   inspection: InspectionAvailability
+  /** Absent when interpretation never reached a toolchain it could record. */
+  provenance?: ResultProvenance
 }
 
 /** Diagnostics carried in the compact summary, each a capped section. */
