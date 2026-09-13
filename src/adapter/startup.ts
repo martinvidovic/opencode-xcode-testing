@@ -37,7 +37,12 @@ export type StartupPorts = {
   markerExists(): boolean
   /** Files a static import graph cannot protect: entrypoint and sidecars. */
   requiredFiles(): string[]
-  fileExists(path: string): boolean
+  /**
+   * True only for a readable **regular file**. A directory or a dangling
+   * symlink where a source file should be is a broken checkout wearing the
+   * shape of a working one.
+   */
+  regularFileExists(path: string): boolean
   probeRuntime(): Promise<unknown>
   /** Bounded read of `/global/health`; failure degrades to `unknown`. */
   readHostVersion(): Promise<string>
@@ -64,26 +69,14 @@ export type StartupOutcome =
     }
 
 export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
-  // Gate one. "This is not an Xcode project" is a normal state, not a
-  // diagnostic, so an unmarked root registers nothing and says nothing.
-  if (!ports.markerExists()) return { status: "disabled" }
-
-  // Gate two. Missing shipped files mean a partial checkout; registering tools
-  // that cannot work would surface as a confusing failure at first run instead.
-  const missing = ports.requiredFiles().filter((path) => !ports.fileExists(path))
-  if (missing.length > 0) {
-    return {
-      status: "structuralFailure",
-      missing,
-      diagnostic:
-        "the xcode-test plugin checkout is incomplete. Expected the supervisor entrypoint under src/runner/ and the tool description sidecars under src/adapter/descriptions/. Re-clone or update the checkout.",
-    }
-  }
-
   const deadline = ports.now() + (ports.deadlineMs ?? STARTUP_DEADLINE_MS)
   const incomplete: string[] = []
 
-  const bounded = async <T>(name: string, budgetMs: number, work: Promise<T>): Promise<T | undefined> => {
+  const bounded = async <T>(
+    name: string,
+    budgetMs: number,
+    work: Promise<T>,
+  ): Promise<T | undefined> => {
     const remaining = Math.min(budgetMs, deadline - ports.now())
     if (remaining <= 0) {
       incomplete.push(name)
@@ -98,6 +91,38 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     return outcome as T
   }
 
+  // Gate one. "This is not an Xcode project" is a normal state, not a
+  // diagnostic, so an unmarked root registers nothing and says nothing.
+  const marked = ports.markerExists()
+
+  // Gate two, evaluated only behind gate one. Missing shipped files mean a
+  // partial checkout; registering tools that cannot work would surface as a
+  // confusing failure at first run instead.
+  const missing = marked ? ports.requiredFiles().filter((path) => !ports.regularFileExists(path)) : []
+
+  // Both gates are sub-millisecond and run first, in order, because only they
+  // can short-circuit what follows. Housekeeping starts after them but is
+  // deliberately **not** gated on enablement: it exists for roots whose
+  // repositories moved, disappeared, or were de-marked, and gating it on the
+  // marker would mean exactly those roots are never reclaimed.
+  const housekeeping = bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, ports.runHousekeeping())
+
+  if (!marked) {
+    await housekeeping
+    return { status: "disabled" }
+  }
+
+  if (missing.length > 0) {
+    // Nothing is left running behind the return.
+    await housekeeping
+    return {
+      status: "structuralFailure",
+      missing,
+      diagnostic:
+        "the xcode-test plugin checkout is incomplete. Expected the supervisor entrypoint under src/runner/ and the tool description sidecars under src/adapter/descriptions/. Re-clone or update the checkout.",
+    }
+  }
+
   // Independent work: a subprocess probe, an HTTP read, and two lock-guarded
   // filesystem passes. Running them concurrently is what keeps the expected
   // cost near the longest one rather than the sum.
@@ -105,7 +130,7 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     bounded("runtimeProbe", RUNTIME_PROBE_BUDGET_MS, ports.probeRuntime()),
     bounded("hostVersion", HOST_VERSION_BUDGET_MS, ports.readHostVersion()),
     bounded("reconciliation", RECONCILIATION_BUDGET_MS, ports.reconcileRoot()),
-    bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, ports.runHousekeeping()),
+    housekeeping,
   ])
 
   const version = hostVersion ?? "unknown"

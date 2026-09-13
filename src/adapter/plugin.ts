@@ -12,23 +12,34 @@
  * Xcode project" is a normal state, not a diagnostic.
  */
 
-import { existsSync, statfsSync } from "node:fs"
+import { lstatSync, statfsSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { tool, type Plugin, type PluginModule, type ToolDefinition } from "@opencode-ai/plugin"
 
-import { prepareStorage, storageFor } from "../runner/paths.ts"
+import {
+  prepareStorage,
+  storageFor,
+  storageForRootKey,
+  type Storage,
+} from "../runner/paths.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
 import { noteRootSeen, runHousekeeping } from "../runner/housekeeping.ts"
 import { reconcileRoot } from "../runner/recovery.ts"
 import { systemProbe } from "../runner/identity.ts"
 import { resolveToolchain } from "../runner/toolchain.ts"
-import { resolveBudget } from "./budget.ts"
+import type { ConfigurationOutcome } from "../runner/resolution.ts"
+import { readOutputLimits, resolveBudget } from "./budget.ts"
 import { descriptionFor, DESCRIPTION_FILES } from "./descriptions.ts"
-import { resolveRuntime, type RuntimeResolution } from "./runtime.ts"
-import { createTestToolService } from "./service.ts"
+import {
+  cachedRuntime,
+  rememberRuntime,
+  resolveRuntime,
+  type RuntimeResolution,
+} from "./runtime.ts"
+import { createTestToolService, unavailableService } from "./service.ts"
 import { inspectArguments, recoverArguments, testArguments, type ZodNamespace } from "./schema.ts"
 import { hostVersionDiagnostic, runStartup, HOST_VERSION_BUDGET_MS } from "./startup.ts"
 import { executeInspect, executeRecover, executeTest, type ToolDeps } from "./tools.ts"
@@ -56,18 +67,35 @@ export const server: Plugin = async (input) => {
   const outcome = await runStartup({
     markerExists: () => enablementMarkerExists(trustedRoot),
     requiredFiles: () => [SUPERVISOR_ENTRYPOINT, ...DESCRIPTION_FILES],
-    fileExists: (path) => existsSync(path),
+    regularFileExists: (path) => isRegularFile(path),
 
     async probeRuntime() {
-      runtime = resolveRuntime({
+      const configured =
+        configuration.status === "loaded" ? configuration.configuration.runtime : undefined
+
+      // The cache answers only where discovery would have run anyway. A
+      // configured runtime is probed every time: ADR 0002 makes a set-but-
+      // unusable value a hard error, and a cache answering on its behalf would
+      // turn that into a silent fallback to some other binary.
+      const cached = configured === undefined ? cachedRuntime(storage) : undefined
+      if (cached !== undefined) {
+        runtime = cached
+        return runtime
+      }
+
+      const pathCandidate = await bunOnPath()
+      runtime = await resolveRuntime({
         trustedRoot,
-        ...(configuration.status === "loaded" && configuration.configuration.runtime !== undefined
-          ? { configured: configuration.configuration.runtime }
-          : {}),
+        ...(configured === undefined ? {} : { configured }),
         hostExecutable: process.execPath,
-        ...(bunOnPath() === undefined ? {} : { pathCandidate: bunOnPath() as string }),
+        ...(pathCandidate === undefined ? {} : { pathCandidate }),
         probe: probeRuntimeCandidate,
       })
+      // Only a discovered runtime is worth remembering; a configured one is
+      // deliberately re-probed.
+      if (configured === undefined && runtime.status === "resolved") {
+        rememberRuntime(storage, runtime)
+      }
       return runtime
     },
 
@@ -87,7 +115,7 @@ export const server: Plugin = async (input) => {
       runHousekeeping({
         storage,
         now: () => Date.now(),
-        storageForRootKey: (rootKey) => ({ ...storage, rootKey }),
+        storageForRootKey: (rootKey) => storageForRootKey(homeDir, rootKey),
       })
     },
 
@@ -101,38 +129,29 @@ export const server: Plugin = async (input) => {
     return {}
   }
 
+  // Read once: the host's configuration is not hot-reloaded, so re-reading
+  // per call could only invent a disagreement between two calls in one session.
+  const hostOutputLimits = await readOutputLimits(input.client)
+
   const skew = hostVersionDiagnostic(outcome.hostVersion)
   if (skew !== undefined) process.stderr.write(`xcode-test: ${skew}\n`)
 
-  const toolchain = resolveToolchain()
-  if (toolchain.status !== "resolved" || runtime?.status !== "resolved") {
-    // Registering tools that provably cannot run is worse than registering none.
-    process.stderr.write(
-      `xcode-test: ${toolchain.status !== "resolved" ? toolchain.message : (runtime as { message: string }).message}\n`,
-    )
-    return {}
-  }
-
-  const service = createTestToolService({
+  const service = serviceFor({
     storage,
     trustedRoot,
     homeDir,
-    ...(configuration.status === "loaded" ? { configuration: configuration.configuration } : {}),
-    toolchain: toolchain.identity,
-    runtimePath: runtime.path,
-    supervisorEntrypoint: SUPERVISOR_ENTRYPOINT,
-    now: () => Number(process.hrtime.bigint() / 1_000_000n),
-    timestamp: () => new Date().toISOString(),
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    freeBytes: freeBytesOn(storage.toolRoot),
-    cursorSecret: loadCursorSecret(storage),
+    configuration,
+    toolchain: resolveToolchain(),
+    runtime,
+    hostVersion: outcome.hostVersion,
   })
+
 
   // Effective limits are read once: the host's configuration is not
   // hot-reloaded, so re-reading per call could only invent a disagreement.
   const deps: ToolDeps = {
     service,
-    budget: resolveBudget(undefined),
+    budget: resolveBudget(hostOutputLimits),
     now: () => Number(process.hrtime.bigint() / 1_000_000n),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     timestamp: () => new Date().toISOString(),
@@ -208,3 +227,75 @@ function freeBytesOn(path: string): () => number {
 
 const plugin: PluginModule = { id: "xcode-test", server }
 export default plugin
+
+/**
+ * The runtime failure, naming the candidates behind it.
+ *
+ * `resolveRuntime` records every path it tried precisely so the reader does
+ * not have to guess which Bun the tool was looking at; dropping that list
+ * leaves "no usable Bun runtime was found" unanswerable.
+ */
+function runtimeDiagnostic(failure: Extract<RuntimeResolution, { status: "failed" }>): string {
+  if (failure.probed.length === 0) return failure.message
+  return `${failure.message} Probed: ${failure.probed.join(", ")}.`
+}
+
+/**
+ * A readable regular file, not merely something at that path. A directory or a
+ * dangling symlink where the supervisor entrypoint should be is a broken
+ * checkout, and registering tools against it would fail confusingly later.
+ */
+function isRegularFile(path: string): boolean {
+  try {
+    return lstatSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The service, or one that explains why there isn't one.
+ *
+ * Written as guard clauses so the discriminated unions narrow on their own —
+ * a ternary over three outcomes throws away the narrowing and pays for it in
+ * assertions.
+ */
+function serviceFor(input: {
+  storage: Storage
+  trustedRoot: string
+  homeDir: string
+  configuration: ConfigurationOutcome
+  toolchain: ReturnType<typeof resolveToolchain>
+  runtime: RuntimeResolution | undefined
+  hostVersion: string
+}) {
+  const refuse = (message: string) => {
+    process.stderr.write(`xcode-test: ${message}\n`)
+    return unavailableService(message)
+  }
+
+  if (input.toolchain.status !== "resolved") return refuse(input.toolchain.message)
+  if (input.runtime === undefined) {
+    return refuse("the runtime could not be probed within the startup deadline")
+  }
+  if (input.runtime.status !== "resolved") return refuse(runtimeDiagnostic(input.runtime))
+
+  return createTestToolService({
+    storage: input.storage,
+    trustedRoot: input.trustedRoot,
+    homeDir: input.homeDir,
+    configuration: input.configuration,
+    toolchain: input.toolchain.identity,
+    runtime: {
+      path: input.runtime.path,
+      ...(input.runtime.version === undefined ? {} : { version: input.runtime.version }),
+      hostVersion: input.hostVersion,
+    },
+    supervisorEntrypoint: SUPERVISOR_ENTRYPOINT,
+    now: () => Number(process.hrtime.bigint() / 1_000_000n),
+    timestamp: () => new Date().toISOString(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    freeBytes: freeBytesOn(input.storage.toolRoot),
+    cursorSecret: loadCursorSecret(input.storage),
+  })
+}

@@ -37,10 +37,23 @@ export type ResolutionOutcome =
   | { status: "resolved"; resolved: ResolvedTestRun; containerAbsolutePath: string }
   | { status: "rejected"; result: RequestRejected }
 
+/**
+ * What the project configuration turned out to be.
+ *
+ * `invalid` is carried through rather than collapsed to `absent`, because a
+ * present configuration that cannot be understood must never fall through to
+ * discovery: the run would proceed against defaults the project explicitly did
+ * not ask for, and nothing would say so.
+ */
+export type ConfigurationOutcome =
+  | { status: "absent" }
+  | { status: "loaded"; configuration: ProjectConfiguration }
+  | { status: "invalid"; message: string }
+
 export type ResolutionEnvironment = {
   /** Canonical, adapter-supplied, and never derived from an argument. */
   trustedRoot: string
-  configuration?: ProjectConfiguration
+  configuration?: ConfigurationOutcome
   discover?: {
     container(trustedRoot: string): DiscoveryOutcome<XcodeContainer>
     scheme(trustedRoot: string, container: XcodeContainer): DiscoveryOutcome<string>
@@ -52,26 +65,43 @@ export function resolveTestRun(
   environment: ResolutionEnvironment,
 ): ResolutionOutcome {
   const errors: RequestError[] = []
+
+  const settings = configurationOf(environment)
+  if (settings.status === "invalid") {
+    // Nothing else is worth evaluating: every other setting might have come
+    // from the file we just refused to read.
+    return {
+      status: "rejected",
+      result: reject([
+        {
+          field: "configuration",
+          code: "invalid",
+          message: settings.message,
+        },
+      ]),
+    }
+  }
   const discover = environment.discover ?? {
     container: discoverContainer,
     scheme: discoverScheme,
   }
+  const configuration = settings.status === "loaded" ? settings.configuration : undefined
 
   validateScope(request.requestedScope, errors)
 
-  const container = resolveContainer(request, environment, discover, errors)
+  const container = resolveContainer(request, environment, configuration, discover, errors)
   const scheme =
     container === undefined
       ? undefined
-      : resolveScheme(request, environment, discover, container.value, errors)
-  const destination = resolveDestination(request, environment, errors)
-  const timeoutSeconds = resolveTimeout(request, environment, errors)
+      : resolveScheme(request, environment, configuration, discover, container.value, errors)
+  const destination = resolveDestination(request, configuration, errors)
+  const timeoutSeconds = resolveTimeout(request, configuration, errors)
 
   if (errors.length > 0 || container === undefined || scheme === undefined || destination === undefined) {
     return { status: "rejected", result: reject(errors) }
   }
 
-  const derivedDataMode = environment.configuration?.derivedData?.mode
+  const derivedDataMode = configuration?.derivedData?.mode
   return {
     status: "resolved",
     containerAbsolutePath: join(environment.trustedRoot, container.value.path),
@@ -124,10 +154,11 @@ function validateComponent(value: string, field: string, errors: RequestError[])
 function resolveContainer(
   request: TestRunRequest,
   environment: ResolutionEnvironment,
+  configuration: ProjectConfiguration | undefined,
   discover: NonNullable<ResolutionEnvironment["discover"]>,
   errors: RequestError[],
 ): ResolvedTestRun["xcodeContainer"] | undefined {
-  const requested = request.xcodeContainer ?? environment.configuration?.xcodeContainer
+  const requested = request.xcodeContainer ?? configuration?.xcodeContainer
   const provenance = request.xcodeContainer !== undefined ? "request" : "configuration"
 
   if (requested !== undefined) {
@@ -203,11 +234,12 @@ export function validateContainerPath(
 function resolveScheme(
   request: TestRunRequest,
   environment: ResolutionEnvironment,
+  configuration: ProjectConfiguration | undefined,
   discover: NonNullable<ResolutionEnvironment["discover"]>,
   container: XcodeContainer,
   errors: RequestError[],
 ): ResolvedTestRun["scheme"] | undefined {
-  const requested = request.scheme ?? environment.configuration?.scheme
+  const requested = request.scheme ?? configuration?.scheme
   if (requested !== undefined) {
     if (!validateString(requested, "scheme", errors)) return undefined
     return {
@@ -236,10 +268,10 @@ function resolveScheme(
 
 function resolveDestination(
   request: TestRunRequest,
-  environment: ResolutionEnvironment,
+  configuration: ProjectConfiguration | undefined,
   errors: RequestError[],
 ): ResolvedTestRun["destination"] | undefined {
-  const requested = request.destination ?? environment.configuration?.destination
+  const requested = request.destination ?? configuration?.destination
   if (requested === undefined) {
     // There is no safe default: guessing a destination runs the tests somewhere
     // the caller did not ask for, which is worse than refusing.
@@ -290,10 +322,10 @@ function trimDestination(destination: Destination): Destination {
 
 function resolveTimeout(
   request: TestRunRequest,
-  environment: ResolutionEnvironment,
+  configuration: ProjectConfiguration | undefined,
   errors: RequestError[],
 ): ResolvedTestRun["timeoutSeconds"] {
-  const requested = request.timeoutSeconds ?? environment.configuration?.timeoutSeconds
+  const requested = request.timeoutSeconds ?? configuration?.timeoutSeconds
   if (requested === undefined) {
     return { value: DEFAULT_TIMEOUT_SECONDS, provenance: "default" }
   }
@@ -368,4 +400,8 @@ export function reject(errors: RequestError[]): RequestRejected {
     errors: ordered.slice(0, REQUEST_ERROR_CAP),
     errorSection: section,
   }
+}
+
+function configurationOf(environment: ResolutionEnvironment): ConfigurationOutcome {
+  return environment.configuration ?? { status: "absent" }
 }

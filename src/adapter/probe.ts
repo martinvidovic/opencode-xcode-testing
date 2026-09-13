@@ -8,7 +8,7 @@
  * all. Only running one distinguishes them.
  */
 
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -18,20 +18,19 @@ const PROBE_SOURCE = 'const ok: string = "xcode-test-probe"\nconsole.log(ok)\n'
 const PROBE_MARKER = "xcode-test-probe"
 const PROBE_TIMEOUT_MS = 2_000
 
-export function probeRuntimeCandidate(candidate: string): { usable: boolean; version?: string } {
+export async function probeRuntimeCandidate(
+  candidate: string,
+): Promise<{ usable: boolean; version?: string }> {
   const directory = mkdtempSync(join(tmpdir(), "xcode-test-probe-"))
   const script = join(directory, "probe.ts")
 
   try {
     writeFileSync(script, PROBE_SOURCE)
-    const result = spawnSync(candidate, [script], {
-      encoding: "utf8",
-      timeout: PROBE_TIMEOUT_MS,
-    })
-    if (result.status !== 0 || !(result.stdout ?? "").includes(PROBE_MARKER)) {
-      return { usable: false }
-    }
-    return { usable: true, ...versionOf(candidate) }
+    const output = await run(candidate, [script])
+    if (!output.ok || !output.stdout.includes(PROBE_MARKER)) return { usable: false }
+
+    const version = (await run(candidate, ["--version"])).stdout.trim()
+    return { usable: true, ...(version.length === 0 ? {} : { version }) }
   } catch {
     return { usable: false }
   } finally {
@@ -39,17 +38,40 @@ export function probeRuntimeCandidate(candidate: string): { usable: boolean; ver
   }
 }
 
-function versionOf(candidate: string): { version?: string } {
-  const result = spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: PROBE_TIMEOUT_MS })
-  const version = (result.stdout ?? "").trim()
-  return version.length === 0 ? {} : { version }
+/** Bounded, and asynchronous so a probe cannot block the startup deadline. */
+function run(command: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] })
+    let stdout = ""
+    let settled = false
+
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ ok, stdout })
+    }
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      finish(false)
+    }, PROBE_TIMEOUT_MS)
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8")
+    })
+    child.on("error", () => finish(false))
+    child.on("close", (status) => finish(status === 0))
+  })
 }
 
-/** Where `bun` is on `PATH`, or `undefined` when it is not there at all. */
-export function bunOnPath(): string | undefined {
-  const result = spawnSync("/usr/bin/env", ["bun", "--version"], {
-    encoding: "utf8",
-    timeout: PROBE_TIMEOUT_MS,
-  })
-  return result.status === 0 ? "bun" : undefined
+/**
+ * Where `bun` is on `PATH`, or `undefined` when it is not there at all.
+ *
+ * Asynchronous for the same reason the probe is: startup runs it under a
+ * shared deadline, and a blocking call cannot be bounded by a timer that
+ * cannot fire until the call has already returned.
+ */
+export async function bunOnPath(): Promise<string | undefined> {
+  return (await run("/usr/bin/env", ["bun", "--version"])).ok ? "bun" : undefined
 }

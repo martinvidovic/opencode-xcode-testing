@@ -18,7 +18,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
-import type { TestRunSummary, TestToolResult } from "../domain/result.ts"
+import type { ResultProvenance, TestRunSummary, TestToolResult } from "../domain/result.ts"
 import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
 import { normalizeRequestedScope, requestedScopeDigest } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
@@ -46,7 +46,7 @@ import {
   type Storage,
 } from "../runner/paths.ts"
 import { reclaimIsolatedDerivedData, reconcileRoot } from "../runner/recovery.ts"
-import { resolveTestRun } from "../runner/resolution.ts"
+import { resolveTestRun, type ConfigurationOutcome } from "../runner/resolution.ts"
 import {
   advance,
   readRunRecord,
@@ -67,10 +67,9 @@ export type ServiceEnvironment = {
   storage: Storage
   trustedRoot: string
   homeDir: string
-  configuration?: ProjectConfiguration
+  configuration?: ConfigurationOutcome
   toolchain: ToolchainIdentity
   /** The verified Bun that can execute the supervisor entrypoint. */
-  runtimePath: string
   supervisorEntrypoint: string
   now(): number
   timestamp(): string
@@ -90,6 +89,21 @@ export type ServiceEnvironment = {
    * which does not begin until launch is authorized.
    */
   handshakeDeadlineMs?: number
+  /** How this run was made possible. */
+  runtime: RuntimeFacts
+}
+
+/**
+ * The runtime that executed the supervisor and the host that asked for it.
+ *
+ * The path is machine-local and stays in durable metadata; the versions are
+ * safe to surface, because a model can act on *which* Bun ran the supervisor
+ * and can do nothing at all with where it lives.
+ */
+export type RuntimeFacts = {
+  path: string
+  version?: string
+  hostVersion?: string
 }
 
 function readerFor(environment: ServiceEnvironment, bundlePath: string): XcresultTool {
@@ -97,6 +111,34 @@ function readerFor(environment: ServiceEnvironment, bundlePath: string): Xcresul
     environment.xcresultToolFor?.(bundlePath) ??
     createXcresultTool({ identity: environment.toolchain, bundlePath })
   )
+}
+
+/**
+ * A Test Tool family that cannot run anything, and says so.
+ *
+ * Registering nothing would be worse: the tools simply would not appear, and
+ * "no Xcode tools in this session" is indistinguishable from a project that
+ * never opted in. A family that registers and returns the diagnostic naming
+ * what is missing is the difference between a puzzle and an instruction.
+ */
+export function unavailableService(message: string): TestToolService {
+  const refuse = (): TestToolResult => ({
+    schemaVersion: SCHEMA_VERSION,
+    outcome: "infrastructureFailed",
+    phase: "resolving",
+    reason: "runnerFailure",
+    message,
+  })
+
+  return {
+    start() {
+      // Admission never happens, and never throwing for a domain outcome means
+      // it does not reject either — the result carries the whole answer.
+      return { admitted: new Promise<never>(() => {}), result: Promise.resolve(refuse()) }
+    },
+    inspect: () => Promise.resolve({ status: "invalid", message }),
+    recover: () => Promise.resolve({ status: "failed", message }),
+  }
 }
 
 export function createTestToolService(environment: ServiceEnvironment): TestToolService {
@@ -173,6 +215,13 @@ function startRun(
           resolved: resolution.resolved,
           requestedScope: request.requestedScope,
           owner: selfIdentity(),
+          runtimePath: environment.runtime.path,
+          ...(environment.runtime.version === undefined
+            ? {}
+            : { runtimeVersion: environment.runtime.version }),
+          ...(environment.runtime.hostVersion === undefined
+            ? {}
+            : { hostVersion: environment.runtime.hostVersion }),
         })
         return true
       },
@@ -276,7 +325,10 @@ async function superviseAndInterpret(
   })
 
   if (!supervision.ok) {
-    const summary = runnerFailureSummary(environment, input, supervision.message, supervision.phase)
+    const summary = withRuntimeProvenance(
+      environment,
+      runnerFailureSummary(environment, input, supervision.message, supervision.phase),
+    )
     publishTerminal(environment, input.record, summary, emptyIndex(input.record.runId))
     return summary
   }
@@ -328,8 +380,43 @@ async function superviseAndInterpret(
     ...(input.cancellation === undefined ? {} : { signal: input.cancellation }),
   })
 
-  publishTerminal(environment, record, summary, index)
-  return summary
+  const provenanced = withRuntimeProvenance(environment, summary)
+  publishTerminal(environment, record, provenanced, index)
+  return provenanced
+}
+
+/**
+ * Add the runtime and host versions to a summary's provenance.
+ *
+ * The interpreter cannot know them — it is host-agnostic by contract, and
+ * these are facts about the process that ran the tests rather than about the
+ * Result Bundle. Paths are deliberately absent: only versions are safe to put
+ * in front of a model.
+ */
+function withRuntimeProvenance<T extends { provenance?: ResultProvenance }>(
+  environment: ServiceEnvironment,
+  summary: T,
+): T {
+  return {
+    ...summary,
+    provenance: {
+      // A run that never reached a Result Bundle still knows which toolchain
+      // and runtime it was asked from, and saying so is how the report
+      // explains itself. An interpreted summary overwrites all of it.
+      xcodeVersion: environment.toolchain.xcodeVersion,
+      xcodeBuild: environment.toolchain.xcodeBuild,
+      xcresulttoolVersion: environment.toolchain.xcresulttoolVersion,
+      requestedSchemaVersion: REQUESTED_SCHEMA_VERSION,
+      interpreterDecoderVersion: DECODER_VERSION,
+      ...summary.provenance,
+      ...(environment.runtime.version === undefined
+        ? {}
+        : { runtimeVersion: environment.runtime.version }),
+      ...(environment.runtime.hostVersion === undefined
+        ? {}
+        : { hostVersion: environment.runtime.hostVersion }),
+    },
+  }
 }
 
 /**
@@ -648,7 +735,7 @@ function runSupervisor(
   },
 ): Promise<SupervisionOutcome> {
   return new Promise((resolve) => {
-    const child = spawn(environment.runtimePath, [environment.supervisorEntrypoint], {
+    const child = spawn(environment.runtime.path, [environment.supervisorEntrypoint], {
       cwd: environment.trustedRoot,
       env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
       // Detached so it outlives this call, with a private inherited control

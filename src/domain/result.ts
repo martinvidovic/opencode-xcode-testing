@@ -68,12 +68,18 @@ export type RequestCancelled = {
   queueDurationMs?: number
 }
 
-/** Resolution, discovery, or admission failed operationally. */
+/**
+ * Resolution, discovery, or admission failed operationally.
+ *
+ * `runnerFailure` appears here as well as on an admitted run: a runtime that
+ * cannot execute the supervisor is a runner failure discovered before any Test
+ * Run exists, and ADR 0002 mandates that exact diagnostic for it.
+ */
 export type RequestResolutionFailed = {
   schemaVersion: SchemaVersion
   outcome: "infrastructureFailed"
   phase: ResolutionPhase
-  reason: ResolutionFailureReason | QueuedFailureReason
+  reason: ResolutionFailureReason | QueuedFailureReason | "runnerFailure"
   message: string
   queuedAt?: string
   queueDurationMs?: number
@@ -105,6 +111,13 @@ export type ResultProvenance = {
   /** The structured schema version explicitly requested, not the tool default. */
   requestedSchemaVersion: string
   interpreterDecoderVersion: number
+  /**
+   * The runtime that executed the supervisor, by version only. The resolved
+   * path is machine-local and stays in durable run metadata, never here.
+   */
+  runtimeVersion?: string
+  /** The OpenCode version observed at startup, or `unknown`. */
+  hostVersion?: string
 }
 
 /** Facts every admitted Test Run reports, whatever its outcome. */

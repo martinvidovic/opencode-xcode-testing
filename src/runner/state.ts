@@ -82,6 +82,14 @@ export type RunRecord = {
   cancelledDuringInterpretation?: boolean
   derivedDataMode?: "shared" | "isolated"
   /**
+   * The runtime that ran this run's supervisor, and the host that asked for
+   * it. Recorded durably so a report can name them after the fact; the path is
+   * machine-local and never reaches a model-facing result.
+   */
+  runtimePath?: string
+  runtimeVersion?: string
+  hostVersion?: string
+  /**
    * The Result Bundle digest recorded at stabilization. A later read compares
    * against it to say whether it is looking at the same bytes.
    */
