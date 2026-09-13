@@ -388,8 +388,8 @@ Both of ADR 0001's open deferrals are closed here.
 
 ## Established at implementation time
 
-Three facts the adapter-inclusive gate (issue #14) settled, each of which the ADR had either
-assumed or left open.
+Facts later work settled, each of which the ADR had either assumed or left open. The first three
+come from the adapter-inclusive gate (issue #14).
 
 1. **A source-loaded plugin must be able to resolve `@opencode-ai/plugin` from its own checkout.**
    The ADR expected an unresolved import to "fail loudly"; in practice the host swallows the
@@ -407,6 +407,15 @@ assumed or left open.
 
 3. **The stub-provider route for (b2) works**, so execution-level validation gates with the full
    scenario set rather than degrading to a checklist. See the deferral note above.
+
+4. **Shared DerivedData is keyed by canonical container, not by trusted root** (issue #26).
+   "Shared" was written as shared *across runs*, and one directory per trusted root reads like the
+   same thing right up to the point where a repository holds two Xcode containers — which is
+   ordinary. Both would then write one DerivedData and overwrite each other's build products, so
+   every run after a switch pays a full rebuild and reads a cache that describes something else. A
+   cache that makes builds slower and results less trustworthy is not a cache. The key is a hash of
+   the canonical container path, for the same reason the root key is a hash: storage must not spell
+   out where anyone's code lives. Isolated mode is unaffected — it was already per-run.
 
 ### Test seams in shipped interfaces
 

@@ -11,12 +11,12 @@
  */
 
 import { randomBytes } from "node:crypto"
-import { readFileSync } from "node:fs"
 
+import { isArrayOf, isRecord } from "../domain/json.ts"
 import type { QueuedFailureReason } from "../domain/outcome.ts"
 import { identityMatches, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
 import { withLock } from "./locks.ts"
-import { assertSafeFile, isRunId, newRunId, type Storage, writePrivateFileAtomic } from "./paths.ts"
+import { isRunId, newRunId, readPrivateFile, type Storage, writePrivateFileAtomic } from "./paths.ts"
 
 /** Reconciliation runs before enrollment, under its own fixed deadline. */
 export const RECONCILIATION_DEADLINE_MS = 60_000
@@ -65,8 +65,7 @@ export function readQueue(storage: Storage): QueueState {
     // Coordination state decides who may run and which slot is held, so it is
     // read under the same owner-only, no-symlink rule as every other piece of
     // tool-managed storage.
-    assertSafeFile(storage.queueFile)
-    const parsed: unknown = JSON.parse(readFileSync(storage.queueFile, "utf8"))
+    const parsed: unknown = JSON.parse(readPrivateFile(storage.queueFile))
     if (!isQueueState(parsed)) throw new Error("malformed")
     return parsed
   } catch (error) {
@@ -299,22 +298,21 @@ export function reap(environment: AdmissionEnvironment, state: QueueState): Queu
  * on anything it does not fully recognize.
  */
 function isQueueState(value: unknown): value is QueueState {
-  if (typeof value !== "object" || value === null) return false
+  if (!isRecord(value)) return false
   const state = value as Partial<QueueState>
 
   return (
     state.schemaVersion === 1 &&
     typeof state.nextSequence === "number" &&
     Number.isInteger(state.nextSequence) &&
-    Array.isArray(state.tickets) &&
-    state.tickets.every(isTicket) &&
+    isArrayOf(state.tickets, isTicket) &&
     (state.activeRunId === undefined || isRunId(state.activeRunId)) &&
     (state.quarantine === undefined || isQuarantine(state.quarantine))
   )
 }
 
 function isTicket(value: unknown): value is Ticket {
-  if (typeof value !== "object" || value === null) return false
+  if (!isRecord(value)) return false
   const ticket = value as Partial<Ticket>
   return (
     typeof ticket.sequence === "number" &&
@@ -328,7 +326,7 @@ function isTicket(value: unknown): value is Ticket {
 }
 
 function isQuarantine(value: unknown): value is Quarantine {
-  if (typeof value !== "object" || value === null) return false
+  if (!isRecord(value)) return false
   const quarantine = value as Partial<Quarantine>
   return (
     isRunId(quarantine.runId) &&
@@ -338,12 +336,12 @@ function isQuarantine(value: unknown): value is Quarantine {
 }
 
 function isProcessIdentity(value: unknown): value is ProcessIdentity {
-  if (typeof value !== "object" || value === null) return false
-  const identity = value as Partial<ProcessIdentity>
+  if (!isRecord(value)) return false
   return (
-    typeof identity.pid === "number" &&
-    Number.isInteger(identity.pid) &&
-    typeof identity.startedAt === "string"
+    typeof value.pid === "number" &&
+    Number.isInteger(value.pid) &&
+    value.pid > 0 &&
+    typeof value.startedAt === "string"
   )
 }
 

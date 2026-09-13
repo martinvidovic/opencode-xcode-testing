@@ -17,10 +17,12 @@
 import { createHash, randomBytes } from "node:crypto"
 import {
   constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
   closeSync,
+  readFileSync,
   renameSync,
   writeFileSync,
   fsyncSync,
@@ -62,6 +64,17 @@ export type Storage = {
  */
 export function rootKeyFor(canonicalTrustedRoot: string): string {
   return createHash("sha256").update(`trusted-root ${canonicalTrustedRoot}`, "utf8").digest("hex")
+}
+
+/**
+ * Exactly what `rootKeyFor` produces: a SHA-256 digest in lowercase hex.
+ *
+ * Checked wherever a key arrives from durable state rather than from the
+ * function above, because a key names a directory that housekeeping renames
+ * and recursively deletes.
+ */
+export function isRootKey(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
 }
 
 export function storageFor(homeDir: string, canonicalTrustedRoot: string): Storage {
@@ -146,12 +159,44 @@ export function assertSafeDirectory(path: string): void {
   assertOwnedPrivately(path, stats.uid, stats.mode)
 }
 
-/** The same guarantee for a file. */
+/** The same guarantee for a file, checked without opening it. */
 export function assertSafeFile(path: string): void {
   const stats = lstatSync(path)
   if (stats.isSymbolicLink()) throw new UnsafeArtifactError(path, "is a symbolic link")
   if (!stats.isFile()) throw new UnsafeArtifactError(path, "is not a regular file")
   assertOwnedPrivately(path, stats.uid, stats.mode)
+}
+
+/**
+ * Read a private file, checking the bytes that are actually returned.
+ *
+ * `assertSafeFile` followed by `readFileSync` names the path twice, and the
+ * two calls need not reach the same file: the check and the read are a
+ * time-of-check-to-time-of-use pair with a window between them. Opening once
+ * with `O_NOFOLLOW` and validating the **descriptor** closes it — what is
+ * checked and what is read are then the same object by construction, and a
+ * link swapped in at any moment fails the open rather than redirecting it.
+ */
+export function readPrivateFile(path: string): string {
+  let fd: number
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  } catch (error) {
+    // `O_NOFOLLOW` reports a symbolic link by refusing to open it. That is a
+    // rejected artifact, not a missing one, and the two must stay
+    // distinguishable to the caller deciding what to tell a model.
+    if (isSymlinkRefusal(error)) throw new UnsafeArtifactError(path, "is a symbolic link")
+    throw error
+  }
+
+  try {
+    const stats = fstatSync(fd)
+    if (!stats.isFile()) throw new UnsafeArtifactError(path, "is not a regular file")
+    assertOwnedPrivately(path, stats.uid, stats.mode)
+    return readFileSync(fd, "utf8")
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function assertOwnedPrivately(path: string, uid: number, mode: number): void {
@@ -224,7 +269,7 @@ export class UnknownRunError extends Error {
   constructor() {
     // The rejected value is never echoed: it is model-controlled text, and a
     // diagnostic that repeats it is a diagnostic that can be written by it.
-    super("the Test Run identifier is not one this tool issued")
+    super("the Test Run identifier cannot address retained storage")
     this.name = "UnknownRunError"
   }
 }
@@ -281,6 +326,12 @@ function assertIsDirectory(path: string): void {
   if (!lstatSync(path).isDirectory()) {
     throw new UnsafeArtifactError(path, "is not an existing directory")
   }
+}
+
+/** `ELOOP` on every Unix; macOS reports `EMLINK` for this case instead. */
+function isSymlinkRefusal(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  return code === "ELOOP" || code === "EMLINK"
 }
 
 function isExists(error: unknown): boolean {

@@ -14,11 +14,18 @@
  * to queue behind it and delay host startup.
  */
 
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync } from "node:fs"
 import { join } from "node:path"
 
+import { isRecord } from "../domain/json.ts"
 import { LockUnavailableError, withTryLock } from "./locks.ts"
-import { createPrivateDirectory, writePrivateFileAtomic, type Storage } from "./paths.ts"
+import {
+  createPrivateDirectory,
+  isRootKey,
+  readPrivateFile,
+  writePrivateFileAtomic,
+  type Storage,
+} from "./paths.ts"
 import { directorySize, runRetention, type RetentionReport } from "./retention.ts"
 
 /** ADR 0002: user-wide housekeeping runs at most once per hour. */
@@ -46,7 +53,9 @@ const EMPTY_REGISTRY: Registry = { schemaVersion: 1, roots: {} }
 
 export function readRegistry(storage: Storage): Registry {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(storage.registryFile, "utf8"))
+    // The registry is tool-managed storage like any other: owner-only, and
+    // never a link. It decides which directories housekeeping deletes from.
+    const parsed: unknown = JSON.parse(readPrivateFile(storage.registryFile))
     if (isRegistry(parsed)) return parsed
   } catch {
     // A malformed registry is rebuilt rather than trusted; it holds no evidence.
@@ -155,15 +164,40 @@ export function totalCompletedBytes(storage: Storage): number {
   }
 }
 
-/** Exactly the shape `rootKeyFor` produces: a SHA-256 digest in lowercase hex. */
-function isRootKey(name: string): boolean {
-  return /^[0-9a-f]{64}$/.test(name)
+/**
+ * Validate the registry down to its keys.
+ *
+ * Every key in `roots` becomes a directory name that housekeeping renames and
+ * recursively deletes. A key of `../../Documents` in a file that was only
+ * checked for having a `roots` object at all would evict outside the tool root
+ * entirely — so the keys are the validation, not an afterthought to it.
+ */
+function isRegistry(value: unknown): value is Registry {
+  if (!isRecord(value)) return false
+  const registry = value as Partial<Registry>
+
+  return (
+    registry.schemaVersion === 1 &&
+    isRecord(registry.roots) &&
+    Object.entries(registry.roots).every(
+      ([rootKey, entry]) =>
+        isRootKey(rootKey) && isRecord(entry) && typeof entry.lastSeenAtMs === "number",
+    ) &&
+    (registry.lastHousekeepingAtMs === undefined ||
+      typeof registry.lastHousekeepingAtMs === "number") &&
+    (registry.runtime === undefined || isRuntimeEntry(registry.runtime))
+  )
 }
 
-function isRegistry(value: unknown): value is Registry {
-  if (typeof value !== "object" || value === null) return false
-  const registry = value as Partial<Registry>
-  return registry.schemaVersion === 1 && typeof registry.roots === "object" && registry.roots !== null
+function isRuntimeEntry(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.path === "string" &&
+    typeof value.mtimeMs === "number" &&
+    typeof value.size === "number" &&
+    (value.source === "configuration" || value.source === "host" || value.source === "path") &&
+    (value.version === undefined || typeof value.version === "string")
+  )
 }
 
 export { LockUnavailableError }

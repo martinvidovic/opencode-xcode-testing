@@ -9,6 +9,7 @@
 import type { BuildEvidence, TestCounts, TestEvidence } from "../domain/evidence.ts"
 import type { DiagnosticSummary, FacetAvailability } from "../domain/inspection.ts"
 import type { ScopeAttestation, ScopeVerdict } from "../domain/scope.ts"
+import { isArrayOf, isRecord } from "../domain/json.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
 
 /**
@@ -64,7 +65,7 @@ export type NormalizedIndex = {
  * versions change for unrelated reasons.
  */
 export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
-  if (typeof value !== "object" || value === null) return false
+  if (!isRecord(value)) return false
   const index = value as Partial<NormalizedIndex>
 
   return (
@@ -72,10 +73,10 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
     typeof index.runId === "string" &&
     typeof index.decoderVersion === "number" &&
     typeof index.schemaVersion === "string" &&
-    Array.isArray(index.occurrences) &&
-    Array.isArray(index.testFailures) &&
-    Array.isArray(index.buildErrors) &&
-    Array.isArray(index.attestations) &&
+    isArrayOf(index.occurrences, isIndexedOccurrence) &&
+    isArrayOf(index.testFailures, isDiagnosticSummary) &&
+    isArrayOf(index.buildErrors, isDiagnosticSummary) &&
+    isArrayOf(index.attestations, isAttestation) &&
     typeof index.scopeVerdict === "string" &&
     typeof index.scopeDigest === "string" &&
     typeof index.requestedSelectionCount === "number" &&
@@ -87,14 +88,61 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
   )
 }
 
+/**
+ * Elements are checked, not merely counted.
+ *
+ * `Array.isArray` alone would let every object inside these collections
+ * through untouched, and they are precisely what a facet page hands to a
+ * model — so an index that passed a shallow check would be a validated
+ * wrapper around unvalidated content.
+ */
+function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.id === "string" &&
+    isRecord(value.identity) &&
+    typeof value.identity.canonical === "string" &&
+    typeof value.status === "string" &&
+    typeof value.position === "string" &&
+    Array.isArray(value.failures) &&
+    Array.isArray(value.attempts) &&
+    (value.durationMs === undefined || typeof value.durationMs === "number")
+  )
+}
+
+function isDiagnosticSummary(value: unknown): value is DiagnosticSummary {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.id === "string" &&
+    (value.kind === "testFailure" || value.kind === "buildError") &&
+    typeof value.message === "string" &&
+    typeof value.inspectionAvailable === "boolean" &&
+    (value.testId === undefined || typeof value.testId === "string") &&
+    (value.location === undefined || isSafeLocation(value.location))
+  )
+}
+
+function isSafeLocation(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.path === "string" &&
+    (value.line === undefined || typeof value.line === "number") &&
+    (value.column === undefined || typeof value.column === "number")
+  )
+}
+
+function isAttestation(value: unknown): value is ScopeAttestation {
+  if (!isRecord(value)) return false
+  return typeof value.verdict === "string" && isRecord(value.selection)
+}
+
 function isFacet(value: unknown): boolean {
-  return typeof value === "object" && value !== null && typeof (value as { completeness?: unknown }).completeness === "string"
+  return isRecord(value) && typeof value.completeness === "string"
 }
 
 function isLogFacet(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false
-  const log = value as Partial<LogFacetEvidence>
-  return typeof log.availability === "string" && typeof log.retainedBytesExact === "boolean"
+  if (!isRecord(value)) return false
+  return typeof value.availability === "string" && typeof value.retainedBytesExact === "boolean"
 }
 
 /** Count every occurrence. Scope attestation is what deduplicates identities. */

@@ -15,12 +15,13 @@
  * evicted run reports `expired` rather than a misleading `notFound`.
  */
 
-import { lstatSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs"
+import { lstatSync, readdirSync, renameSync, rmSync } from "node:fs"
 import { join } from "node:path"
 
+import { isRecord } from "../domain/json.ts"
 import {
-  assertSafeFile,
   isRunId,
+  readPrivateFile,
   runDirectory,
   UnknownRunError,
   writePrivateFileAtomic,
@@ -185,7 +186,10 @@ export function planEviction(
  * then resume deleting".
  */
 export function evictRun(storage: Storage, runId: string, nowMs: number): void {
-  const source = join(storage.runsDir, runId)
+  // This function ends in a recursive delete, so the identifier is validated
+  // before either path exists. `runDirectory` does it for the source; the
+  // trash path is derived only once that has passed.
+  const source = runDirectory(storage, runId)
   const trashed = join(storage.trashDir, runId)
 
   if (isDirectory(source)) renameSync(source, trashed)
@@ -217,9 +221,7 @@ export function tombstonePath(storage: Storage, runId: string): string {
  */
 export function readTombstone(storage: Storage, runId: string): Tombstone | undefined {
   try {
-    const path = tombstonePath(storage, runId)
-    assertSafeFile(path)
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
+    const parsed: unknown = JSON.parse(readPrivateFile(tombstonePath(storage, runId)))
     return isTombstone(parsed) && parsed.runId === runId ? parsed : undefined
   } catch {
     return undefined
@@ -227,7 +229,7 @@ export function readTombstone(storage: Storage, runId: string): Tombstone | unde
 }
 
 function isTombstone(value: unknown): value is Tombstone {
-  if (typeof value !== "object" || value === null) return false
+  if (!isRecord(value)) return false
   const tombstone = value as Partial<Tombstone>
   return (
     tombstone.schemaVersion === 1 &&
@@ -290,6 +292,8 @@ export function reconcileTrash(storage: Storage, nowMs: number): string[] {
 
   const reconciled: string[] = []
   for (const runId of entries) {
+    // Trash is deleted recursively; anything not named like a run of ours is
+    // left exactly where it is.
     if (!isRunId(runId)) continue
     if (readTombstone(storage, runId) === undefined) {
       publishTombstone(storage, runId, nowMs)

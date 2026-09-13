@@ -39,10 +39,10 @@ import {
 import { systemProbe } from "../runner/identity.ts"
 import { admit, QUARANTINE_REASON, releaseSlot, type AdmissionEnvironment } from "../runner/queue.ts"
 import {
-  assertSafeFile,
   createPrivateDirectory,
   createRunDirectory,
   isRunId,
+  readPrivateFile,
   RUN_ARTIFACTS,
   runDirectory,
   sharedDerivedDataFor,
@@ -885,8 +885,7 @@ function inspectRetained(
     // The index is tool-managed storage, so it must still be a private regular
     // file owned by this user. A symlink here would let anything on the
     // machine decide what a Test Run is reported to have found.
-    assertSafeFile(path)
-    contents = readFileSync(path, "utf8")
+    contents = readPrivateFile(path)
   } catch (error) {
     // "Nothing is here" and "something is here that must not be trusted" are
     // different facts, and reporting the second as the first would hide the
