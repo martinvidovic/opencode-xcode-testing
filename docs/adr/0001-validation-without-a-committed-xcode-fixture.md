@@ -1,6 +1,6 @@
 # ADR 0001: Validation without a committed Xcode fixture
 
-- **Status:** Accepted
+- **Status:** Accepted — both open deferrals closed by [ADR 0002](0002-opencode-v1-adapter-and-restricted-agent-integration.md)
 - **Date:** 2026-09-13
 - **Decides:** [Issue #2 — Define validation without a committed Xcode fixture](https://github.com/martinvidovic/opencode-xcode-testing/issues/2)
 - **Settled contracts relied on:** #3 (process lifecycle and Result Bundle retention), #4 (OpenCode v1 tool execution constraints), #6 (Test Run request and project configuration contract), #7 (Result Summary and progressive inspection contract), #8 (xcresult interpretation and fallback behavior)
@@ -52,7 +52,15 @@ Validation is layered along the module seams and is deliberately test-framework-
 
 This E2E is the acceptance gate for the runner+interpreter seam and defines the reusable scaffolding: generation script, declarative discovery manifests, stub project, and `--project` override. The OpenCode adapter's validation belongs to #5, which must reuse this scaffolding; map #1's destination is claimable only after #5's adapter-inclusive E2E also passes — otherwise the destination could be claimed without ever validating the adapter wiring.
 
+> **Resolved.** [ADR 0002](0002-opencode-v1-adapter-and-restricted-agent-integration.md) defines that adapter-inclusive gate as a pure adapter layer plus a headless-host layer — credential-free registration assertions that always gate, and an execution pass over these scenarios driven through a local stub provider.
+
 ## Open deferrals
+
+> **Closed by [ADR 0002](0002-opencode-v1-adapter-and-restricted-agent-integration.md).** Both
+> deferrals below were resolved when #5 settled implementation structure: the language and test
+> framework are **TypeScript, Bun, and `bun:test`**; byte-cap eviction uses **sparse files via
+> `node:fs`**, and the size-injection alternative is dropped. The text is retained as written for
+> the record.
 
 Two choices are deliberately open — surfaced, not silent — to be resolved by implementation tickets:
 

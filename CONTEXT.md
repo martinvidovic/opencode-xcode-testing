@@ -5,7 +5,7 @@ A local OpenCode capability for running scoped Xcode tests while exposing only t
 ## Language
 
 **Test Tool**:
-The OpenCode-facing capability that executes and inspects Xcode tests.
+The OpenCode-facing capability that executes and inspects Xcode tests. Exposed as a family of three separately-deniable tool IDs — `xcode_test`, `xcode_test_inspect`, `xcode_test_recover` — which together form one capability.
 _Avoid_: Test plugin, test wrapper
 
 **Test Run**:
