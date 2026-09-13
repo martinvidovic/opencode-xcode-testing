@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { bundleDigest, finalizeRecovered } from "../../src/adapter/service.ts"
@@ -113,7 +113,7 @@ describe("re-verification before a later read", () => {
       await finalizeRecovered(environmentFor(box), "run-changed")
 
       const index = JSON.parse(
-        require("node:fs").readFileSync(
+        readFileSync(
           join(runDirectory(box.storage, "run-changed"), "index.json"),
           "utf8",
         ),
@@ -126,19 +126,49 @@ describe("re-verification before a later read", () => {
     })
   })
 
-  test("is `unknown` when nothing was ever recorded to compare against", async () => {
+  test("records a digest for a run that crashed before stabilization", async () => {
+    // Nothing to compare against is not a reason to leave the run unverifiable
+    // forever: recording one now is what lets any later read say whether the
+    // bytes changed.
     await withSandbox(async (box) => {
       seedWithBundle(box, "run-unrecorded", "whatever")
+      expect(readRunRecord(box.storage, "run-unrecorded")?.bundleDigest).toBeUndefined()
 
       await finalizeRecovered(environmentFor(box), "run-unrecorded")
 
+      expect(readRunRecord(box.storage, "run-unrecorded")?.bundleDigest).toMatch(/^[0-9a-f]{64}$/)
       const index = JSON.parse(
-        require("node:fs").readFileSync(
-          join(runDirectory(box.storage, "run-unrecorded"), "index.json"),
-          "utf8",
-        ),
+        readFileSync(join(runDirectory(box.storage, "run-unrecorded"), "index.json"), "utf8"),
+      ) as { bundleDigestVerified: string }
+      expect(index.bundleDigestVerified).toBe("yes")
+    })
+  })
+
+  test("is `unknown` when the bundle is not there to digest", async () => {
+    await withSandbox(async (box) => {
+      createRunDirectory(box.storage, "run-nobundle")
+      seedRun(box.storage, {
+        runId: "run-nobundle",
+        state: "executionCompleted",
+        resolved: RESOLVED,
+        requestedScope: { kind: "all" },
+      })
+
+      await finalizeRecovered(environmentFor(box), "run-nobundle")
+
+      const index = JSON.parse(
+        readFileSync(join(runDirectory(box.storage, "run-nobundle"), "index.json"), "utf8"),
       ) as { bundleDigestVerified: string }
       expect(index.bundleDigestVerified).toBe("unknown")
+    })
+  })
+
+  test("is `unknown` when the digest could not finish inside its budget", async () => {
+    // Verification is never skipped, but it is bounded — an unfinished check
+    // reaches the caller as unfinished rather than as a guess.
+    await withSandbox((box) => {
+      const bundle = seedWithBundle(box, "run-slow", "bytes")
+      expect(bundleDigest(bundle, 0)).toBeUndefined()
     })
   })
 })

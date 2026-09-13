@@ -27,8 +27,26 @@ import type {
 } from "../domain/outcome.ts"
 import type { ScopeVerdict } from "../domain/scope.ts"
 
+/**
+ * What a defect is *about*.
+ *
+ * Reason alone cannot answer whether a defect should suppress an outcome.
+ * `unsupportedResultSchema` raised by the toolchain identity means nothing in
+ * the bundle can be believed; the same reason raised by an unrecognized test
+ * status means one facet is unreadable. #8 is explicit that complete
+ * trustworthy build errors still yield `buildFailed` when test evidence is
+ * "unavailable, incomplete, or unsupported" — so the subject, not the reason,
+ * decides.
+ */
+export type EvidenceSubject = "bundle" | "build" | "tests"
+
 /** A defect found while reading the Result Bundle, before classification runs. */
-export type EvidenceDefect = { reason: InfrastructureReason; message: string }
+export type EvidenceDefect = {
+  reason: InfrastructureReason
+  message: string
+  /** Defaults to `bundle`: unattributed doubt is doubt about everything. */
+  subject?: EvidenceSubject
+}
 
 export type ClassificationInput = {
   terminationTrigger: ProcessTerminationTrigger
@@ -76,18 +94,16 @@ export function classify(input: ClassificationInput): Classification {
       "the process exited successfully while the Result Bundle reports failures",
     )
   }
-  if (input.defect !== undefined && outranksBuildFailure(input.defect.reason)) {
-    return infrastructure(input.defect.reason, input.defect.message)
+  // An evidence defect applies only where it affects the evidence the
+  // candidate outcome needs. A build that failed is a fact about the build, so
+  // a defect in test evidence does not hide it.
+  const defect = input.defect
+  if (defect !== undefined && !(buildErrors > 0 && (defect.subject ?? "bundle") === "tests")) {
+    return infrastructure(defect.reason, defect.message)
   }
 
-  // 4 — trustworthy build errors. Test evidence may be partial or unavailable:
-  // an evidence defect applies only where it affects the evidence the candidate
-  // outcome needs, and a build that failed is a fact about the build.
+  // 4 — trustworthy build errors. Test evidence may be partial or unavailable.
   if (buildErrors > 0) return { outcome: "buildFailed" }
-
-  if (input.defect !== undefined) {
-    return infrastructure(input.defect.reason, input.defect.message)
-  }
 
   // 5 — testing was reached, but the Requested Scope cannot be shown to match.
   if (input.testingReached === true) {
@@ -152,28 +168,6 @@ export function classify(input: ClassificationInput): Classification {
   return infrastructure(
     "resultBundleIncomplete",
     "the Result Bundle lacks the evidence required to classify this Test Run",
-  )
-}
-
-/**
- * Defects that make the whole Result Bundle untrustworthy, and so outrank even
- * a complete build failure.
- *
- * A missing, unreadable or unsupported bundle says nothing can be believed. A
- * contradiction says two trustworthy records disagree. Everything else — a test
- * that carried no status, say — is a defect in evidence the build outcome does
- * not depend on, and suppressing `buildFailed` for it would hide the thing the
- * caller actually has to fix.
- */
-export function outranksBuildFailure(reason: InfrastructureReason): boolean {
-  return (
-    reason === "resultBundleMissing" ||
-    reason === "resultBundleUnreadable" ||
-    reason === "unsupportedResultSchema" ||
-    reason === "contradictoryEvidence" ||
-    reason === "interpretationTimedOut" ||
-    reason === "runnerFailure" ||
-    reason === "processLaunchFailed"
   )
 }
 

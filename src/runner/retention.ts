@@ -41,6 +41,12 @@ export type RetainedRun = {
   bytes: number
   /** Active, unfinished, quarantined and read-leased runs are never evicted. */
   evictable: boolean
+  /**
+   * Whether this run's Result Bundle still matched its recorded digest. A
+   * mutated bundle is still evictable — it is retention's business to reclaim
+   * it — but the mutation is surfaced rather than passing unremarked.
+   */
+  bundleDigestVerified?: "yes" | "no" | "unknown"
 }
 
 export type Tombstone = { schemaVersion: 1; runId: string; expiresAtMs: number }
@@ -60,6 +66,8 @@ export type RetentionReport = {
   reasons: Record<string, "age" | "count" | "perRootBytes" | "userWideBytes">
   tombstonesRemoved: string[]
   retainedBytes: number
+  /** Retained runs whose Result Bundle changed after it was published. */
+  mutatedBundles: string[]
 }
 
 /** Read every run directory, classifying what may be evicted and what may not. */
@@ -85,6 +93,9 @@ export function collectRuns(environment: RetentionEnvironment): RetainedRun[] {
       runId,
       ...(completedAtMs === undefined || Number.isNaN(completedAtMs) ? {} : { completedAtMs }),
       bytes: directorySize(path),
+      ...(record?.bundleDigestVerified === undefined
+        ? {}
+        : { bundleDigestVerified: record.bundleDigestVerified }),
       evictable:
         record !== undefined &&
         record.state === "completed" &&
@@ -267,7 +278,18 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
     .filter((run) => !plan.evict.includes(run.runId))
     .reduce((total, run) => total + run.bytes, 0)
 
-  return { evicted: plan.evict, reasons: plan.reasons, tombstonesRemoved, retainedBytes }
+  const mutatedBundles = runs
+    .filter((run) => run.bundleDigestVerified === "no")
+    .map((run) => run.runId)
+    .sort()
+
+  return {
+    evicted: plan.evict,
+    reasons: plan.reasons,
+    tombstonesRemoved,
+    retainedBytes,
+    mutatedBundles,
+  }
 }
 
 /**

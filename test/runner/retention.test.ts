@@ -361,3 +361,33 @@ describe("the lifecycle boundary", () => {
     })
   })
 })
+
+describe("a Result Bundle that changed after publication", () => {
+  test("is surfaced rather than passing unremarked", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-mutated")
+      seedRun(box.storage, {
+        runId: "run-mutated",
+        state: "completed",
+        completedAt: new Date(NOW - DAY_MS).toISOString(),
+        bundleDigestVerified: "no",
+      })
+
+      expect(retain(box).mutatedBundles).toEqual(["run-mutated"])
+    })
+  })
+
+  test("is still reclaimable, because that is retention's business", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-mutated")
+      seedRun(box.storage, {
+        runId: "run-mutated",
+        state: "completed",
+        completedAt: new Date(NOW - 30 * DAY_MS).toISOString(),
+        bundleDigestVerified: "no",
+      })
+
+      expect(retain(box).evicted).toEqual(["run-mutated"])
+    })
+  })
+})

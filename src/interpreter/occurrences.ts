@@ -251,9 +251,19 @@ function deriveIdentity(
   const test = selectable?.test ?? reference?.test ?? node.name
 
   const parsedSuite = selectable?.suite ?? reference?.suite
+
+  // Two identifiers that disagree are not one identity. Attesting a scope on
+  // evidence that contradicts itself is exactly the false match the
+  // attestation exists to prevent.
+  const identifiersAgree =
+    selectable?.suite === undefined ||
+    reference?.suite === undefined ||
+    selectable.suite === reference.suite
+
   const complete =
     bundle !== undefined &&
     (selectable !== undefined || reference !== undefined) &&
+    identifiersAgree &&
     (ancestry.suite === undefined || parsedSuite === undefined || ancestry.suite === parsedSuite)
 
   const identity: TestIdentity = {
@@ -290,11 +300,7 @@ function parseIdentifier(identifier: string): { suite?: string; test?: string } 
   return { suite: parts[parts.length - 2], test: parts[parts.length - 1] }
 }
 
-/**
- * Prefer `durationInSeconds`. The sibling `duration` string is formatted for
- * display in the user's locale — `"0,0019s"` on a comma-decimal machine — so
- * parsing it would silently produce zero for some people and not others.
- */
+/** Carry an occurrence's configuration or device only when one is known. */
 function contextField<K extends "configurationId" | "deviceId">(
   key: K,
   value: string | undefined,
@@ -302,6 +308,11 @@ function contextField<K extends "configurationId" | "deviceId">(
   return value === undefined ? {} : ({ [key]: value } as { [P in K]?: string })
 }
 
+/**
+ * Prefer `durationInSeconds`. The sibling `duration` string is formatted for
+ * display in the user's locale — `"0,0019s"` on a comma-decimal machine — so
+ * parsing it would silently produce zero for some people and not others.
+ */
 function durationField(node: { duration?: string; durationInSeconds?: number }): {
   durationMs?: number
 } {

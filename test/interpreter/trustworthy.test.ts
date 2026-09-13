@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { argumentsFor } from "../../src/interpreter/xcresulttool.ts"
-import { FAILED_EXIT, interpretFixture } from "./harness.ts"
+import { FAILED_EXIT, identityFor, interpretFixture, loadFixture } from "./harness.ts"
 
 describe("a trustworthy build failure", () => {
   test("stays buildFailed when unrelated test evidence is only partial", async () => {
@@ -149,3 +149,49 @@ function advancingOnDemand() {
     },
   }
 }
+
+describe("a build failure alongside unsupported test evidence", () => {
+  test("is still buildFailed", async () => {
+    // #8 names all three: test evidence that is unavailable, incomplete, *or
+    // unsupported* does not suppress a build the caller has to fix.
+    const { summary } = await interpretFixture("build-failed-unsupported-tests", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(summary.outcome).toBe("buildFailed")
+  })
+
+  test("but an unsupported *bundle* still outranks it", async () => {
+    // The same reason, about different evidence: a toolchain that no longer
+    // matches means nothing in the bundle can be believed.
+    const fixture = loadFixture("build-failed-partial-tests")
+    const replaced = { ...identityFor(fixture), xcresulttoolDigest: "b".repeat(64) }
+
+    const { summary } = await interpretFixture("build-failed-partial-tests", {
+      request: { execution: FAILED_EXIT },
+      reader: { identity: replaced },
+    })
+    expect(summary).toMatchObject({
+      outcome: "infrastructureFailed",
+      reason: "unsupportedResultSchema",
+    })
+  })
+})
+
+describe("contradictory identifiers", () => {
+  test("cannot attest a scope as matched", async () => {
+    // Two identifiers that disagree are not one identity, and a scope attested
+    // on self-contradicting evidence is the false match attestation exists to
+    // prevent.
+    const { summary } = await interpretFixture("conflicting-identity", {
+      scope: {
+        kind: "selected",
+        tests: [{ bundle: "AppTests", suite: "LoginTests", test: "testSignsIn()" }],
+      },
+    })
+    expect(summary.scope.verdict).not.toBe("matched")
+    expect(summary).toMatchObject({
+      outcome: "infrastructureFailed",
+      reason: "scopeUnverifiable",
+    })
+  })
+})

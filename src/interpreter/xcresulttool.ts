@@ -31,14 +31,10 @@ export function argumentsFor(command: XcresultCommand, bundlePath: string): stri
   switch (command) {
     case "metadata get":
       return ["metadata", "get", ...common]
-    case "get content-availability":
-      return [...schemaPinned("get", "content-availability", common)]
-    case "get build-results":
-      return [...schemaPinned("get", "build-results", common)]
-    case "get test-results tests":
-      return [...schemaPinned("get", "test-results", common, "tests")]
-    case "get test-results summary":
-      return [...schemaPinned("get", "test-results", common, "summary")]
+    default:
+      // The command *is* its argument words; splitting it apart only to
+      // reassemble it would be a second place for the two to disagree.
+      return schemaPinned(command.split(" "), common)
   }
 }
 
@@ -47,22 +43,8 @@ export function argumentsFor(command: XcresultCommand, bundlePath: string): stri
  * the tool default would let the shape change under us between Xcode releases
  * without anything saying so.
  */
-function schemaPinned(
-  verb: string,
-  subject: string,
-  common: string[],
-  detail?: string,
-): string[] {
-  return [
-    verb,
-    subject,
-    ...(detail === undefined ? [] : [detail]),
-    ...common,
-    "--format",
-    "json",
-    "--schema-version",
-    REQUESTED_SCHEMA_VERSION,
-  ]
+function schemaPinned(words: string[], common: string[]): string[] {
+  return [...words, ...common, "--format", "json", "--schema-version", REQUESTED_SCHEMA_VERSION]
 }
 
 export function createXcresultTool(input: {
@@ -85,6 +67,19 @@ export function createXcresultTool(input: {
   }
 }
 
+/** How long a structured read has to stop politely before it is killed. */
+export const ESCALATION_GRACE_MS = 2_000
+
+/** Signal the whole group; a negative PID addresses it. */
+function stopGroup(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (pid === undefined) return
+  try {
+    process.kill(-pid, signal)
+  } catch {
+    // Already gone, which is the outcome we wanted.
+  }
+}
+
 function read(
   identity: ToolchainIdentity,
   bundlePath: string,
@@ -92,9 +87,13 @@ function read(
   budgetMs: number,
 ): Promise<XcresultResponse> {
   return new Promise((resolve) => {
+    // Its own process group, so a read that has to be stopped is stopped
+    // whole — `xcresulttool` spawns helpers, and signalling only the parent
+    // leaves them behind holding the bundle open.
     const child = spawn(identity.xcresulttoolPath, argumentsFor(command, bundlePath), {
       env: { ...process.env, DEVELOPER_DIR: identity.developerDirectory },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     })
 
     const chunks: Buffer[] = []
@@ -108,8 +107,10 @@ function read(
 
     // The remaining budget is the caller's, and a read that outlives it is
     // stopped rather than left to finish into a deadline that has passed.
+    // Escalation is bounded and ordered: ask, then insist.
     const timer = setTimeout(() => {
-      child.kill("SIGKILL")
+      stopGroup(child.pid, "SIGTERM")
+      setTimeout(() => stopGroup(child.pid, "SIGKILL"), ESCALATION_GRACE_MS).unref?.()
       finish({
         ok: false,
         failure: "timedOut",
