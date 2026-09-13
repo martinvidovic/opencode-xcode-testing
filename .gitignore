@@ -1,0 +1,8 @@
+node_modules/
+
+# Host-managed; the plugin itself has zero runtime dependencies (ADR 0002).
+.opencode/
+
+# E2E run reports contain host paths and, under --project, private project facts
+# (ADR 0001). They are never tracked.
+reports/
