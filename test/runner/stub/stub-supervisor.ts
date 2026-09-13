@@ -7,7 +7,8 @@
  * durable state transitions, and the completion message, on demand and in
  * milliseconds.
  *
- * Behaviour is scripted through `XCODE_TEST_STUB`:
+ * Behaviour is scripted through a `.stub-mode` file in the trusted root, so
+ * nothing in shipped code has to know this stub exists:
  *   ready-then-complete  (default) full protocol, exit 0
  *   silent               exit 0 without ever handshaking
  *   crash                exit non-zero after handshaking
@@ -15,11 +16,12 @@
 
 import { createReadStream, createWriteStream } from "node:fs"
 
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+
 import { decodeMessages, encodeMessage } from "../../../src/runner/control.ts"
 import { storageFor } from "../../../src/runner/paths.ts"
 import { advance, readRunRecord } from "../../../src/runner/state.ts"
-
-const MODE = process.env["XCODE_TEST_STUB"] ?? "ready-then-complete"
 
 const control = createWriteStream("", { fd: 4 })
 const incoming = createReadStream("", { fd: 3 })
@@ -34,7 +36,8 @@ incoming.on("data", (chunk) => {
     if (message.type !== "hello") continue
     const spec = message as unknown as { homeDir: string; trustedRoot: string; runId: string }
 
-    if (MODE === "silent") process.exit(0)
+    const mode = modeFor(spec.trustedRoot)
+    if (mode === "silent") process.exit(0)
 
     control.write(encodeMessage({ type: "ready", runId: spec.runId }))
 
@@ -52,6 +55,14 @@ incoming.on("data", (chunk) => {
     }
 
     control.write(encodeMessage({ type: "completed", exitCode: 0 }))
-    process.exit(MODE === "crash" ? 70 : 0)
+    process.exit(mode === "crash" ? 70 : 0)
   }
 })
+
+function modeFor(trustedRoot: string): string {
+  try {
+    return readFileSync(join(trustedRoot, ".stub-mode"), "utf8").trim()
+  } catch {
+    return "ready-then-complete"
+  }
+}

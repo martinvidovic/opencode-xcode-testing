@@ -15,7 +15,7 @@
 import { createReadStream, createWriteStream } from "node:fs"
 import { join } from "node:path"
 
-import { decodeMessages, encodeMessage, secretMatches } from "./control.ts"
+import { decodeMessages, encodeMessage, secretMatches, type LaunchSpec } from "./control.ts"
 import { spawnGatedChild } from "./gate.ts"
 import { systemProbe } from "./identity.ts"
 import { RUN_ARTIFACTS, storageFor, type Storage } from "./paths.ts"
@@ -30,16 +30,7 @@ export const CONTROL_WRITE_FD = 4
 export const EXIT_OK = 0
 export const EXIT_PROTOCOL = 70
 
-export type SupervisorLaunchSpec = {
-  secret: string
-  homeDir: string
-  trustedRoot: string
-  runId: string
-  command: string
-  args: string[]
-  environment: Record<string, string>
-  developerDirectory: string
-}
+export type SupervisorLaunchSpec = LaunchSpec
 
 /**
  * One reader for the whole channel.
@@ -66,7 +57,10 @@ class ControlChannel {
 
   constructor() {
     this.#stream.on("data", (chunk) => this.#consume(String(chunk)))
-    this.#stream.on("error", () => this.#onSpec?.(undefined))
+    this.#stream.on("error", () => {
+      this.#lost = true
+      this.#onSpec?.(undefined)
+    })
     // Channel loss after the handshake is the adapter going away, which the
     // supervisor is explicitly designed to survive — but it is recorded, since
     // it becomes the trigger when nothing else has fixed one.

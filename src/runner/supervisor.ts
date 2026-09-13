@@ -21,7 +21,6 @@ import type {
   InterruptionPhase,
   ProcessTerminationTrigger,
 } from "../domain/outcome.ts"
-import { channelLossIsTrigger } from "./control.ts"
 import type { ChildExit, GatedChild } from "./gate.ts"
 import { signallingIsSafe, type ProcessProbe } from "./identity.ts"
 import type { Storage } from "./paths.ts"
@@ -183,8 +182,9 @@ export async function superviseRun(
 
   // A group still live after the drain is a supervision failure — but only the
   // trigger, and only if nothing already fixed one.
-  if (ports.channelLost?.() === true && channelLossIsTrigger(trigger.isFixed)) {
-    trigger.fix("toolFailure")
+  // `fix` is already first-wins, so a channel that dropped while a cancelled
+  // run was being torn down cannot rewrite what happened.
+  if (ports.channelLost?.() === true && trigger.fix("toolFailure")) {
     durableStateUncertain = !persistTrigger(ports, record, trigger) || durableStateUncertain
   }
 

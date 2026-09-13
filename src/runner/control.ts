@@ -10,8 +10,24 @@
 
 import { randomBytes, timingSafeEqual } from "node:crypto"
 
+/**
+ * The launch spec travels with the handshake, so the two are inseparable.
+ * Typed here rather than asserted at each end: a frame the adapter writes and
+ * the supervisor reads is a shared contract, not a private shape.
+ */
+export type LaunchSpec = {
+  secret: string
+  homeDir: string
+  trustedRoot: string
+  runId: string
+  command: string
+  args: string[]
+  environment: Record<string, string>
+  developerDirectory: string
+}
+
 export type ControlMessage =
-  | { type: "hello"; secret: string }
+  | ({ type: "hello" } & LaunchSpec)
   | { type: "ready"; runId: string }
   | { type: "state"; state: string }
   | { type: "cancel" }
@@ -73,11 +89,3 @@ function parseMessage(line: string): ControlMessage | undefined {
   return parsed as ControlMessage
 }
 
-/**
- * Channel loss is only a trigger when nothing has fixed one already: a channel
- * that dropped while a cancelled run was being torn down does not change the
- * fact that the caller cancelled it.
- */
-export function channelLossIsTrigger(alreadyFixed: boolean): boolean {
-  return !alreadyFixed
-}

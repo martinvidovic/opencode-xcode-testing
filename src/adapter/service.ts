@@ -19,7 +19,7 @@ import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
 import type { TestRunSummary, TestToolResult } from "../domain/result.ts"
-import { SCHEMA_VERSION } from "../domain/result.ts"
+import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
 import { normalizeRequestedScope, requestedScopeDigest } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
@@ -28,6 +28,7 @@ import { INDEX_VERSION, type NormalizedIndex } from "../interpreter/index-model.
 import { DECODER_VERSION, REQUESTED_SCHEMA_VERSION } from "../interpreter/schema.ts"
 import { inspectIndex } from "../interpreter/paging.ts"
 import type { XcresultTool } from "../interpreter/ports.ts"
+import { SUPERVISOR_STARTUP_DEADLINE_MS } from "../runner/supervisor.ts"
 import { createXcresultTool } from "../interpreter/xcresulttool.ts"
 import {
   decodeMessages,
@@ -83,6 +84,12 @@ export type ServiceEnvironment = {
    * without a machine that happens to have Xcode on it.
    */
   xcresultToolFor?(bundlePath: string): XcresultTool
+  /**
+   * How long the supervisor has to answer the handshake. Defaults to #3's
+   * supervisor startup deadline; it is separate from the Test Run timeout,
+   * which does not begin until launch is authorized.
+   */
+  handshakeDeadlineMs?: number
 }
 
 function readerFor(environment: ServiceEnvironment, bundlePath: string): XcresultTool {
@@ -152,6 +159,7 @@ function startRun(
     // transfers to it. A crash in the other order would leave an active slot
     // naming a run nothing can reconcile against, and wedge the trusted root.
     const admission = await admit(admissionEnvironment(environment), {
+      ...(cancellation === undefined ? {} : { signal: cancellation }),
       prepare: (runId) => {
         if (createRunDirectory(environment.storage, runId) === undefined) return false
         writeRunRecord(environment.storage, {
@@ -534,9 +542,10 @@ function logFacts(path: string): { retainedBytes?: number; retainedBytesExact: b
  * and retained artifacts; reporting it as a pre-execution failure would tell
  * the caller no Test Run ever existed and hide evidence they could inspect.
  *
- * Every fact the runner could not establish is `unknown` rather than a
- * plausible zero — a supervisor that never reported is a supervisor whose
- * child's fate is genuinely unobserved.
+ * The trigger comes from the record when the supervisor already fixed and
+ * persisted one. A supervisor that was cancelled and then exited non-zero was
+ * still cancelled, and overwriting that here would make the outcome depend on
+ * which layer reported it last.
  */
 function runnerFailureSummary(
   environment: ServiceEnvironment,
@@ -552,9 +561,9 @@ function runnerFailureSummary(
 ): TestRunSummary {
   const scope = input.request.requestedScope
   const normalized = normalizeRequestedScope(scope)
+  const record = readRunRecord(environment.storage, input.record.runId) ?? input.record
 
-  return {
-    schemaVersion: SCHEMA_VERSION,
+  const envelope = unobservedEnvelope({
     runId: input.record.runId,
     resolved: input.resolution.resolved,
     scope: {
@@ -569,40 +578,30 @@ function runnerFailureSummary(
     timing: {
       admittedAt: input.admission.admittedAt,
       queueDurationMs: input.admission.queueDurationMs,
+      ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
       totalDurationMs: environment.now() - input.startedAt,
     },
     // A runner operational failure that initiates termination fixes the
-    // outcome with trigger `toolFailure` (#7).
-    terminationTrigger: "toolFailure",
-    termination: {
-      requested: "no",
-      gracefulTerminationObserved: "unknown",
-      forceEscalationRequired: "unknown",
-      terminationGraceExceeded: "unknown",
-      descendantsConfirmedExited: "unknown",
-    },
+    // outcome with trigger `toolFailure` (#7) — but only when nothing had
+    // already fixed one.
+    terminationTrigger:
+      record.terminationTrigger !== undefined && record.terminationTrigger !== "none"
+        ? record.terminationTrigger
+        : "toolFailure",
     // Nothing launched means nothing executed; anything later is unobserved.
-    execution: { execObserved: phase === "launching" ? "no" : "unknown", successfulExit: "unknown" },
-    build: { completeness: "unavailable" },
-    tests: { completeness: "unavailable" },
-    inspection: {
-      scope: "unavailable",
-      failures: "unavailable",
-      buildErrors: "unavailable",
-      tests: "unavailable",
-      log: "unavailable",
+    execObserved: record.execObserved ?? (phase === "launching" ? "no" : "unknown"),
+  })
+
+  return {
+    ...envelope,
+    termination: {
+      ...envelope.termination,
+      requested: record.terminationTrigger !== undefined && record.terminationTrigger !== "none" ? "yes" : "no",
     },
     outcome: "infrastructureFailed",
     reason: "runnerFailure",
     message,
-    diagnostics: {
-      testFailures: [],
-      testFailureSection: { total: 0, shown: 0, truncated: false },
-      buildErrors: [],
-      buildErrorSection: { total: 0, shown: 0, truncated: false },
-      observedTests: [],
-      observedTestSection: { total: 0, shown: 0, truncated: false },
-    },
+    diagnostics: NO_DIAGNOSTICS,
   }
 }
 
@@ -617,8 +616,6 @@ type SupervisionOutcome =
   | { ok: true }
   | { ok: false; message: string; phase: "launching" | "terminating" }
 
-/** The supervisor has this long to answer the handshake (#3). */
-const HANDSHAKE_DEADLINE_MS = 30_000
 
 function runSupervisor(
   environment: ServiceEnvironment,
@@ -632,7 +629,7 @@ function runSupervisor(
   return new Promise((resolve) => {
     const child = spawn(environment.runtimePath, [environment.supervisorEntrypoint], {
       cwd: environment.trustedRoot,
-      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", ...stubEnvironment() },
+      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
       // Detached so it outlives this call, with a private inherited control
       // channel: fd 3 is ours to write, fd 4 is the supervisor's to answer on.
       detached: true,
@@ -664,12 +661,16 @@ function runSupervisor(
     })
 
     const handshakeTimer = setTimeout(() => {
+      // It never handshook, so it never authorized a launch and owns no child.
+      // Leaving it running would hand the slot back while a process nobody is
+      // tracking carries on.
+      child.kill("SIGKILL")
       finish({
         ok: false,
         message: "the supervisor did not complete its handshake within its startup deadline",
         phase: "launching",
       })
-    }, HANDSHAKE_DEADLINE_MS)
+    }, environment.handshakeDeadlineMs ?? SUPERVISOR_STARTUP_DEADLINE_MS)
 
     const secret = newChannelSecret()
     toSupervisor?.write(
@@ -743,12 +744,6 @@ function runSupervisor(
       })
     })
   })
-}
-
-/** Carries the stub's scripted behaviour through, and nothing else. */
-function stubEnvironment(): Record<string, string> {
-  const mode = process.env["XCODE_TEST_STUB"]
-  return mode === undefined ? {} : { XCODE_TEST_STUB: mode }
 }
 
 // --- inspection -----------------------------------------------------------
