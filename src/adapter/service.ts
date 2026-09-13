@@ -18,8 +18,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
-import type { TestToolResult } from "../domain/result.ts"
-import { requestedScopeDigest } from "../domain/scope.ts"
+import type { TestRunSummary, TestToolResult } from "../domain/result.ts"
+import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
+import { normalizeRequestedScope, requestedScopeDigest } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
 import { interpretRun } from "../interpreter/interpret.ts"
@@ -27,6 +28,7 @@ import { INDEX_VERSION, type NormalizedIndex } from "../interpreter/index-model.
 import { DECODER_VERSION, REQUESTED_SCHEMA_VERSION } from "../interpreter/schema.ts"
 import { inspectIndex } from "../interpreter/paging.ts"
 import type { XcresultTool } from "../interpreter/ports.ts"
+import { SUPERVISOR_STARTUP_DEADLINE_MS } from "../runner/supervisor.ts"
 import { createXcresultTool } from "../interpreter/xcresulttool.ts"
 import {
   decodeMessages,
@@ -82,6 +84,12 @@ export type ServiceEnvironment = {
    * without a machine that happens to have Xcode on it.
    */
   xcresultToolFor?(bundlePath: string): XcresultTool
+  /**
+   * How long the supervisor has to answer the handshake. Defaults to #3's
+   * supervisor startup deadline; it is separate from the Test Run timeout,
+   * which does not begin until launch is authorized.
+   */
+  handshakeDeadlineMs?: number
 }
 
 function readerFor(environment: ServiceEnvironment, bundlePath: string): XcresultTool {
@@ -151,6 +159,7 @@ function startRun(
     // transfers to it. A crash in the other order would leave an active slot
     // naming a run nothing can reconcile against, and wedge the trusted root.
     const admission = await admit(admissionEnvironment(environment), {
+      ...(cancellation === undefined ? {} : { signal: cancellation }),
       prepare: (runId) => {
         if (createRunDirectory(environment.storage, runId) === undefined) return false
         writeRunRecord(environment.storage, {
@@ -267,7 +276,9 @@ async function superviseAndInterpret(
   })
 
   if (!supervision.ok) {
-    return runnerFailure(environment, input, supervision.message)
+    const summary = runnerFailureSummary(environment, input, supervision.message, supervision.phase)
+    publishTerminal(environment, input.record, summary, emptyIndex(input.record.runId))
+    return summary
   }
 
   input.hooks.onState("interpreting")
@@ -309,6 +320,7 @@ async function superviseAndInterpret(
     },
     tool: readerFor(environment, resultBundlePath),
     clock: { now: environment.now },
+    ...(input.cancellation === undefined ? {} : { signal: input.cancellation }),
   })
 
   publishTerminal(environment, record, summary, index)
@@ -523,25 +535,87 @@ function logFacts(path: string): { retainedBytes?: number; retainedBytesExact: b
   }
 }
 
-function runnerFailure(
+/**
+ * The terminal summary for a run whose supervision failed after admission.
+ *
+ * This is a **run-scoped** result, not a queued one. The run holds a `runId`
+ * and retained artifacts; reporting it as a pre-execution failure would tell
+ * the caller no Test Run ever existed and hide evidence they could inspect.
+ *
+ * The trigger comes from the record when the supervisor already fixed and
+ * persisted one. A supervisor that was cancelled and then exited non-zero was
+ * still cancelled, and overwriting that here would make the outcome depend on
+ * which layer reported it last.
+ */
+function runnerFailureSummary(
   environment: ServiceEnvironment,
-  input: { record: RunRecord; admission: { admittedAt: string; queueDurationMs: number } },
+  input: {
+    record: RunRecord
+    request: TestRunRequest
+    resolution: Extract<ReturnType<typeof resolveTestRun>, { status: "resolved" }>
+    admission: { admittedAt: string; queueDurationMs: number }
+    startedAt: number
+  },
   message: string,
-): TestToolResult {
+  phase: "launching" | "terminating",
+): TestRunSummary {
+  const scope = input.request.requestedScope
+  const normalized = normalizeRequestedScope(scope)
+  const record = readRunRecord(environment.storage, input.record.runId) ?? input.record
+
+  const envelope = unobservedEnvelope({
+    runId: input.record.runId,
+    resolved: input.resolution.resolved,
+    scope: {
+      kind: scope.kind,
+      digest: requestedScopeDigest(scope),
+      requestedSelectionCount: normalized.kind === "selected" ? normalized.tests.length : 0,
+      verdict: "notReached",
+      attestations: [],
+      shown: 0,
+      truncated: false,
+    },
+    timing: {
+      admittedAt: input.admission.admittedAt,
+      queueDurationMs: input.admission.queueDurationMs,
+      ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
+      totalDurationMs: environment.now() - input.startedAt,
+    },
+    // A runner operational failure that initiates termination fixes the
+    // outcome with trigger `toolFailure` (#7) — but only when nothing had
+    // already fixed one.
+    terminationTrigger:
+      record.terminationTrigger !== undefined && record.terminationTrigger !== "none"
+        ? record.terminationTrigger
+        : "toolFailure",
+    // Nothing launched means nothing executed; anything later is unobserved.
+    execObserved: record.execObserved ?? (phase === "launching" ? "no" : "unknown"),
+  })
+
   return {
-    schemaVersion: 1,
+    ...envelope,
+    termination: {
+      ...envelope.termination,
+      requested: record.terminationTrigger !== undefined && record.terminationTrigger !== "none" ? "yes" : "no",
+    },
     outcome: "infrastructureFailed",
-    phase: "queued",
-    reason: "recoveryFailed",
+    reason: "runnerFailure",
     message,
-    queuedAt: input.admission.admittedAt,
-    queueDurationMs: input.admission.queueDurationMs,
+    diagnostics: NO_DIAGNOSTICS,
   }
 }
 
 // --- the supervisor process -----------------------------------------------
 
-type SupervisionOutcome = { ok: true } | { ok: false; message: string }
+/**
+ * Why supervision ended, and where. The phase matters: a supervisor that never
+ * completed its handshake failed in `launching`, and the child it would have
+ * created provably never ran.
+ */
+type SupervisionOutcome =
+  | { ok: true }
+  | { ok: false; message: string; phase: "launching" | "terminating" }
+
 
 function runSupervisor(
   environment: ServiceEnvironment,
@@ -564,6 +638,39 @@ function runSupervisor(
 
     const toSupervisor = child.stdio[3]
     const fromSupervisor = child.stdio[4]
+
+    let settled = false
+    let handshook = false
+    let spawnFailed = false
+    let channelLost = false
+
+    const finish = (outcome: SupervisionOutcome) => {
+      if (settled) return
+      settled = true
+      clearTimeout(handshakeTimer)
+      resolve(outcome)
+    }
+
+    // A write to a channel whose far end has gone is channel loss, not a
+    // failure to start. Conflating the two misreports where the run died.
+    toSupervisor?.on("error", () => {
+      channelLost = true
+    })
+    fromSupervisor?.on("error", () => {
+      channelLost = true
+    })
+
+    const handshakeTimer = setTimeout(() => {
+      // It never handshook, so it never authorized a launch and owns no child.
+      // Leaving it running would hand the slot back while a process nobody is
+      // tracking carries on.
+      child.kill("SIGKILL")
+      finish({
+        ok: false,
+        message: "the supervisor did not complete its handshake within its startup deadline",
+        phase: "launching",
+      })
+    }, environment.handshakeDeadlineMs ?? SUPERVISOR_STARTUP_DEADLINE_MS)
 
     const secret = newChannelSecret()
     toSupervisor?.write(
@@ -596,21 +703,45 @@ function runSupervisor(
       const { messages, rest } = decodeMessages(buffer)
       buffer = rest
       for (const message of messages) {
-        if (message.type === "ready") input.onState("supervisorReady")
+        if (message.type === "ready") {
+          handshook = true
+          input.onState("supervisorReady")
+        }
         if (message.type === "state") input.onState(message.state as ProtocolState)
         if (message.type === "completed") input.onState("executionCompleted")
       }
     })
 
     child.on("error", () => {
-      resolve({ ok: false, message: "the supervisor process could not be started" })
+      spawnFailed = true
+      finish({
+        ok: false,
+        message: "the supervisor process could not be started",
+        phase: "launching",
+      })
     })
+
     child.on("exit", (code) => {
-      resolve(
-        code === 0
-          ? { ok: true }
-          : { ok: false, message: `the supervisor exited with status ${code ?? "unknown"}` },
-      )
+      if (spawnFailed) return
+      if (!handshook) {
+        finish({
+          ok: false,
+          message: channelLost
+            ? "the supervisor's control channel closed before it completed its handshake"
+            : "the supervisor exited before completing its handshake",
+          phase: "launching",
+        })
+        return
+      }
+      if (code === 0) {
+        finish({ ok: true })
+        return
+      }
+      finish({
+        ok: false,
+        message: `the supervisor exited with status ${code ?? "unknown"}`,
+        phase: "terminating",
+      })
     })
   })
 }

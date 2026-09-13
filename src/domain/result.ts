@@ -23,6 +23,7 @@ import type {
   ResolutionPhase,
 } from "./outcome.ts"
 import type { ResolvedTestRun } from "./request.ts"
+import type { EvidenceFact } from "./evidence.ts"
 import type { ScopeEvidence, TestIdentity } from "./scope.ts"
 
 /** The version of the typed domain contract. Meaning changes bump it; additions do not. */
@@ -191,6 +192,60 @@ export type TestToolResult =
   | RequestCancelled
   | RequestResolutionFailed
   | TestRunSummary
+
+/** No diagnostics were retained, and the sections say so rather than lying by omission. */
+export const NO_DIAGNOSTICS: SummaryDiagnostics = {
+  testFailures: [],
+  testFailureSection: { total: 0, shown: 0, truncated: false },
+  buildErrors: [],
+  buildErrorSection: { total: 0, shown: 0, truncated: false },
+  observedTests: [],
+  observedTestSection: { total: 0, shown: 0, truncated: false },
+}
+
+/**
+ * The envelope for a Test Run whose facts were never observed.
+ *
+ * Every evidence field is `unknown` or `unavailable`, never a plausible zero.
+ * It lives beside the types rather than in a caller because the alternative is
+ * each layer spelling out its own idea of "nothing is known", and a new field
+ * on the envelope then has to be patched in several unrelated places.
+ */
+export function unobservedEnvelope(input: {
+  runId: string
+  resolved: ResolvedTestRun
+  scope: ScopeEvidence
+  timing: TestRunTiming
+  terminationTrigger: ProcessTerminationTrigger
+  /** `no` only where the protocol proves nothing ran; otherwise unobserved. */
+  execObserved: EvidenceFact
+}): TestRunEnvelope {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    runId: input.runId,
+    resolved: input.resolved,
+    scope: input.scope,
+    timing: input.timing,
+    terminationTrigger: input.terminationTrigger,
+    termination: {
+      requested: "no",
+      gracefulTerminationObserved: "unknown",
+      forceEscalationRequired: "unknown",
+      terminationGraceExceeded: "unknown",
+      descendantsConfirmedExited: "unknown",
+    },
+    execution: { execObserved: input.execObserved, successfulExit: "unknown" },
+    build: { completeness: "unavailable" },
+    tests: { completeness: "unavailable" },
+    inspection: {
+      scope: "unavailable",
+      failures: "unavailable",
+      buildErrors: "unavailable",
+      tests: "unavailable",
+      log: "unavailable",
+    },
+  }
+}
 
 /** True when the result describes an admitted Test Run and carries a `runId`. */
 export function isTestRunSummary(result: TestToolResult): result is TestRunSummary {

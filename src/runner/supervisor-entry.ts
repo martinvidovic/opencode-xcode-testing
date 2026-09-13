@@ -15,7 +15,7 @@
 import { createReadStream, createWriteStream } from "node:fs"
 import { join } from "node:path"
 
-import { decodeMessages, encodeMessage, secretMatches } from "./control.ts"
+import { decodeMessages, encodeMessage, secretMatches, type LaunchSpec } from "./control.ts"
 import { spawnGatedChild } from "./gate.ts"
 import { systemProbe } from "./identity.ts"
 import { RUN_ARTIFACTS, storageFor, type Storage } from "./paths.ts"
@@ -30,16 +30,7 @@ export const CONTROL_WRITE_FD = 4
 export const EXIT_OK = 0
 export const EXIT_PROTOCOL = 70
 
-export type SupervisorLaunchSpec = {
-  secret: string
-  homeDir: string
-  trustedRoot: string
-  runId: string
-  command: string
-  args: string[]
-  environment: Record<string, string>
-  developerDirectory: string
-}
+export type SupervisorLaunchSpec = LaunchSpec
 
 /**
  * One reader for the whole channel.
@@ -62,17 +53,30 @@ class ControlChannel {
   })
 
   #onSpec: ((spec: SupervisorLaunchSpec | undefined) => void) | undefined
+  #lost = false
 
   constructor() {
     this.#stream.on("data", (chunk) => this.#consume(String(chunk)))
-    this.#stream.on("error", () => this.#onSpec?.(undefined))
+    this.#stream.on("error", () => {
+      this.#lost = true
+      this.#onSpec?.(undefined)
+    })
     // Channel loss after the handshake is the adapter going away, which the
-    // supervisor is explicitly designed to survive.
-    this.#stream.on("end", () => this.#onSpec?.(undefined))
+    // supervisor is explicitly designed to survive — but it is recorded, since
+    // it becomes the trigger when nothing else has fixed one.
+    this.#stream.on("end", () => {
+      this.#lost = true
+      this.#onSpec?.(undefined)
+    })
   }
 
   get aborted(): boolean {
     return this.#aborted
+  }
+
+  /** True once the private control channel has gone. */
+  get lost(): boolean {
+    return this.#lost
   }
 
   /** The launch spec, or `undefined` when the channel produced no usable one. */
@@ -167,6 +171,7 @@ export async function main(): Promise<number> {
           },
           whenAborted: channel.whenAborted,
         },
+        channelLost: () => channel.lost,
       },
       { record, supervisorIdentity: selfIdentity() },
     )

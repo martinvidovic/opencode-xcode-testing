@@ -24,7 +24,7 @@ import type {
 import type { ChildExit, GatedChild } from "./gate.ts"
 import { signallingIsSafe, type ProcessProbe } from "./identity.ts"
 import type { Storage } from "./paths.ts"
-import { advance, type RunRecord } from "./state.ts"
+import { advance, writeRunRecord, type RunRecord } from "./state.ts"
 import {
   descendantsConfirmedExited,
   DRAIN_BUDGET_MS,
@@ -52,6 +52,15 @@ export type SupervisionPorts = {
   sleep(ms: number): Promise<void>
   spawn(): GatedChild
   cancellation?: Cancellation
+  /**
+   * Whether the private control channel has been lost since the handshake.
+   *
+   * Channel loss means the plugin is gone. That is a supervision failure, but
+   * only when nothing has already fixed the outcome — a channel that dropped
+   * while a cancelled run was being torn down does not change the fact that
+   * the caller cancelled it.
+   */
+  channelLost?(): boolean
   /** Injectable so the stub suite can prove the ordering without real waits. */
   escalation?: typeof ESCALATION
   startupDeadlineMs?: number
@@ -143,6 +152,7 @@ export async function superviseRun(
 
   let deadlineCrossedPhase: DeadlineCrossedPhase | undefined
   let interruptionPhase: InterruptionPhase | undefined
+  let durableStateUncertain = false
 
   if (outcome !== "exited") {
     if (outcome === "cancelled") {
@@ -152,6 +162,11 @@ export async function superviseRun(
       trigger.fix("processDeadline")
       deadlineCrossedPhase = "testing"
     }
+    // The trigger is persisted at event time, before any signal is sent. A
+    // crash mid-escalation would otherwise leave recovery unable to tell a
+    // cancelled run from a timed-out one, and the outcome would depend on who
+    // happened to look at it afterwards.
+    durableStateUncertain = !persistTrigger(ports, record, trigger) || durableStateUncertain
     await terminate(ports, trigger, recorded)
   }
 
@@ -167,14 +182,21 @@ export async function superviseRun(
 
   // A group still live after the drain is a supervision failure — but only the
   // trigger, and only if nothing already fixed one.
+  // `fix` is already first-wins, so a channel that dropped while a cancelled
+  // run was being torn down cannot rewrite what happened.
+  if (ports.channelLost?.() === true && trigger.fix("toolFailure")) {
+    durableStateUncertain = !persistTrigger(ports, record, trigger) || durableStateUncertain
+  }
+
   if (descendants !== "yes" && runnerFailureApplies(trigger.trigger)) {
     trigger.fix("toolFailure")
+    durableStateUncertain = !persistTrigger(ports, record, trigger) || durableStateUncertain
     await terminate(ports, trigger, recorded)
   }
 
   const quarantine = quarantineRequired({
     descendantsConfirmedExited: descendants,
-    durableStateUncertain: false,
+    durableStateUncertain,
     logCaptureIncomplete: descendants !== "yes",
   })
     ? "the process lifecycle could not be confirmed"
@@ -202,6 +224,27 @@ export async function superviseRun(
       : {}),
     startedAt,
     processDurationMs,
+  }
+}
+
+/**
+ * A strictly bounded attempt to persist the fixed trigger before signalling.
+ *
+ * Persistence must never materially delay termination, so a failure is not
+ * retried: signalling proceeds, the live protocol keeps the trigger, and the
+ * durable state is declared uncertain so recovery fails closed rather than
+ * guessing which event came first.
+ */
+function persistTrigger(
+  ports: SupervisionPorts,
+  record: RunRecord,
+  trigger: TerminationTrigger,
+): boolean {
+  try {
+    writeRunRecord(ports.storage, { ...record, terminationTrigger: trigger.trigger })
+    return true
+  } catch {
+    return false
   }
 }
 
