@@ -14,7 +14,7 @@
 
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs"
 import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
@@ -24,7 +24,7 @@ import { normalizeRequestedScope, requestedScopeDigest } from "../domain/scope.t
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
 import { interpretRun } from "../interpreter/interpret.ts"
-import { INDEX_VERSION, type NormalizedIndex } from "../interpreter/index-model.ts"
+import { INDEX_VERSION, isNormalizedIndex, type NormalizedIndex } from "../interpreter/index-model.ts"
 import { DECODER_VERSION, REQUESTED_SCHEMA_VERSION } from "../interpreter/schema.ts"
 import { inspectIndex } from "../interpreter/paging.ts"
 import type { XcresultTool } from "../interpreter/ports.ts"
@@ -39,9 +39,14 @@ import {
 import { systemProbe } from "../runner/identity.ts"
 import { admit, QUARANTINE_REASON, releaseSlot, type AdmissionEnvironment } from "../runner/queue.ts"
 import {
+  assertSafeFile,
+  createPrivateDirectory,
   createRunDirectory,
+  isRunId,
   RUN_ARTIFACTS,
   runDirectory,
+  sharedDerivedDataFor,
+  UnsafeArtifactError,
   writePrivateFileAtomic,
   type Storage,
 } from "../runner/paths.ts"
@@ -309,7 +314,12 @@ async function superviseAndInterpret(
   const derivedDataPath =
     input.resolution.resolved.derivedData.value.mode === "isolated"
       ? join(directory, RUN_ARTIFACTS.derivedData)
-      : join(storage.rootDir, RUN_ARTIFACTS.derivedData)
+      : sharedDerivedDataFor(storage, input.resolution.containerAbsolutePath)
+
+  // Created here rather than left to xcodebuild, which would make it with the
+  // ambient umask. Tool-managed storage is owner-only wherever it is reached
+  // from, not only where it happens to be nested under something that is.
+  createPrivateDirectory(derivedDataPath)
 
   const args = buildArguments(input.resolution.resolved, input.request.requestedScope, {
     containerAbsolutePath: input.resolution.containerAbsolutePath,
@@ -634,10 +644,13 @@ function releaseOwnership(environment: ServiceEnvironment, runId: string): void 
   releaseSlot(environment.storage, runId)
 }
 
-
 function logFacts(path: string): { retainedBytes?: number; retainedBytesExact: boolean } {
   try {
-    return { retainedBytes: statSync(path).size, retainedBytesExact: true }
+    // A regular file or nothing: the size of whatever a link points at is not
+    // a fact about this run's retained log.
+    const stats = lstatSync(path)
+    if (!stats.isFile()) return { retainedBytesExact: false }
+    return { retainedBytes: stats.size, retainedBytesExact: true }
   } catch {
     return { retainedBytesExact: false }
   }
@@ -860,11 +873,27 @@ function inspectRetained(
   environment: ServiceEnvironment,
   request: InspectRunRequest,
 ): InspectionResponse<unknown> {
+  // A handle that cannot address storage names nothing, and is answered as
+  // such. It never reaches the filesystem, so there is no traversal to
+  // defend against further down.
+  if (!isRunId(request.runId)) return { status: "notFound", subject: "run" }
+
   const path = join(runDirectory(environment.storage, request.runId), INDEX_ARTIFACT)
-  let index: unknown
+
+  let contents: string
   try {
-    index = JSON.parse(readFileSync(path, "utf8"))
-  } catch {
+    // The index is tool-managed storage, so it must still be a private regular
+    // file owned by this user. A symlink here would let anything on the
+    // machine decide what a Test Run is reported to have found.
+    assertSafeFile(path)
+    contents = readFileSync(path, "utf8")
+  } catch (error) {
+    // "Nothing is here" and "something is here that must not be trusted" are
+    // different facts, and reporting the second as the first would hide the
+    // only signal anyone gets that the storage was tampered with.
+    if (error instanceof UnsafeArtifactError) {
+      return { status: "invalid", message: "the retained index for this Test Run is not trustworthy" }
+    }
     // A tombstone distinguishes "deleted" from "never known"; without one, the
     // run is genuinely unknown within this trusted root's namespace.
     return tombstoneExists(environment.storage, request.runId)
@@ -872,11 +901,27 @@ function inspectRetained(
       : { status: "notFound", subject: "run" }
   }
 
-  return inspectIndex(
-    index as Parameters<typeof inspectIndex>[0],
-    request,
-    environment.cursorSecret,
-  ) as InspectionResponse<unknown>
+  // Everything past this point concerns a file that is *present*. Unreadable
+  // content is therefore `invalid`, never `notFound`: the evidence exists and
+  // cannot be trusted, which is a different thing to tell a caller than that
+  // the run was never known.
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(contents)
+  } catch {
+    return { status: "invalid", message: "the retained index for this Test Run could not be read" }
+  }
+
+  if (!isNormalizedIndex(parsed)) {
+    return { status: "invalid", message: "the retained index for this Test Run could not be read" }
+  }
+  // The index names the run it was published for. A file that disagrees is not
+  // this run's evidence, whatever directory it was found in.
+  if (parsed.runId !== request.runId) {
+    return { status: "invalid", message: "the retained index does not belong to this Test Run" }
+  }
+
+  return inspectIndex(parsed, request, environment.cursorSecret) as InspectionResponse<unknown>
 }
 
 function tombstoneExists(storage: Storage, runId: string): boolean {
@@ -988,8 +1033,14 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string 
       }
       const child = join(current, entry)
       hash.update(entry)
-      if (statSync(child).isDirectory()) walk(child)
-      else hash.update(readFileSync(child))
+
+      // A link is hashed as the text it holds, never followed. Following one
+      // would make a bundle's identity depend on bytes outside it, and a link
+      // to an ancestor would make the walk depend on the budget to end.
+      const stats = lstatSync(child)
+      if (stats.isSymbolicLink()) hash.update(readlinkSync(child))
+      else if (stats.isDirectory()) walk(child)
+      else if (stats.isFile()) hash.update(readFileSync(child))
     }
   }
 

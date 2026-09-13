@@ -15,10 +15,17 @@
  * evicted run reports `expired` rather than a misleading `notFound`.
  */
 
-import { readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs"
+import { lstatSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs"
 import { join } from "node:path"
 
-import { writePrivateFileAtomic, type Storage } from "./paths.ts"
+import {
+  assertSafeFile,
+  isRunId,
+  runDirectory,
+  UnknownRunError,
+  writePrivateFileAtomic,
+  type Storage,
+} from "./paths.ts"
 import { readRunRecord } from "./state.ts"
 
 export const RETENTION = {
@@ -82,7 +89,12 @@ export function collectRuns(environment: RetentionEnvironment): RetainedRun[] {
 
   const runs: RetainedRun[] = []
   for (const runId of entries) {
-    const path = join(storage.runsDir, runId)
+    // A name that could not address storage is not a run of ours, whatever
+    // put it here. Skipping it keeps retention from ever deleting, counting
+    // or reporting something it does not own.
+    if (!isRunId(runId)) continue
+
+    const path = runDirectory(storage, runId)
     if (!isDirectory(path)) continue
 
     const record = readRunRecord(storage, runId)
@@ -191,17 +203,38 @@ export function publishTombstone(storage: Storage, runId: string, nowMs: number)
 }
 
 export function tombstonePath(storage: Storage, runId: string): string {
+  if (!isRunId(runId)) throw new UnknownRunError()
   return join(storage.tombstonesDir, `${runId}.json`)
 }
 
+/**
+ * A tombstone, or `undefined` if there is not a well-formed one.
+ *
+ * Every field is checked rather than the presence of `runId` alone: the value
+ * that matters here is `expiresAtMs`, which sweeping sorts and compares — a
+ * missing or non-numeric one would make `NaN` the comparison key and quietly
+ * rearrange what gets deleted.
+ */
 export function readTombstone(storage: Storage, runId: string): Tombstone | undefined {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(tombstonePath(storage, runId), "utf8"))
-    if (typeof parsed === "object" && parsed !== null && "runId" in parsed) return parsed as Tombstone
-    return undefined
+    const path = tombstonePath(storage, runId)
+    assertSafeFile(path)
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
+    return isTombstone(parsed) && parsed.runId === runId ? parsed : undefined
   } catch {
     return undefined
   }
+}
+
+function isTombstone(value: unknown): value is Tombstone {
+  if (typeof value !== "object" || value === null) return false
+  const tombstone = value as Partial<Tombstone>
+  return (
+    tombstone.schemaVersion === 1 &&
+    typeof tombstone.runId === "string" &&
+    typeof tombstone.expiresAtMs === "number" &&
+    Number.isFinite(tombstone.expiresAtMs)
+  )
 }
 
 /** Expire tombstones by age, then by count, oldest first. */
@@ -216,6 +249,7 @@ export function sweepTombstones(storage: Storage, nowMs: number): string[] {
   const tombstones = entries
     .filter((name) => name.endsWith(".json"))
     .map((name) => name.slice(0, -".json".length))
+    .filter(isRunId)
     .map((runId) => ({ runId, tombstone: readTombstone(storage, runId) }))
     .filter((entry): entry is { runId: string; tombstone: Tombstone } => entry.tombstone !== undefined)
     .sort((a, b) => a.tombstone.expiresAtMs - b.tombstone.expiresAtMs)
@@ -256,6 +290,7 @@ export function reconcileTrash(storage: Storage, nowMs: number): string[] {
 
   const reconciled: string[] = []
   for (const runId of entries) {
+    if (!isRunId(runId)) continue
     if (readTombstone(storage, runId) === undefined) {
       publishTombstone(storage, runId, nowMs)
       reconciled.push(runId)
@@ -295,6 +330,11 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
 /**
  * Apparent size, not allocated blocks — which is exactly what lets the byte-cap
  * tests use sparse files and exercise real accounting without consuming disk.
+ *
+ * Every entry is examined with `lstat` and symbolic links are skipped outright,
+ * for two independent reasons: a link into someone else's data would make
+ * retention account for — and then evict against — bytes it does not own, and
+ * a link back to an ancestor would make this walk never finish.
  */
 export function directorySize(path: string): number {
   let total = 0
@@ -308,9 +348,10 @@ export function directorySize(path: string): number {
     for (const entry of entries) {
       const child = join(current, entry)
       try {
-        const stats = statSync(child)
+        const stats = lstatSync(child)
+        if (stats.isSymbolicLink()) continue
         if (stats.isDirectory()) walk(child)
-        else total += stats.size
+        else if (stats.isFile()) total += stats.size
       } catch {
         // A file that vanished mid-sweep contributes nothing, and is not an error.
       }
@@ -320,9 +361,10 @@ export function directorySize(path: string): number {
   return total
 }
 
+/** A real directory, never a link that points at one. */
 function isDirectory(path: string): boolean {
   try {
-    return statSync(path).isDirectory()
+    return lstatSync(path).isDirectory()
   } catch {
     return false
   }

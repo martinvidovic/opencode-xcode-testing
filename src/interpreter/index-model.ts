@@ -50,6 +50,53 @@ export type NormalizedIndex = {
   bundleDigestVerified: "yes" | "no" | "unknown"
 }
 
+/**
+ * Whether a parsed value is an index this decoder can page through.
+ *
+ * A retained index is a file on disk, and "on disk" is not the same as
+ * "written by this version of this tool": it may have been published by an
+ * older decoder, truncated by a full volume, or edited. Paging through it
+ * without checking would answer a caller with whatever the bytes happened to
+ * say, which is the one thing evidence must never do.
+ *
+ * The private `indexVersion` is checked rather than the public `schemaVersion`,
+ * because it is the field that tracks this structure's shape — the other two
+ * versions change for unrelated reasons.
+ */
+export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
+  if (typeof value !== "object" || value === null) return false
+  const index = value as Partial<NormalizedIndex>
+
+  return (
+    index.indexVersion === INDEX_VERSION &&
+    typeof index.runId === "string" &&
+    typeof index.decoderVersion === "number" &&
+    typeof index.schemaVersion === "string" &&
+    Array.isArray(index.occurrences) &&
+    Array.isArray(index.testFailures) &&
+    Array.isArray(index.buildErrors) &&
+    Array.isArray(index.attestations) &&
+    typeof index.scopeVerdict === "string" &&
+    typeof index.scopeDigest === "string" &&
+    typeof index.requestedSelectionCount === "number" &&
+    typeof index.observedOutsideScope === "number" &&
+    isFacet(index.build) &&
+    isFacet(index.tests) &&
+    isLogFacet(index.log) &&
+    typeof index.bundleDigestVerified === "string"
+  )
+}
+
+function isFacet(value: unknown): boolean {
+  return typeof value === "object" && value !== null && typeof (value as { completeness?: unknown }).completeness === "string"
+}
+
+function isLogFacet(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false
+  const log = value as Partial<LogFacetEvidence>
+  return typeof log.availability === "string" && typeof log.retainedBytesExact === "boolean"
+}
+
 /** Count every occurrence. Scope attestation is what deduplicates identities. */
 export function countOccurrences(occurrences: IndexedOccurrence[]): TestCounts {
   const counts: TestCounts = {

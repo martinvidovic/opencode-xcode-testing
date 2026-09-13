@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -11,7 +11,10 @@ import type { ProjectConfiguration, TestRunRequest } from "../../src/domain/requ
 import { resolveTestRun, type ResolutionEnvironment } from "../../src/runner/resolution.ts"
 
 function repository(build: (root: string) => void = () => {}): { root: string; dispose(): void } {
-  const root = mkdtempSync(join(tmpdir(), "xcode-test-resolution-"))
+  // Canonical from the start: on macOS the temp directory is itself reached
+  // through a symlink, and a test that compared against the uncanonical path
+  // would be asserting the very confusion resolution exists to remove.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "xcode-test-resolution-")))
   mkdirSync(join(root, "Example.xcodeproj", "xcshareddata", "xcschemes"), { recursive: true })
   writeFileSync(join(root, "Example.xcodeproj", "xcshareddata", "xcschemes", "App.xcscheme"), "<Scheme/>\n")
   build(root)
@@ -98,8 +101,38 @@ describe("a resolvable request", () => {
   test("hands the runner a canonical absolute path nobody named", () => {
     const { outcome, root } = resolve()
     if (outcome.status !== "resolved") throw new Error("expected a resolved run")
+
+    // The path executed is the path validated: the very string `realpath`
+    // returned, not the relative one re-joined afterwards. Re-joining would
+    // hand xcodebuild a link that containment was never checked against.
     expect(outcome.containerAbsolutePath).toBe(join(root, "Example.xcodeproj"))
     expect(outcome.resolved.xcodeContainer.value.path).toBe("Example.xcodeproj")
+  })
+
+  test("resolves a container reached through an in-repository symlink", () => {
+    const { outcome } = resolve(
+      { xcodeContainer: { kind: "project", path: "link/Example.xcodeproj" } },
+      {
+        build: (root) => {
+          mkdirSync(join(root, "nested"), { recursive: true })
+          mkdirSync(
+            join(root, "nested", "Example.xcodeproj", "xcshareddata", "xcschemes"),
+            { recursive: true },
+          )
+          writeFileSync(
+            join(root, "nested", "Example.xcodeproj", "xcshareddata", "xcschemes", "App.xcscheme"),
+            "<Scheme/>\n",
+          )
+          symlinkSync(join(root, "nested"), join(root, "link"))
+        },
+      },
+    )
+    if (outcome.status !== "resolved") throw new Error("expected a resolved run")
+
+    // Staying inside the repository is what makes it legal; the link is still
+    // resolved away, so the invocation never depends on it afterwards.
+    expect(outcome.containerAbsolutePath).not.toContain("link")
+    expect(outcome.containerAbsolutePath).toContain("nested")
   })
 })
 

@@ -136,16 +136,28 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
   return { status: "ran", reports }
 }
 
-/** Apparent bytes across every root's retained artifacts. */
+/**
+ * Apparent bytes across every root's retained artifacts.
+ *
+ * Only directories named by a well-formed root key are counted. This number
+ * drives user-wide eviction, so anything else that happens to sit in the roots
+ * directory must not be able to inflate it — or to be walked at all.
+ */
 export function totalCompletedBytes(storage: Storage): number {
   const rootsDir = join(storage.toolRoot, "roots")
   try {
     return readdirSync(rootsDir)
+      .filter(isRootKey)
       .map((rootKey) => directorySize(join(rootsDir, rootKey, "runs")))
       .reduce((total, bytes) => total + bytes, 0)
   } catch {
     return 0
   }
+}
+
+/** Exactly the shape `rootKeyFor` produces: a SHA-256 digest in lowercase hex. */
+function isRootKey(name: string): boolean {
+  return /^[0-9a-f]{64}$/.test(name)
 }
 
 function isRegistry(value: unknown): value is Registry {

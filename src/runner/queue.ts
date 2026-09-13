@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs"
 import type { QueuedFailureReason } from "../domain/outcome.ts"
 import { identityMatches, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
 import { withLock } from "./locks.ts"
-import { newRunId, type Storage, writePrivateFileAtomic } from "./paths.ts"
+import { assertSafeFile, isRunId, newRunId, type Storage, writePrivateFileAtomic } from "./paths.ts"
 
 /** Reconciliation runs before enrollment, under its own fixed deadline. */
 export const RECONCILIATION_DEADLINE_MS = 60_000
@@ -62,6 +62,10 @@ const EMPTY: QueueState = { schemaVersion: 1, nextSequence: 1, tickets: [] }
 
 export function readQueue(storage: Storage): QueueState {
   try {
+    // Coordination state decides who may run and which slot is held, so it is
+    // read under the same owner-only, no-symlink rule as every other piece of
+    // tool-managed storage.
+    assertSafeFile(storage.queueFile)
     const parsed: unknown = JSON.parse(readFileSync(storage.queueFile, "utf8"))
     if (!isQueueState(parsed)) throw new Error("malformed")
     return parsed
@@ -284,13 +288,62 @@ export function reap(environment: AdmissionEnvironment, state: QueueState): Queu
   return tickets.length === state.tickets.length ? state : { ...state, tickets }
 }
 
+/**
+ * Validate the whole state, nested fields included.
+ *
+ * A shallow check passes a file whose tickets are numbers and whose
+ * `activeRunId` is an object, and every field here is load-bearing: sequences
+ * order the FIFO, owners decide liveness, deadlines decide expiry, and
+ * `activeRunId` addresses a directory. Admitting a partly-valid state would
+ * not fail — it would quietly misbehave, which is worse, so this fails closed
+ * on anything it does not fully recognize.
+ */
 function isQueueState(value: unknown): value is QueueState {
   if (typeof value !== "object" || value === null) return false
   const state = value as Partial<QueueState>
+
   return (
     state.schemaVersion === 1 &&
     typeof state.nextSequence === "number" &&
-    Array.isArray(state.tickets)
+    Number.isInteger(state.nextSequence) &&
+    Array.isArray(state.tickets) &&
+    state.tickets.every(isTicket) &&
+    (state.activeRunId === undefined || isRunId(state.activeRunId)) &&
+    (state.quarantine === undefined || isQuarantine(state.quarantine))
+  )
+}
+
+function isTicket(value: unknown): value is Ticket {
+  if (typeof value !== "object" || value === null) return false
+  const ticket = value as Partial<Ticket>
+  return (
+    typeof ticket.sequence === "number" &&
+    Number.isInteger(ticket.sequence) &&
+    typeof ticket.ticketId === "string" &&
+    typeof ticket.createdAt === "string" &&
+    typeof ticket.deadlineAtMs === "number" &&
+    Number.isFinite(ticket.deadlineAtMs) &&
+    isProcessIdentity(ticket.owner)
+  )
+}
+
+function isQuarantine(value: unknown): value is Quarantine {
+  if (typeof value !== "object" || value === null) return false
+  const quarantine = value as Partial<Quarantine>
+  return (
+    isRunId(quarantine.runId) &&
+    typeof quarantine.reason === "string" &&
+    typeof quarantine.since === "string"
+  )
+}
+
+function isProcessIdentity(value: unknown): value is ProcessIdentity {
+  if (typeof value !== "object" || value === null) return false
+  const identity = value as Partial<ProcessIdentity>
+  return (
+    typeof identity.pid === "number" &&
+    Number.isInteger(identity.pid) &&
+    typeof identity.startedAt === "string"
   )
 }
 
