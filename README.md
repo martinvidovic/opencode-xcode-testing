@@ -1,0 +1,267 @@
+# Xcode Test Tool
+
+A local OpenCode capability for running scoped Xcode tests while exposing only
+trustworthy, compact results to the model.
+
+It runs `xcodebuild test` against an explicit Requested Scope, keeps the full
+diagnostics on disk and out of the model's context, and reports a compact
+result that carries enough evidence to reject a false success — including the
+case a naive wrapper gets wrong, where a filter matched no tests at all and
+`xcodebuild` exits zero.
+
+The capability is three separately-deniable tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `xcode_test` | Run a Test Run against an explicit Requested Scope. |
+| `xcode_test_inspect` | Read deeper into a finished Test Run, without rerunning it. |
+| `xcode_test_recover` | Clear a stuck execution slot. Takes no arguments. |
+
+Three IDs rather than one multiplexed tool, because that is what makes exact
+allowlisting meaningful: an agent can be given the ability to run tests without
+being given the ability to clear a quarantine.
+
+## Requirements
+
+- **macOS with Xcode 26.** The tool reads Result Bundles back with the same
+  toolchain that wrote them, and claims exactly one Xcode major.
+- **Bun on `PATH`.** See below — this is the prerequisite people are most
+  likely to be missing.
+- **OpenCode `1.18.29` or `1.18.30`.** Other versions load normally and emit a
+  one-time startup diagnostic; the plugin never refuses to load over a patch
+  bump.
+
+### Bun is a real prerequisite
+
+The plugin ships as source with no build step, so its supervisor process is
+spawned as TypeScript and needs a runtime that can execute it.
+
+A Homebrew-installed `opencode` is a **Bun-compiled single-file executable**.
+It reports a Bun version, but it cannot run a `.ts` file — so having `opencode`
+installed implies nothing about Bun being available. If `bun` is not on your
+`PATH`, install it:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+The plugin probes candidates in order and **verifies each one actually runs a
+trivial script** rather than trusting a version string:
+
+1. an explicit `runtime` path in the project configuration,
+2. `opencode`'s own executable — expected to fall through, for the reason above,
+3. `bun` on `PATH`.
+
+If none works, a Test Run fails closed with `runnerFailure`, naming Bun, the
+candidates it probed, and the configuration key that would fix it. There is no
+silent fallback.
+
+## Installation
+
+Clone the repository somewhere stable. The path becomes machine-local
+configuration, so pick a location you will not move.
+
+```bash
+git clone https://github.com/martinvidovic/opencode-xcode-testing.git
+```
+
+### Global install (the documented default)
+
+Install once per machine, in OpenCode's own config directory:
+
+```json
+{
+  "plugin": ["/absolute/path/to/opencode-xcode-testing/src/adapter/plugin.ts"]
+}
+```
+
+in `~/.config/opencode/opencode.json`. Or, equivalently, symlink the checkout
+into the plugin directory:
+
+```bash
+ln -s /absolute/path/to/opencode-xcode-testing ~/.config/opencode/plugin/xcode-test
+```
+
+**Why global is the default:** the entry contains an absolute path that is true
+only on your machine. `~/.config/opencode/opencode.json` is the one file that is
+never committed to a project repository, so that is where a machine-local path
+belongs. A globally installed plugin stays completely invisible in projects that
+have not opted in, at a sub-millisecond cost per session start.
+
+### Per-project install (the alternative)
+
+A project's own `opencode.json` also accepts an absolute `plugin` entry:
+
+```json
+{
+  "plugin": ["/absolute/path/to/opencode-xcode-testing/src/adapter/plugin.ts"]
+}
+```
+
+This works, but the caveat is real: that path is machine-local, and committing
+it means the file is wrong for every colleague and every CI machine. Use it for
+a checkout you are not sharing.
+
+## Enabling it for a project
+
+Installation alone registers nothing. The plugin registers its tools only when
+this file exists:
+
+```
+<project>/.opencode/xcode-test.json
+```
+
+The minimum is one line:
+
+```json
+{ "schemaVersion": 1 }
+```
+
+**Absent, the plugin registers nothing and says nothing.** "This is not an Xcode
+project" is a normal state, not a diagnostic — so a global install does not put
+Xcode tools in front of a model working on a Rust service.
+
+This file is the enablement marker *and* the project configuration. Its fields
+are all optional:
+
+```json
+{
+  "schemaVersion": 1,
+  "xcodeContainer": { "kind": "workspace", "path": "Example.xcworkspace" },
+  "scheme": "App",
+  "destination": { "kind": "named", "platform": "iOS Simulator", "name": "iPhone 17" },
+  "derivedData": { "mode": "shared" },
+  "timeoutSeconds": 900
+}
+```
+
+| Field | Resolution when omitted |
+| --- | --- |
+| `xcodeContainer` | Discovered beneath the project. Exactly one workspace wins; only if there are no workspaces are projects considered. Two of either is a structured ambiguity you must resolve, never a guess. |
+| `scheme` | Discovered from **checked-in shared schemes only**, and only when there is exactly one. A scheme under `xcuserdata` exists on one machine and would make discovery depend on whose laptop it ran on. |
+| `destination` | **Required.** There is no safe default: guessing one runs your tests somewhere you did not ask for. |
+| `derivedData` | `shared`. Use `isolated` for a per-run directory. |
+| `timeoutSeconds` | `900`. Range is 1 to 7200. |
+
+Container paths are repository-relative, and are rejected if they traverse out
+of the project or resolve outside it through a symlink.
+
+### `runtime` is machine-local
+
+The configuration also accepts an optional `runtime` path for a Bun that is not
+on `PATH`:
+
+```json
+{ "schemaVersion": 1, "runtime": "/absolute/path/to/bun" }
+```
+
+Treat this like the `plugin` entry: it describes one machine. A relative value
+resolves against the project root, which is the only form worth committing. An
+explicit `runtime` that is set but unusable is a **hard error, never a
+fallback** — a setting that silently degrades is worse than one that fails.
+
+## Restricted agents
+
+A plugin cannot register an agent, so the agents ship as committed templates in
+[`examples/agent/`](examples/agent). They contain no absolute paths, so unlike
+the plugin entry they are portable and a team can share them.
+
+Copy the one you want into your project:
+
+```bash
+mkdir -p .opencode/agent
+cp /absolute/path/to/opencode-xcode-testing/examples/agent/xcode-test-runner.md .opencode/agent/
+```
+
+| Template | Shape |
+| --- | --- |
+| `xcode-test-runner.md` | A subagent with the three test tools and nothing else. No shell, no file access. |
+| `xcode-developer.md` | A primary agent that can read and edit code and run tests, but has no shell. |
+
+Both use `permission:` rules, never the deprecated `tools:` map, and both open
+with a catch-all:
+
+```yaml
+permission:
+  "*": deny
+  xcode_test: allow
+  xcode_test_inspect: allow
+  xcode_test_recover: allow
+```
+
+Two details matter here. Rules are **last-match-wins with key order preserved**,
+so the catch-all has to come first and the specifics after — the reverse order
+denies everything. And a rule whose pattern is exactly `"*"` with action `deny`
+**hides** the remaining tools from the model entirely, rather than blocking them
+at call time. For a restricted agent that is the point: `bash` is not something
+the model is refused, it is something the model never sees.
+
+These templates are asserted by the acceptance gate, which materializes these
+exact files and checks that the resulting permission ruleset hides `bash` while
+exposing the family. They are tested artifacts, not documentation that drifts.
+
+## What the tool will not do
+
+The design is deliberately narrow, and the boundaries are worth knowing before
+you reach for them:
+
+- **No arbitrary shell.** Every Test Run spawns `/usr/bin/xcodebuild` with a
+  fixed `test` action and runner-generated arguments. There is no executable,
+  command, argument array, environment override, working directory or shell
+  fragment a caller can supply. (Your project's own build-phase scripts still
+  run — the repository is trusted. The guarantee is that *model-controlled
+  input* cannot select arbitrary execution.)
+- **No automatic reruns.** A flaky test that passes on retry is information, not
+  noise. Start another Test Run yourself if you want one.
+- **No paths in results.** The only handle a result exposes is an opaque run id.
+  Result Bundles, DerivedData and logs live outside your repository, under
+  `~/Library/Application Support/opencode-xcode-test`, so a `git clean` cannot
+  destroy an in-flight run's evidence.
+- **One Test Run at a time per project.** Isolated DerivedData alone does not
+  make concurrent simulator, device or package-cache use trustworthy, so runs
+  are serialized across processes.
+- **Logs are never classified on.** Raw log text is version-dependent, possibly
+  localized, and written by your repository. It is retained in full and
+  inspectable on request, but it never decides whether a run passed.
+
+## Development
+
+```bash
+bun test
+```
+
+`bun test` is the single gate: the unit suites, the import lint and the hygiene
+lint all run as ordinary `bun:test` suites. The project has **zero runtime
+dependencies** — shipped code may import only `node:*` built-ins plus exactly
+one `@opencode-ai/plugin` import confined to `src/adapter`, and that is enforced
+by a lint rather than by convention.
+
+```
+src/domain/       shared typed results and the CONTEXT.md vocabulary
+src/runner/       Xcode runner, supervisor, admission, retention, recovery
+src/interpreter/  xcresult interpretation
+src/adapter/      plugin entrypoint, tool definitions, renderer
+scripts/          fixture generation, freshness check
+examples/agent/   restricted-agent templates
+```
+
+Two more commands are worth knowing:
+
+```bash
+# Generate a real, buildable Xcode fixture project (no sample project is committed)
+bun scripts/generate-fixture-project.ts --out /tmp/fixture
+
+# Check whether the committed fixtures still match this machine's Xcode
+bun scripts/freshness-check.ts
+```
+
+The freshness check is **non-fatal by design**. Drift means the fixtures are
+stale, not that the tool is wrong, and a check that broke the build on a routine
+Xcode update would be switched off within a week.
+
+## Design record
+
+The vocabulary is in [`CONTEXT.md`](CONTEXT.md); the decisions are in
+[`docs/adr/`](docs/adr). Start with
+[ADR 0002](docs/adr/0002-opencode-v1-adapter-and-restricted-agent-integration.md)
+if you want to know why installation works the way it does.
