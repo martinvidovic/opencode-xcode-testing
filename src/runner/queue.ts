@@ -42,6 +42,13 @@ export type Ticket = {
 
 export type Quarantine = { runId: string; reason: string; since: string }
 
+/**
+ * Why a root is quarantined, in the one wording every path uses. A root held
+ * for different-sounding reasons depending on which code path noticed would
+ * make the same condition look like several.
+ */
+export const QUARANTINE_REASON = "the Test Run lifecycle could not be confirmed"
+
 export type QueueState = {
   schemaVersion: 1
   nextSequence: number
@@ -115,9 +122,30 @@ export type AdmissionResult =
  * reconciliation — so the reported queue duration covers everything the caller
  * actually waited through, not just the FIFO portion.
  */
+export type AdmissionOptions = {
+  signal?: { aborted: boolean }
+  waitDeadlineMs?: number
+  /**
+   * Create the run's durable state, under the root lock, **before** the slot
+   * transfers to it. Returning false means the id is unusable — a directory of
+   * that name already exists — and another is tried.
+   *
+   * This ordering is the whole guarantee: an active slot naming a run with no
+   * durable state is, by protocol invariant, a run that never started, and
+   * recovery can release it. Were the slot to transfer first, a crash in the
+   * gap would wedge the trusted root with nothing to reconcile against.
+   */
+  prepare?(runId: string): boolean
+  /** Injectable so a collision is reproducible rather than astronomically rare. */
+  newRunId?(): string
+}
+
+/** Attempts to find an unused run id before admission gives up. */
+export const RUN_ID_ATTEMPTS = 4
+
 export async function admit(
   environment: AdmissionEnvironment,
-  options: { signal?: { aborted: boolean }; waitDeadlineMs?: number } = {},
+  options: AdmissionOptions = {},
 ): Promise<AdmissionResult> {
   const { storage } = environment
   const queuedAt = environment.timestamp()
@@ -174,12 +202,31 @@ export async function admit(
       const head = state.tickets[0]
       if (head === undefined || head.ticketId !== ticket.ticketId) return undefined
 
-      const runId = newRunId()
-      writeQueue(storage, {
-        ...state,
-        activeRunId: runId,
-        tickets: state.tickets.filter((entry) => entry.ticketId !== ticket.ticketId),
-      })
+      const allocate = options.newRunId ?? newRunId
+      const withdraw = state.tickets.filter((entry) => entry.ticketId !== ticket.ticketId)
+
+      let runId: string | undefined
+      for (let attempt = 0; attempt < RUN_ID_ATTEMPTS; attempt += 1) {
+        const candidate = allocate()
+        if (options.prepare === undefined || options.prepare(candidate)) {
+          runId = candidate
+          break
+        }
+      }
+
+      if (runId === undefined) {
+        // Durable state could not be created, so no slot transfers. Failing
+        // closed here is what keeps ownership and artifacts from diverging.
+        //
+        // `recoveryFailed` is the closed taxonomy's term for an operational
+        // failure of root coordination, which this is — there is no separate
+        // reason for "could not allocate", and inventing one would widen a
+        // closed set for a case a caller cannot act on differently.
+        writeQueue(storage, { ...state, tickets: withdraw })
+        return { status: "failed", reason: "recoveryFailed", ...queued() }
+      }
+
+      writeQueue(storage, { ...state, activeRunId: runId, tickets: withdraw })
       return {
         status: "admitted",
         runId,
@@ -205,7 +252,7 @@ export async function admit(
 export function releaseSlot(
   storage: Storage,
   runId: string,
-  quarantine?: { reason: string; since: string },
+  quarantine?: Omit<Quarantine, "runId">,
 ): void {
   withLock(storage.rootLock, () => {
     const state = readQueue(storage)
@@ -213,16 +260,6 @@ export function releaseSlot(
     const next: QueueState = { ...state, tickets: state.tickets }
     delete next.activeRunId
     if (quarantine !== undefined) next.quarantine = { runId, ...quarantine }
-    writeQueue(storage, next)
-  })
-}
-
-/** Clear quarantine. Only recovery calls this, and only when it is certain. */
-export function clearQuarantine(storage: Storage): void {
-  withLock(storage.rootLock, () => {
-    const state = readQueue(storage)
-    const next = { ...state }
-    delete next.quarantine
     writeQueue(storage, next)
   })
 }

@@ -317,3 +317,47 @@ describe("the limits themselves", () => {
     expect(plan.reasons["b"]).toBeUndefined()
   })
 })
+
+describe("the lifecycle boundary", () => {
+  test("holds back a run whose isolated DerivedData has not been reclaimed", async () => {
+    // Retention eligibility begins only after cleanup: evicting first would
+    // delete the record and orphan the scratch directory it named.
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-dd")
+      seedRun(box.storage, {
+        runId: "run-dd",
+        state: "completed",
+        completedAt: new Date(NOW - 30 * DAY_MS).toISOString(),
+        derivedDataMode: "isolated",
+      })
+      expect(retain(box).evicted).toEqual([])
+    })
+  })
+
+  test("releases it once cleanup is recorded", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-dd")
+      seedRun(box.storage, {
+        runId: "run-dd",
+        state: "completed",
+        completedAt: new Date(NOW - 30 * DAY_MS).toISOString(),
+        derivedDataMode: "isolated",
+        derivedDataCleaned: true,
+      })
+      expect(retain(box).evicted).toEqual(["run-dd"])
+    })
+  })
+
+  test("never holds back a shared-DerivedData run, which owns no scratch of its own", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-shared")
+      seedRun(box.storage, {
+        runId: "run-shared",
+        state: "completed",
+        completedAt: new Date(NOW - 30 * DAY_MS).toISOString(),
+        derivedDataMode: "shared",
+      })
+      expect(retain(box).evicted).toEqual(["run-shared"])
+    })
+  })
+})
