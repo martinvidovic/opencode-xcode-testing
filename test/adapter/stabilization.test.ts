@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { bundleDigest, finalizeRecovered } from "../../src/adapter/service.ts"
@@ -85,6 +85,22 @@ describe("the bundle digest", () => {
       const a = seedWithBundle(box, "run-a", "one")
       const b = seedWithBundle(box, "run-b", "two")
       expect(bundleDigest(a)).not.toBe(bundleDigest(b))
+    })
+  })
+
+  test("never depends on bytes outside the bundle", async () => {
+    await withSandbox((box) => {
+      const outside = join(box.storage.rootDir, "outside")
+      writeFileSync(outside, "first")
+
+      const bundle = seedWithBundle(box, "run-a", "same")
+      symlinkSync(outside, join(bundle, "link"))
+      const before = bundleDigest(bundle)
+
+      // A digest that followed the link would change here, and a Test Run's
+      // identity would then be editable by anything that can write this file.
+      writeFileSync(outside, "second, and much longer than the first")
+      expect(bundleDigest(bundle)).toBe(before)
     })
   })
 })

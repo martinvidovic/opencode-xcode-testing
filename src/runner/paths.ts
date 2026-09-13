@@ -17,10 +17,12 @@
 import { createHash, randomBytes } from "node:crypto"
 import {
   constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
   closeSync,
+  readFileSync,
   renameSync,
   writeFileSync,
   fsyncSync,
@@ -64,6 +66,17 @@ export function rootKeyFor(canonicalTrustedRoot: string): string {
   return createHash("sha256").update(`trusted-root ${canonicalTrustedRoot}`, "utf8").digest("hex")
 }
 
+/**
+ * Exactly what `rootKeyFor` produces: a SHA-256 digest in lowercase hex.
+ *
+ * Checked wherever a key arrives from durable state rather than from the
+ * function above, because a key names a directory that housekeeping renames
+ * and recursively deletes.
+ */
+export function isRootKey(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+}
+
 export function storageFor(homeDir: string, canonicalTrustedRoot: string): Storage {
   return storageForRootKey(homeDir, rootKeyFor(canonicalTrustedRoot))
 }
@@ -94,6 +107,23 @@ export function storageForRootKey(homeDir: string, rootKey: string): Storage {
     tombstonesDir: join(rootDir, "tombstones"),
     rootKey,
   }
+}
+
+/**
+ * Where shared DerivedData for one container lives.
+ *
+ * Keyed by the **canonical container**, not by the trusted root. A repository
+ * with two containers is ordinary, and letting both write one DerivedData
+ * would have them overwrite each other's build products — a shared cache that
+ * makes builds slower and results less trustworthy is not a cache. The key is
+ * a hash for the same reason the root key is: storage must not spell out where
+ * anyone's code lives.
+ */
+export function sharedDerivedDataFor(storage: Storage, canonicalContainerPath: string): string {
+  const key = createHash("sha256")
+    .update(`xcode-container ${canonicalContainerPath}`, "utf8")
+    .digest("hex")
+  return join(storage.rootDir, RUN_ARTIFACTS.derivedData, key)
 }
 
 /** Create every directory the runner needs, owner-only, before anything runs. */
@@ -129,12 +159,44 @@ export function assertSafeDirectory(path: string): void {
   assertOwnedPrivately(path, stats.uid, stats.mode)
 }
 
-/** The same guarantee for a file. */
+/** The same guarantee for a file, checked without opening it. */
 export function assertSafeFile(path: string): void {
   const stats = lstatSync(path)
   if (stats.isSymbolicLink()) throw new UnsafeArtifactError(path, "is a symbolic link")
   if (!stats.isFile()) throw new UnsafeArtifactError(path, "is not a regular file")
   assertOwnedPrivately(path, stats.uid, stats.mode)
+}
+
+/**
+ * Read a private file, checking the bytes that are actually returned.
+ *
+ * `assertSafeFile` followed by `readFileSync` names the path twice, and the
+ * two calls need not reach the same file: the check and the read are a
+ * time-of-check-to-time-of-use pair with a window between them. Opening once
+ * with `O_NOFOLLOW` and validating the **descriptor** closes it — what is
+ * checked and what is read are then the same object by construction, and a
+ * link swapped in at any moment fails the open rather than redirecting it.
+ */
+export function readPrivateFile(path: string): string {
+  let fd: number
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  } catch (error) {
+    // `O_NOFOLLOW` reports a symbolic link by refusing to open it. That is a
+    // rejected artifact, not a missing one, and the two must stay
+    // distinguishable to the caller deciding what to tell a model.
+    if (isSymlinkRefusal(error)) throw new UnsafeArtifactError(path, "is a symbolic link")
+    throw error
+  }
+
+  try {
+    const stats = fstatSync(fd)
+    if (!stats.isFile()) throw new UnsafeArtifactError(path, "is not a regular file")
+    assertOwnedPrivately(path, stats.uid, stats.mode)
+    return readFileSync(fd, "utf8")
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function assertOwnedPrivately(path: string, uid: number, mode: number): void {
@@ -161,8 +223,55 @@ export function newRunId(): string {
   return randomBytes(16).toString("hex")
 }
 
+/**
+ * A `runId` safe to address storage with.
+ *
+ * The `runId` is the one piece of storage addressing a caller controls, and it
+ * arrives from a model, so the rule is a character set rather than a shape
+ * check: an identifier made only of alphanumerics, `-` and `_`, starting with
+ * an alphanumeric and bounded in length, cannot contain a separator, a `.` (so
+ * no `..` component), a NUL, a leading dash, or anything else a path reads
+ * specially. Traversal and absolute paths are unrepresentable rather than
+ * filtered.
+ *
+ * Deliberately not "exactly what `newRunId` emits". Pinning the rule to 32 hex
+ * characters would narrow nothing further — every dangerous character is
+ * already gone — while making every identifier in a test unreadable, and a
+ * diagnostic nobody can read is its own kind of defect.
+ */
+const RUN_ID = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/
+
+export function isRunId(value: unknown): value is string {
+  return typeof value === "string" && RUN_ID.test(value)
+}
+
+/**
+ * Where a run's private artifacts live.
+ *
+ * Validation happens **here**, at the one place every filesystem path for a run
+ * is derived from, rather than at each of the callers that would each have to
+ * remember. Anything that is not a run identifier throws before a path exists
+ * at all, so there is no such thing as a half-validated path in this codebase.
+ */
 export function runDirectory(storage: Storage, runId: string): string {
+  if (!isRunId(runId)) throw new UnknownRunError()
   return join(storage.runsDir, runId)
+}
+
+/**
+ * A `runId` that cannot address storage at all.
+ *
+ * Distinct from `UnsafeArtifactError` because the two mean different things to
+ * a caller: a malformed handle names nothing and is reported as "not found",
+ * while an unsafe artifact names something real that must not be trusted.
+ */
+export class UnknownRunError extends Error {
+  constructor() {
+    // The rejected value is never echoed: it is model-controlled text, and a
+    // diagnostic that repeats it is a diagnostic that can be written by it.
+    super("the Test Run identifier cannot address retained storage")
+    this.name = "UnknownRunError"
+  }
 }
 
 /**
@@ -217,6 +326,12 @@ function assertIsDirectory(path: string): void {
   if (!lstatSync(path).isDirectory()) {
     throw new UnsafeArtifactError(path, "is not an existing directory")
   }
+}
+
+/** `ELOOP` on every Unix; macOS reports `EMLINK` for this case instead. */
+function isSymlinkRefusal(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  return code === "ELOOP" || code === "EMLINK"
 }
 
 function isExists(error: unknown): boolean {

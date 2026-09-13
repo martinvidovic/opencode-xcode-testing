@@ -29,7 +29,7 @@ import { join } from "node:path"
 
 import { allIdentitiesGone, signallingIsSafe, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
 import { withLock } from "./locks.ts"
-import { RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
+import { isRunId, RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue, type QueueState } from "./queue.ts"
 import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
 
@@ -116,6 +116,10 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
   let busy = false
 
   for (const runId of runIds) {
+    // Recovery quarantines, releases slots and deletes directories. A name it
+    // could not have issued is not a run of ours, and is left exactly alone.
+    if (!isRunId(runId)) continue
+
     if (environment.signal?.aborted === true) {
       // Cancellation stops future work; it never undoes completed cleanup.
       return { ...report, status: "cancelled" }

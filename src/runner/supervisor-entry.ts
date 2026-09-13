@@ -18,7 +18,7 @@ import { join } from "node:path"
 import { decodeMessages, encodeMessage, secretMatches, type LaunchSpec } from "./control.ts"
 import { spawnGatedChild } from "./gate.ts"
 import { systemProbe } from "./identity.ts"
-import { RUN_ARTIFACTS, storageFor, type Storage } from "./paths.ts"
+import { isRunId, RUN_ARTIFACTS, runDirectory, storageFor, type Storage } from "./paths.ts"
 import { readRunRecord, type RunRecord } from "./state.ts"
 import { superviseRun } from "./supervisor.ts"
 
@@ -128,7 +128,10 @@ function parseSpec(candidate: Partial<SupervisorLaunchSpec>): SupervisorLaunchSp
     typeof candidate.secret !== "string" ||
     typeof candidate.homeDir !== "string" ||
     typeof candidate.trustedRoot !== "string" ||
-    typeof candidate.runId !== "string" ||
+    // Validated here rather than trusted: this is the supervisor's boundary,
+    // and a spec that cannot address storage must become EXIT_PROTOCOL rather
+    // than an exception thrown later from somewhere that derives a path.
+    !isRunId(candidate.runId) ||
     typeof candidate.command !== "string" ||
     !Array.isArray(candidate.args)
   ) {
@@ -191,7 +194,10 @@ export async function main(): Promise<number> {
 }
 
 export function logPathFor(storage: Storage, runId: string): string {
-  return join(storage.runsDir, runId, RUN_ARTIFACTS.rawLog)
+  // Through `runDirectory`, not assembled here: it is the one place a run's
+  // path is derived and therefore the one place the identifier is validated.
+  // A second way to build the same path is a second way to skip that.
+  return join(runDirectory(storage, runId), RUN_ARTIFACTS.rawLog)
 }
 
 function selfIdentity(): RunRecord["supervisor"] {

@@ -8,15 +8,23 @@
  * happened, because a state can only ever have moved forward.
  */
 
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import type { EvidenceFact } from "../domain/evidence.ts"
+import { isRecord } from "../domain/json.ts"
 import type { ResolvedTestRun } from "../domain/request.ts"
 import type { RequestedScope } from "../domain/scope.ts"
 import type { ProcessTerminationTrigger } from "../domain/outcome.ts"
 import type { ProcessIdentity } from "./identity.ts"
-import { assertSafeFile, RUN_ARTIFACTS, runDirectory, type Storage, writePrivateFileAtomic } from "./paths.ts"
+import {
+  isRootKey,
+  isRunId,
+  readPrivateFile,
+  RUN_ARTIFACTS,
+  runDirectory,
+  writePrivateFileAtomic,
+  type Storage,
+} from "./paths.ts"
 
 export const RUN_STATES = [
   "admitted",
@@ -117,10 +125,11 @@ export function writeRunRecord(storage: Storage, record: RunRecord): void {
  * caller treats `undefined` as a reason to fail closed, not as an empty run.
  */
 export function readRunRecord(storage: Storage, runId: string): RunRecord | undefined {
-  const path = metadataPath(storage, runId)
   try {
-    assertSafeFile(path)
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
+    // Inside the `try`: deriving the path is itself a validation step, and a
+    // handle that cannot address storage must read as "no record", not as a
+    // thrown error escaping a function whose whole contract is to return one.
+    const parsed: unknown = JSON.parse(readPrivateFile(metadataPath(storage, runId)))
     return isRunRecord(parsed) ? parsed : undefined
   } catch {
     return undefined
@@ -142,14 +151,50 @@ export function advance(
   return next
 }
 
+/**
+ * Validate the record, nested process identities included.
+ *
+ * The fields here are not merely described by this file — they are acted on.
+ * `child.pgid` reaches `signalGroup`, `supervisor` and `owner` decide whether
+ * recovery adopts a run, and `runId` addresses a directory. A check that
+ * confirmed only the four top-level fields would let a corrupted or planted
+ * `metadata.json` send a signal to a process group of its own choosing, which
+ * is the sharpest thing anything in this codebase does.
+ */
 function isRunRecord(value: unknown): value is RunRecord {
-  if (typeof value !== "object" || value === null) return false
+  if (!isRecord(value)) return false
   const record = value as Partial<RunRecord>
+
   return (
     record.schemaVersion === 1 &&
-    typeof record.runId === "string" &&
-    typeof record.rootKey === "string" &&
+    isRunId(record.runId) &&
+    isRootKey(record.rootKey) &&
     typeof record.state === "string" &&
-    (RUN_STATES as readonly string[]).includes(record.state)
+    (RUN_STATES as readonly string[]).includes(record.state) &&
+    typeof record.admittedAt === "string" &&
+    typeof record.timeoutSeconds === "number" &&
+    (record.owner === undefined || isProcessIdentity(record.owner)) &&
+    (record.supervisor === undefined || isProcessIdentity(record.supervisor)) &&
+    (record.child === undefined || isChildRecord(record.child))
   )
+}
+
+function isProcessIdentity(value: unknown): value is ProcessIdentity {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.pid === "number" &&
+    Number.isInteger(value.pid) &&
+    value.pid > 0 &&
+    typeof value.startedAt === "string"
+  )
+}
+
+/**
+ * A process group is signalled by this number, so it is checked like one:
+ * an integer greater than one. Zero and negative values are not identifiers
+ * at all to `kill(2)` — they select the caller's own group, or every process
+ * the user may signal.
+ */
+function isChildRecord(value: unknown): value is ChildRecord {
+  return isProcessIdentity(value) && Number.isInteger(value.pgid) && (value.pgid as number) > 1
 }

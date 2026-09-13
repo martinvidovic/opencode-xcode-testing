@@ -104,9 +104,9 @@ export function resolveTestRun(
   const derivedDataMode = configuration?.derivedData?.mode
   return {
     status: "resolved",
-    containerAbsolutePath: join(environment.trustedRoot, container.value.path),
+    containerAbsolutePath: container.absolutePath,
     resolved: {
-      xcodeContainer: container,
+      xcodeContainer: { value: container.value, provenance: container.provenance },
       scheme,
       destination,
       derivedData:
@@ -157,17 +157,30 @@ function resolveContainer(
   configuration: ProjectConfiguration | undefined,
   discover: NonNullable<ResolutionEnvironment["discover"]>,
   errors: RequestError[],
-): ResolvedTestRun["xcodeContainer"] | undefined {
+): (ResolvedTestRun["xcodeContainer"] & { absolutePath: string }) | undefined {
   const requested = request.xcodeContainer ?? configuration?.xcodeContainer
   const provenance = request.xcodeContainer !== undefined ? "request" : "configuration"
 
   if (requested !== undefined) {
     const validated = validateContainerPath(requested, environment.trustedRoot, errors)
-    return validated === undefined ? undefined : { value: validated, provenance }
+    return validated === undefined
+      ? undefined
+      : { value: validated.container, provenance, absolutePath: validated.absolutePath }
   }
 
   const found = discover.container(environment.trustedRoot)
-  if (found.status === "found") return { value: found.value, provenance: "discovery" }
+  if (found.status === "found") {
+    // Discovery walks the repository, so what it returns is no more canonical
+    // than what a caller names; it goes through the same validation.
+    const validated = validateContainerPath(found.value, environment.trustedRoot, errors)
+    return validated === undefined
+      ? undefined
+      : {
+          value: validated.container,
+          provenance: "discovery",
+          absolutePath: validated.absolutePath,
+        }
+  }
   if (found.status === "ambiguous") {
     push(
       errors,
@@ -183,15 +196,34 @@ function resolveContainer(
 }
 
 /**
+ * A validated container: what the caller named, and where it actually is.
+ *
+ * Both travel together because they must not be re-derived apart. The relative
+ * path is the model-facing one a result explains itself with; the canonical
+ * absolute path is the one `xcodebuild` is handed.
+ */
+export type ValidatedContainer = {
+  container: XcodeContainer
+  /** Canonical, symlinks already resolved. This is what gets executed. */
+  absolutePath: string
+}
+
+/**
  * A container path must stay inside the trusted root both lexically and after
  * the filesystem resolves it — the second check is what catches a symlink that
  * points out of the repository.
+ *
+ * The canonical path is **returned**, not merely checked. Validating one path
+ * and then executing another is the classic way a containment check becomes
+ * decorative: re-joining the relative path at invocation time would hand
+ * `xcodebuild` the symlink this function just resolved, and a link swapped in
+ * between would point somewhere nobody validated.
  */
 export function validateContainerPath(
   container: XcodeContainer,
   trustedRoot: string,
   errors: RequestError[],
-): XcodeContainer | undefined {
+): ValidatedContainer | undefined {
   const field = "xcodeContainer.path"
   if (!validateString(container.path, field, errors)) return undefined
 
@@ -226,7 +258,7 @@ export function validateContainerPath(
     return undefined
   }
 
-  return { kind: container.kind, path: normalized }
+  return { container: { kind: container.kind, path: normalized }, absolutePath: canonical }
 }
 
 // --- scheme ---------------------------------------------------------------
