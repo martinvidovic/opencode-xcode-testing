@@ -4,8 +4,8 @@
     "decoderVersion": 1,
     "xcresulttoolVersion": "24757",
     "legacyCommandsFormatVersion": "3.58",
-    "xcodeVersion": "26.0",
-    "xcodeBuild": "17A400",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
     "scenario": "build-failed-with-tests",
     "observedShape": "build errors alongside advertised test results",
     "note": "a provable build failure must not short-circuit the remaining extraction"
@@ -16,9 +16,13 @@
       "creatingApplication": "Xcode"
     },
     "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
       "hasTestResults": true,
-      "hasBuildResults": true,
-      "hasLogs": true
+      "logs": [
+        "build",
+        "action"
+      ]
     },
     "get build-results": {
       "status": "failed",
@@ -64,7 +68,9 @@
                       "name": "testSignsIn()",
                       "nodeIdentifier": "LoginTests/testSignsIn()",
                       "result": "Passed",
-                      "duration": "0.12s"
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsIn"
                     }
                   ]
                 }

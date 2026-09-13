@@ -123,6 +123,11 @@ export function lintFile(display: string, text: string): HygieneViolation[] {
     }
 
     for (const match of rawLine.matchAll(REVERSE_DNS)) {
+      // Apple's own reserved namespace is a vendor constant, not a private
+      // project identifier — `com.apple.product-type.framework` names a fact
+      // about Xcode, and nothing about whose repository this is.
+      if (VENDOR_NAMESPACES.some((prefix) => match[0].startsWith(prefix))) continue
+
       const segments = match[0].split(".").slice(1)
       const offending = segments.find((segment) => !GENERIC_IDENTIFIERS.has(segment))
       if (offending !== undefined) {
@@ -146,6 +151,9 @@ const HOME_REFERENCE = /(?:(?<![\w/])~\/[^\s"'`,)\]}]*|\$HOME\b|\$\{HOME\})/g
 
 /** `Something.xcodeproj` and friends — the name is the identifier under test. */
 const XCODE_ARTIFACT = /\b([A-Za-z0-9_-]+)\.(?:xcodeproj|xcworkspace|xcscheme|xcresult|xctest)\b/g
+
+/** Reverse-DNS prefixes owned by a vendor rather than by any project. */
+const VENDOR_NAMESPACES = ["com.apple."]
 
 /** Reverse-DNS bundle identifiers, whose every segment must read as generic. */
 const REVERSE_DNS = /\b(?:com|org|net|io|dev|co|app)(?:\.[A-Za-z0-9_-]+){2,}\b/g

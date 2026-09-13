@@ -4,8 +4,8 @@
     "decoderVersion": 1,
     "xcresulttoolVersion": "24757",
     "legacyCommandsFormatVersion": "3.58",
-    "xcodeVersion": "26.0",
-    "xcodeBuild": "17A400",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
     "scenario": "missing-status",
     "observedShape": "a recognized Test Case carrying no status"
   },
@@ -15,9 +15,13 @@
       "creatingApplication": "Xcode"
     },
     "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
       "hasTestResults": true,
-      "hasBuildResults": true,
-      "hasLogs": true
+      "logs": [
+        "build",
+        "action"
+      ]
     },
     "get build-results": {
       "status": "succeeded",
@@ -57,13 +61,17 @@
                       "name": "testSignsIn()",
                       "nodeIdentifier": "LoginTests/testSignsIn()",
                       "result": "Passed",
-                      "duration": "0.12s"
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsIn"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testSignsOut()",
                       "nodeIdentifier": "LoginTests/testSignsOut()",
-                      "duration": "0.12s"
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsOut"
                     }
                   ]
                 }

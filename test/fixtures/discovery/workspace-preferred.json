@@ -1,0 +1,32 @@
+{
+  "provenance": {
+    "scenario": "workspace-preferred",
+    "covers": "a workspace outranks the projects it wraps"
+  },
+  "tree": {
+    "dirs": [
+      "Example.xcworkspace",
+      "Example.xcodeproj",
+      "Example.xcodeproj/xcshareddata/xcschemes",
+      "Modules/Sample.xcodeproj"
+    ],
+    "files": {
+      "Example.xcworkspace/contents.xcworkspacedata": "<Workspace/>\n",
+      "Example.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "Example.xcodeproj/xcshareddata/xcschemes/App.xcscheme": "<Scheme/>\n",
+      "Modules/Sample.xcodeproj/project.pbxproj": "// generic fixture\n"
+    },
+    "symlinks": {}
+  },
+  "expect": {
+    "container": {
+      "status": "found",
+      "kind": "workspace",
+      "path": "Example.xcworkspace"
+    },
+    "scheme": {
+      "status": "found",
+      "value": "App"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "provenance": {
+    "scenario": "no-container",
+    "covers": "a repository with no Xcode container at all"
+  },
+  "tree": {
+    "dirs": [
+      "Sources"
+    ],
+    "files": {
+      "Sources/main.swift": "// generic fixture\n"
+    }
+  },
+  "expect": {
+    "container": {
+      "status": "none"
+    }
+  }
+}

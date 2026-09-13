@@ -1,0 +1,30 @@
+{
+  "provenance": {
+    "scenario": "symlinked-container",
+    "covers": "a symlink that is itself a container is not a container"
+  },
+  "tree": {
+    "dirs": [
+      "real/Example.xcodeproj",
+      "real/Example.xcodeproj/xcshareddata/xcschemes"
+    ],
+    "files": {
+      "real/Example.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "real/Example.xcodeproj/xcshareddata/xcschemes/App.xcscheme": "<Scheme/>\n"
+    },
+    "symlinks": {
+      "Demo.xcodeproj": "real/Example.xcodeproj"
+    }
+  },
+  "expect": {
+    "container": {
+      "status": "found",
+      "kind": "project",
+      "path": "real/Example.xcodeproj"
+    },
+    "scheme": {
+      "status": "found",
+      "value": "App"
+    }
+  }
+}

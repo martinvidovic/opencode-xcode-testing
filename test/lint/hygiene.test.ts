@@ -43,6 +43,17 @@ describe("the hygiene lint", () => {
     expect(rulesFor(`bundleId: com.acme.payments`)).toEqual(["privateIdentifier"])
   })
 
+  test("exempts a vendor's own reserved namespace", () => {
+    // `com.apple.product-type.framework` names a fact about Xcode. Flagging it
+    // would teach people to ignore the lint, which is worse than the leak it
+    // would be catching.
+    expect(lintFile("fixture", `productType = "com.apple.product-type.bundle.unit-test"`)).toEqual([])
+  })
+
+  test("still rejects a private identifier that merely starts like a vendor's", () => {
+    expect(rulesFor(`bundleId: com.applesauce.payments`)).toEqual(["privateIdentifier"])
+  })
+
   test("accepts generic identifiers", () => {
     const generic = [
       `workspace: Example.xcworkspace`,

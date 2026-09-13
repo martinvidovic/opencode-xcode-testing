@@ -1,0 +1,44 @@
+{
+  "provenance": {
+    "scenario": "excluded-directories",
+    "covers": "hidden, vendor and build directories are skipped"
+  },
+  "tree": {
+    "dirs": [
+      "Example.xcodeproj",
+      "Example.xcodeproj/xcshareddata/xcschemes",
+      "Pods/Sample.xcodeproj",
+      "Carthage/Sample.xcodeproj",
+      "node_modules/Sample.xcodeproj",
+      ".build/Sample.xcodeproj",
+      "DerivedData/Sample.xcodeproj",
+      ".git/Sample.xcodeproj",
+      ".opencode/Sample.xcodeproj",
+      ".hidden/Sample.xcodeproj"
+    ],
+    "files": {
+      "Example.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "Example.xcodeproj/xcshareddata/xcschemes/App.xcscheme": "<Scheme/>\n",
+      "Pods/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "Carthage/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "node_modules/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      ".build/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "DerivedData/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      ".git/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      ".opencode/Sample.xcodeproj/project.pbxproj": "// generic fixture\n",
+      ".hidden/Sample.xcodeproj/project.pbxproj": "// generic fixture\n"
+    },
+    "symlinks": {}
+  },
+  "expect": {
+    "container": {
+      "status": "found",
+      "kind": "project",
+      "path": "Example.xcodeproj"
+    },
+    "scheme": {
+      "status": "found",
+      "value": "App"
+    }
+  }
+}

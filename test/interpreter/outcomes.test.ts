@@ -22,8 +22,8 @@ describe("passed", () => {
   test("records compact non-path provenance", async () => {
     const { summary } = await interpretFixture("passed")
     expect(summary.provenance).toEqual({
-      xcodeVersion: "26.0",
-      xcodeBuild: "17A400",
+      xcodeVersion: "26.4.1",
+      xcodeBuild: "17E202",
       xcresulttoolVersion: "24757",
       requestedSchemaVersion: "0.1.0",
       interpreterDecoderVersion: 1,

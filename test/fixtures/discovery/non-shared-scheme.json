@@ -1,0 +1,27 @@
+{
+  "provenance": {
+    "scenario": "non-shared-scheme",
+    "covers": "a user-specific scheme is not discoverable"
+  },
+  "tree": {
+    "dirs": [
+      "Example.xcodeproj",
+      "Example.xcodeproj/xcuserdata/generic.xcuserdatad/xcschemes"
+    ],
+    "files": {
+      "Example.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "Example.xcodeproj/xcuserdata/generic.xcuserdatad/xcschemes/App.xcscheme": "<Scheme/>\n"
+    },
+    "symlinks": {}
+  },
+  "expect": {
+    "container": {
+      "status": "found",
+      "kind": "project",
+      "path": "Example.xcodeproj"
+    },
+    "scheme": {
+      "status": "none"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "provenance": {
+    "scenario": "single-project",
+    "covers": "exactly one project and one shared scheme"
+  },
+  "tree": {
+    "dirs": [
+      "Example.xcodeproj",
+      "Example.xcodeproj/xcshareddata/xcschemes"
+    ],
+    "files": {
+      "Example.xcodeproj/project.pbxproj": "// generic fixture\n",
+      "Example.xcodeproj/xcshareddata/xcschemes/App.xcscheme": "<Scheme/>\n"
+    }
+  },
+  "expect": {
+    "container": {
+      "status": "found",
+      "kind": "project",
+      "path": "Example.xcodeproj"
+    },
+    "scheme": {
+      "status": "found",
+      "value": "App"
+    }
+  }
+}

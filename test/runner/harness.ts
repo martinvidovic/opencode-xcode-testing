@@ -1,0 +1,108 @@
+/**
+ * Shared scaffolding for the runner test layers (ADR 0001, Layers 2 and 3).
+ *
+ * Every helper here works against a real temp directory rather than a mocked
+ * filesystem: the properties under test — advisory locks, atomic renames,
+ * ownership modes, apparent file size — are properties of the filesystem, and a
+ * mock would only prove that the mock agrees with itself.
+ */
+
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import type { ProcessIdentity, ProcessProbe } from "../../src/runner/identity.ts"
+import { prepareStorage, storageFor, type Storage } from "../../src/runner/paths.ts"
+import type { RunRecord } from "../../src/runner/state.ts"
+import { writeRunRecord } from "../../src/runner/state.ts"
+
+export const TRUSTED_ROOT = "/workspace/example"
+
+export type Sandbox = {
+  homeDir: string
+  storage: Storage
+  dispose(): void
+}
+
+/** A private storage tree under a temp home, prepared and owner-only. */
+export function sandbox(trustedRoot = TRUSTED_ROOT): Sandbox {
+  const homeDir = mkdtempSync(join(tmpdir(), "xcode-test-runner-"))
+  const storage = storageFor(homeDir, trustedRoot)
+  prepareStorage(storage)
+  return {
+    homeDir,
+    storage,
+    dispose() {
+      rmSync(homeDir, { recursive: true, force: true })
+    },
+  }
+}
+
+/** Run `work` against a fresh sandbox, cleaning up even if it throws. */
+export async function withSandbox<T>(
+  work: (box: Sandbox) => T | Promise<T>,
+  trustedRoot = TRUSTED_ROOT,
+): Promise<T> {
+  const box = sandbox(trustedRoot)
+  try {
+    return await work(box)
+  } finally {
+    box.dispose()
+  }
+}
+
+export function seedRun(storage: Storage, record: Partial<RunRecord> & { runId: string }): RunRecord {
+  const full: RunRecord = {
+    schemaVersion: 1,
+    rootKey: storage.rootKey,
+    state: "admitted",
+    admittedAt: "2026-09-13T10:00:00.000Z",
+    timeoutSeconds: 900,
+    ...record,
+  }
+  writeRunRecord(storage, full)
+  return full
+}
+
+/**
+ * A probe over a declared world. Recovery and quarantine need process states a
+ * real machine cannot be asked to produce on demand — a PID that was reused, a
+ * group whose number is live but whose members are not ours.
+ */
+export function fakeProbe(world: {
+  processes?: Record<number, string>
+  groups?: Record<number, number[]>
+}): ProcessProbe & { signals: Array<{ pgid: number; signal: string }> } {
+  const signals: Array<{ pgid: number; signal: string }> = []
+  return {
+    signals,
+    identify(pid: number): ProcessIdentity | undefined {
+      const startedAt = world.processes?.[pid]
+      return startedAt === undefined ? undefined : { pid, startedAt }
+    },
+    membersOf(pgid: number): number[] {
+      return world.groups?.[pgid] ?? []
+    },
+    signalGroup(pgid: number, signal: NodeJS.Signals): void {
+      signals.push({ pgid, signal })
+    },
+  }
+}
+
+export const IMMEDIATE_ESCALATION = [
+  { signal: "SIGINT" as const, waitMs: 150 },
+  { signal: "SIGTERM" as const, waitMs: 150 },
+  { signal: "SIGKILL" as const, waitMs: 300 },
+]
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** A monotonic clock reading real elapsed milliseconds. */
+export function monotonic(): () => number {
+  const origin = process.hrtime.bigint()
+  return () => Number((process.hrtime.bigint() - origin) / 1_000_000n)
+}
+
+export const STUB_PROCESS = join(import.meta.dir, "stub", "stub-process.ts")

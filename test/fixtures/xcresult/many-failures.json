@@ -4,8 +4,8 @@
     "decoderVersion": 1,
     "xcresulttoolVersion": "24757",
     "legacyCommandsFormatVersion": "3.58",
-    "xcodeVersion": "26.0",
-    "xcodeBuild": "17A400",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
     "scenario": "many-failures",
     "observedShape": "canonical",
     "note": "exercises the summary caps and cursor paging"
@@ -16,9 +16,13 @@
       "creatingApplication": "Xcode"
     },
     "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
       "hasTestResults": true,
-      "hasBuildResults": true,
-      "hasLogs": true
+      "logs": [
+        "build",
+        "action"
+      ]
     },
     "get build-results": {
       "status": "succeeded",
@@ -58,7 +62,7 @@
                       "name": "testCase00()",
                       "nodeIdentifier": "LoginTests/testCase00()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -70,14 +74,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase00"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase01()",
                       "nodeIdentifier": "LoginTests/testCase01()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -89,14 +95,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase01"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase02()",
                       "nodeIdentifier": "LoginTests/testCase02()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -108,14 +116,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase02"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase03()",
                       "nodeIdentifier": "LoginTests/testCase03()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -127,14 +137,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase03"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase04()",
                       "nodeIdentifier": "LoginTests/testCase04()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -146,14 +158,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase04"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase05()",
                       "nodeIdentifier": "LoginTests/testCase05()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -165,14 +179,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase05"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase06()",
                       "nodeIdentifier": "LoginTests/testCase06()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -184,14 +200,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase06"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase07()",
                       "nodeIdentifier": "LoginTests/testCase07()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -203,14 +221,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase07"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase08()",
                       "nodeIdentifier": "LoginTests/testCase08()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -222,14 +242,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase08"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase09()",
                       "nodeIdentifier": "LoginTests/testCase09()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -241,14 +263,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase09"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase10()",
                       "nodeIdentifier": "LoginTests/testCase10()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -260,14 +284,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase10"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase11()",
                       "nodeIdentifier": "LoginTests/testCase11()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -279,14 +305,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase11"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase12()",
                       "nodeIdentifier": "LoginTests/testCase12()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -298,14 +326,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase12"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase13()",
                       "nodeIdentifier": "LoginTests/testCase13()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -317,14 +347,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase13"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase14()",
                       "nodeIdentifier": "LoginTests/testCase14()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -336,14 +368,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase14"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase15()",
                       "nodeIdentifier": "LoginTests/testCase15()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -355,14 +389,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase15"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase16()",
                       "nodeIdentifier": "LoginTests/testCase16()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -374,14 +410,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase16"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase17()",
                       "nodeIdentifier": "LoginTests/testCase17()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -393,14 +431,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase17"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase18()",
                       "nodeIdentifier": "LoginTests/testCase18()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -412,14 +452,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase18"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase19()",
                       "nodeIdentifier": "LoginTests/testCase19()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -431,14 +473,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase19"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase20()",
                       "nodeIdentifier": "LoginTests/testCase20()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -450,14 +494,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase20"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase21()",
                       "nodeIdentifier": "LoginTests/testCase21()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -469,14 +515,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase21"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase22()",
                       "nodeIdentifier": "LoginTests/testCase22()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -488,14 +536,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase22"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase23()",
                       "nodeIdentifier": "LoginTests/testCase23()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -507,14 +557,16 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase23"
                     },
                     {
                       "nodeType": "Test Case",
                       "name": "testCase24()",
                       "nodeIdentifier": "LoginTests/testCase24()",
                       "result": "Failed",
-                      "duration": "0.12s",
+                      "duration": "0,12s",
                       "children": [
                         {
                           "nodeType": "Failure Message",
@@ -526,7 +578,9 @@
                             }
                           ]
                         }
-                      ]
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testCase24"
                     }
                   ]
                 }
