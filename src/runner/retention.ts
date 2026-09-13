@@ -91,6 +91,10 @@ export function collectRuns(environment: RetentionEnvironment): RetainedRun[] {
         record.quarantined !== true &&
         completedAtMs !== undefined &&
         !Number.isNaN(completedAtMs) &&
+        // Eligibility begins only once isolated DerivedData has been reclaimed.
+        // Evicting before then would delete the run's record and leave the
+        // scratch directory behind with nothing left to attribute it to.
+        (record.derivedDataMode !== "isolated" || record.derivedDataCleaned === true) &&
         environment.leased?.has(runId) !== true &&
         environment.activeRunId !== runId,
     })

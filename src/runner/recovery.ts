@@ -5,20 +5,33 @@
  * enrollment, and before retention cleanup — and it is the reason a crashed
  * OpenCode does not leave a trusted root permanently unusable.
  *
- * The discipline here is that uncertainty holds the execution slot rather than
- * releasing it. A run whose lifecycle cannot be established keeps the root
- * quarantined, because admitting a second `xcodebuild` while an unaccounted-for
- * one may still be writing the same DerivedData is how a test tool starts
- * producing results nobody can explain.
+ * Two disciplines govern everything here.
+ *
+ * **Uncertainty holds the execution slot rather than releasing it.** A run whose
+ * lifecycle cannot be established keeps the root quarantined, because admitting
+ * a second `xcodebuild` while an unaccounted-for one may still be writing the
+ * same DerivedData is how a test tool starts producing results nobody can
+ * explain.
+ *
+ * **Recovery never invents a terminal result.** It does not mark a run
+ * `completed` on its own: interpretation belongs to the caller, which publishes
+ * the same immutable summary and index a normal completed run publishes, and
+ * only then releases the slot. Recovery reports which runs need that and holds
+ * the slot until it happens.
+ *
+ * The whole pass runs under one acquisition of the root lock, so it is
+ * serialized against live finalization and never observes half-written state.
+ * Nothing inside re-acquires it — the lock is not reentrant.
  */
 
-import { readdirSync } from "node:fs"
+import { readdirSync, rmSync } from "node:fs"
+import { join } from "node:path"
 
 import { allIdentitiesGone, signallingIsSafe, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
 import { withLock } from "./locks.ts"
-import type { Storage } from "./paths.ts"
-import { clearQuarantine, readQueue, releaseSlot, writeQueue } from "./queue.ts"
-import { advance, readRunRecord, type RunRecord } from "./state.ts"
+import { RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
+import { readQueue, writeQueue, type QueueState } from "./queue.ts"
+import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
 
 export type RecoveryStatus =
   | "recovered"
@@ -37,10 +50,18 @@ export type RecoveryEnvironment = {
 
 export type RecoveryReport = {
   status: RecoveryStatus
-  /** Runs this pass moved to a terminal state without rerunning anything. */
-  finalized: string[]
-  /** Runs whose lifecycle is still uncertain, and which still hold the slot. */
+  /**
+   * Runs whose artifacts are complete and whose processes are gone, but whose
+   * terminal summary and index have not been published. The caller finalizes
+   * them; the slot is held until it does.
+   */
+  needsFinalization: string[]
+  /** Runs whose lifecycle is still uncertain, and which hold the root quarantined. */
   uncertain: string[]
+  /** Slots released because their run is no longer live or already finished. */
+  slotsReleased: string[]
+  /** Completed runs whose isolated DerivedData was reclaimed. */
+  derivedDataCleaned: string[]
   quarantineCleared: boolean
 }
 
@@ -53,15 +74,29 @@ export type RecoveryReport = {
  * something it does not own.
  */
 export function reconcileRoot(environment: RecoveryEnvironment): RecoveryReport {
+  return withLock(environment.storage.rootLock, () => reconcileLocked(environment))
+}
+
+function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
   const { storage } = environment
   const report: RecoveryReport = {
     status: "alreadyHealthy",
-    finalized: [],
+    needsFinalization: [],
     uncertain: [],
+    slotsReleased: [],
+    derivedDataCleaned: [],
     quarantineCleared: false,
   }
 
   if (environment.signal?.aborted === true) return { ...report, status: "cancelled" }
+
+  let state: QueueState
+  try {
+    state = readQueue(storage)
+  } catch {
+    // Malformed coordination state fails closed; the suspect file is preserved.
+    return { ...report, status: "failed" }
+  }
 
   let runIds: string[]
   try {
@@ -84,56 +119,90 @@ export function reconcileRoot(environment: RecoveryEnvironment): RecoveryReport 
       report.uncertain.push(runId)
       continue
     }
-    if (record.state === "completed") continue
 
-    const outcome = reconcileRun(environment, record)
-    if (outcome === "busy") {
-      busy = true
+    if (record.state === "completed") {
+      if (reclaimIsolatedDerivedData(storage, record)) report.derivedDataCleaned.push(runId)
       continue
     }
-    if (outcome === "uncertain") {
-      report.uncertain.push(runId)
-      continue
-    }
-    report.finalized.push(runId)
+
+    const outcome = classify(environment, record)
+    if (outcome === "busy") busy = true
+    else if (outcome === "uncertain") report.uncertain.push(runId)
+    else report.needsFinalization.push(runId)
   }
 
-  if (busy) return { ...report, status: "busy" }
+  // Slot bookkeeping. An active slot naming a run with no durable record is,
+  // by protocol invariant, a run that never started — admission writes the
+  // record before the slot transfers.
+  const active = state.activeRunId
+  if (active !== undefined && !report.needsFinalization.includes(active) && !report.uncertain.includes(active)) {
+    const record = readRunRecord(storage, active)
+    if (record === undefined || record.state === "completed") {
+      state = withoutActive(state)
+      report.slotsReleased.push(active)
+    }
+  }
 
   if (report.uncertain.length > 0) {
-    return { ...report, status: "stillQuarantined" }
+    // Publishing quarantine and dropping ownership is one transition: a root
+    // that is quarantined must never also look busy, or admission would wait
+    // out its whole deadline instead of failing fast.
+    const runId = report.uncertain[0] as string
+    state = {
+      ...withoutActive(state),
+      quarantine: {
+        runId,
+        reason: "the lifecycle of a previous Test Run could not be confirmed",
+        since: environment.timestamp(),
+      },
+    }
+  } else if (state.quarantine !== undefined && report.needsFinalization.length === 0) {
+    if (canClearQuarantine(environment, state.quarantine.runId)) {
+      const next = { ...state }
+      delete next.quarantine
+      state = next
+      report.quarantineCleared = true
+    }
   }
 
-  report.quarantineCleared = tryClearQuarantine(environment)
-  report.status =
-    report.finalized.length > 0 || report.quarantineCleared ? "recovered" : "alreadyHealthy"
-  return report
+  writeQueue(storage, state)
+
+  if (busy) return { ...report, status: "busy" }
+  if (report.uncertain.length > 0) return { ...report, status: "stillQuarantined" }
+
+  const changed =
+    report.needsFinalization.length > 0 ||
+    report.slotsReleased.length > 0 ||
+    report.derivedDataCleaned.length > 0 ||
+    report.quarantineCleared
+  return { ...report, status: changed ? "recovered" : "alreadyHealthy" }
 }
 
-type RunOutcome = "finalized" | "busy" | "uncertain"
+function withoutActive(state: QueueState): QueueState {
+  const next = { ...state }
+  delete next.activeRunId
+  return next
+}
 
-function reconcileRun(environment: RecoveryEnvironment, record: RunRecord): RunOutcome {
-  const { storage, probe } = environment
-  const recorded = recordedIdentities(record)
+type RunOutcome = "finalizable" | "busy" | "uncertain"
+
+function classify(environment: RecoveryEnvironment, record: RunRecord): RunOutcome {
+  const { probe } = environment
+
+  // A live owner is still driving this run — including through the window
+  // between the supervisor exiting and the summary being published, where no
+  // child and no supervisor exist but the run is not finished.
+  if (record.owner !== undefined && !allIdentitiesGone(probe, [record.owner])) return "busy"
 
   // An admitted run with no durable supervisor identity proves, by protocol
   // invariant, that Xcode was never started: the supervisor publishes its
   // identity before it may create the future child.
-  if (record.state === "admitted" && record.supervisor === undefined) {
-    finalize(storage, record, environment.timestamp(), {
-      terminationTrigger: "toolFailure",
-      execObserved: "no",
-      descendantsConfirmedExited: "yes",
-    })
-    return "finalized"
-  }
+  if (record.state === "admitted" && record.supervisor === undefined) return "finalizable"
 
   if (record.child !== undefined) {
-    if (signallingIsSafe(probe, { pgid: record.child.pgid, processes: [record.child] })) {
-      // A live, identity-validated member means an active run. Recovery never
-      // interrupts one.
-      return "busy"
-    }
+    // A live, identity-validated member means an active run. Recovery never
+    // interrupts one.
+    if (signallingIsSafe(probe, { pgid: record.child.pgid, processes: [record.child] })) return "busy"
   }
 
   if (record.supervisor !== undefined) {
@@ -141,42 +210,27 @@ function reconcileRun(environment: RecoveryEnvironment, record: RunRecord): RunO
     if (current !== undefined && current.startedAt === record.supervisor.startedAt) return "busy"
   }
 
-  if (!allIdentitiesGone(probe, recorded)) return "uncertain"
-
   // Numeric PGID reuse alone must not preserve quarantine forever, so a group
   // whose recorded identities are all gone is reconciled even if the number is
   // now in use by something unrelated.
-  finalize(storage, record, environment.timestamp(), {
-    descendantsConfirmedExited: record.descendantsConfirmedExited ?? "unknown",
-  })
-  return "finalized"
+  return allIdentitiesGone(probe, recordedIdentities(record)) ? "finalizable" : "uncertain"
 }
 
-function finalize(
-  storage: Storage,
-  record: RunRecord,
-  completedAt: string,
-  fields: Partial<RunRecord>,
-): void {
-  let current = record
-  // States are monotonic, so a run that never reached execution is walked
-  // forward through the states it skipped rather than jumped over them.
-  for (const state of ["supervisorReady", "childRecorded", "launchAuthorized", "executionCompleted"] as const) {
-    if (indexOf(current.state) < indexOf(state)) current = advance(storage, current, state)
+/**
+ * Quarantine clears only when every condition holds at once: recorded
+ * identities gone or mismatched, no active supervisor, durable state
+ * consistent, and no identity-validated group member still attributable.
+ */
+function canClearQuarantine(environment: RecoveryEnvironment, runId: string): boolean {
+  const record = readRunRecord(environment.storage, runId)
+  if (record === undefined) return true
+  if (record.state !== "completed") return false
+  if (record.child !== undefined) {
+    if (signallingIsSafe(environment.probe, { pgid: record.child.pgid, processes: [record.child] })) {
+      return false
+    }
   }
-  advance(storage, current, "completed", { ...fields, completedAt })
-  releaseSlot(storage, record.runId)
-}
-
-function indexOf(state: RunRecord["state"]): number {
-  return [
-    "admitted",
-    "supervisorReady",
-    "childRecorded",
-    "launchAuthorized",
-    "executionCompleted",
-    "completed",
-  ].indexOf(state)
+  return allIdentitiesGone(environment.probe, recordedIdentities(record))
 }
 
 function recordedIdentities(record: RunRecord): ProcessIdentity[] {
@@ -187,28 +241,19 @@ function recordedIdentities(record: RunRecord): ProcessIdentity[] {
 }
 
 /**
- * Quarantine clears only when every condition holds at once: recorded
- * identities gone or mismatched, no active supervisor, durable state
- * consistent, and no identity-validated group member still attributable.
+ * Isolated DerivedData is a per-run scratch directory, not evidence, so it is
+ * reclaimed once the run is durably completed — including after a crash that
+ * happened between publication and cleanup. Shared DerivedData is a cache
+ * across runs and is never touched here.
  */
-function tryClearQuarantine(environment: RecoveryEnvironment): boolean {
-  const { storage } = environment
-  const state = readQueue(storage)
-  const quarantine = state.quarantine
-  if (quarantine === undefined) return false
+export function reclaimIsolatedDerivedData(storage: Storage, record: RunRecord): boolean {
+  if (record.derivedDataMode !== "isolated" || record.derivedDataCleaned === true) return false
 
-  const record = readRunRecord(storage, quarantine.runId)
-  if (record !== undefined && record.state !== "completed") return false
-  if (record?.child !== undefined) {
-    if (signallingIsSafe(environment.probe, { pgid: record.child.pgid, processes: [record.child] })) {
-      return false
-    }
-  }
-  if (record !== undefined && !allIdentitiesGone(environment.probe, recordedIdentities(record))) {
-    return false
-  }
-
-  clearQuarantine(storage)
+  rmSync(join(runDirectory(storage, record.runId), RUN_ARTIFACTS.derivedData), {
+    recursive: true,
+    force: true,
+  })
+  writeRunRecord(storage, { ...record, derivedDataCleaned: true })
   return true
 }
 
@@ -216,6 +261,7 @@ function tryClearQuarantine(environment: RecoveryEnvironment): boolean {
 export function quarantineSlot(storage: Storage, runId: string, reason: string, since: string): void {
   withLock(storage.rootLock, () => {
     const state = readQueue(storage)
-    writeQueue(storage, { ...state, quarantine: { runId, reason, since } })
+    const next = withoutActive(state)
+    writeQueue(storage, { ...next, quarantine: { runId, reason, since } })
   })
 }

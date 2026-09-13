@@ -12,6 +12,8 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import type { EvidenceFact } from "../domain/evidence.ts"
+import type { ResolvedTestRun } from "../domain/request.ts"
+import type { RequestedScope } from "../domain/scope.ts"
 import type { ProcessTerminationTrigger } from "../domain/outcome.ts"
 import type { ProcessIdentity } from "./identity.ts"
 import { assertSafeFile, RUN_ARTIFACTS, runDirectory, type Storage, writePrivateFileAtomic } from "./paths.ts"
@@ -41,6 +43,26 @@ export type RunRecord = {
   state: RunState
   admittedAt: string
   timeoutSeconds: number
+  /**
+   * The resolved contract and the Requested Scope, recorded at admission.
+   *
+   * Recovery has to be able to publish a terminal summary for a run whose
+   * process is long gone, and a summary needs to say what was asked for. A
+   * record that did not carry this would leave a recovered run describable only
+   * as "something happened here".
+   */
+  resolved?: ResolvedTestRun
+  requestedScope?: RequestedScope
+  /**
+   * The process that admitted this run and is driving it to completion.
+   *
+   * Between the supervisor exiting and the summary being published there is a
+   * window in which no child and no supervisor are alive, but the run is very
+   * much in progress. Without an owner identity, recovery would see a dead
+   * lifecycle, adopt the run, and publish a second terminal summary alongside
+   * the one its owner is already writing.
+   */
+  owner?: ProcessIdentity
   supervisor?: ProcessIdentity
   child?: ChildRecord
   /** Present exactly when `launchAuthorized` was reached. */
@@ -57,6 +79,8 @@ export type RunRecord = {
   /** Set when the caller cancelled while interpretation was already running. */
   cancelledDuringInterpretation?: boolean
   derivedDataMode?: "shared" | "isolated"
+  /** Isolated DerivedData has been reclaimed; retention may then evict the run. */
+  derivedDataCleaned?: boolean
 }
 
 export function metadataPath(storage: Storage, runId: string): string {

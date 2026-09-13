@@ -115,9 +115,30 @@ export type AdmissionResult =
  * reconciliation — so the reported queue duration covers everything the caller
  * actually waited through, not just the FIFO portion.
  */
+export type AdmissionOptions = {
+  signal?: { aborted: boolean }
+  waitDeadlineMs?: number
+  /**
+   * Create the run's durable state, under the root lock, **before** the slot
+   * transfers to it. Returning false means the id is unusable — a directory of
+   * that name already exists — and another is tried.
+   *
+   * This ordering is the whole guarantee: an active slot naming a run with no
+   * durable state is, by protocol invariant, a run that never started, and
+   * recovery can release it. Were the slot to transfer first, a crash in the
+   * gap would wedge the trusted root with nothing to reconcile against.
+   */
+  prepare?(runId: string): boolean
+  /** Injectable so a collision is reproducible rather than astronomically rare. */
+  newRunId?(): string
+}
+
+/** Attempts to find an unused run id before admission gives up. */
+export const RUN_ID_ATTEMPTS = 4
+
 export async function admit(
   environment: AdmissionEnvironment,
-  options: { signal?: { aborted: boolean }; waitDeadlineMs?: number } = {},
+  options: AdmissionOptions = {},
 ): Promise<AdmissionResult> {
   const { storage } = environment
   const queuedAt = environment.timestamp()
@@ -174,12 +195,26 @@ export async function admit(
       const head = state.tickets[0]
       if (head === undefined || head.ticketId !== ticket.ticketId) return undefined
 
-      const runId = newRunId()
-      writeQueue(storage, {
-        ...state,
-        activeRunId: runId,
-        tickets: state.tickets.filter((entry) => entry.ticketId !== ticket.ticketId),
-      })
+      const allocate = options.newRunId ?? newRunId
+      const withdraw = state.tickets.filter((entry) => entry.ticketId !== ticket.ticketId)
+
+      let runId: string | undefined
+      for (let attempt = 0; attempt < RUN_ID_ATTEMPTS; attempt += 1) {
+        const candidate = allocate()
+        if (options.prepare === undefined || options.prepare(candidate)) {
+          runId = candidate
+          break
+        }
+      }
+
+      if (runId === undefined) {
+        // Durable state could not be created, so no slot transfers. Failing
+        // closed here is what keeps ownership and artifacts from diverging.
+        writeQueue(storage, { ...state, tickets: withdraw })
+        return { status: "failed", reason: "recoveryFailed", ...queued() }
+      }
+
+      writeQueue(storage, { ...state, activeRunId: runId, tickets: withdraw })
       return {
         status: "admitted",
         runId,

@@ -32,7 +32,7 @@ function seedDirectory(box: Sandbox, runId: string): void {
 }
 
 describe("an admitted run with no durable supervisor identity", () => {
-  test("is finalized without rerunning, because Xcode provably never started", async () => {
+  test("is finalizable without rerunning, because Xcode provably never started", async () => {
     await withSandbox((box) => {
       seedDirectory(box, "run-a")
       seedRun(box.storage, { runId: "run-a", state: "admitted" })
@@ -41,22 +41,22 @@ describe("an admitted run with no durable supervisor identity", () => {
       const report = reconcile(box, { processes: {} })
 
       expect(report.status).toBe("recovered")
-      expect(report.finalized).toEqual(["run-a"])
-      const record = readRunRecord(box.storage, "run-a")
-      expect(record?.state).toBe("completed")
-      expect(record?.execObserved).toBe("no")
-      expect(record?.completedAt).toBe(TIMESTAMP)
+      expect(report.needsFinalization).toEqual(["run-a"])
     })
   })
 
-  test("gives the execution slot back", async () => {
+  test("keeps the slot until its terminal summary is actually published", async () => {
+    // Recovery does not invent a result. The caller owns interpretation, and
+    // releasing the slot before a summary exists would let the next run start
+    // while this one is still unaccounted for in the record.
     await withSandbox((box) => {
       seedDirectory(box, "run-a")
       seedRun(box.storage, { runId: "run-a", state: "admitted" })
       writeQueue(box.storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: "run-a" })
 
       reconcile(box, { processes: {} })
-      expect(readQueue(box.storage).activeRunId).toBeUndefined()
+      expect(readQueue(box.storage).activeRunId).toBe("run-a")
+      expect(readRunRecord(box.storage, "run-a")?.state).toBe("admitted")
     })
   })
 })
@@ -78,7 +78,7 @@ describe("a run whose child is still alive", () => {
       })
 
       expect(report.status).toBe("busy")
-      expect(report.finalized).toEqual([])
+      expect(report.needsFinalization).toEqual([])
       expect(readRunRecord(box.storage, "run-live")?.state).toBe("launchAuthorized")
     })
   })
@@ -99,7 +99,7 @@ describe("a run whose child is still alive", () => {
 })
 
 describe("a run whose recorded identities are all gone", () => {
-  test("is finalized from its immutable artifacts, never rerun", async () => {
+  test("is handed back for finalization from its immutable artifacts, never rerun", async () => {
     await withSandbox((box) => {
       seedDirectory(box, "run-dead")
       seedRun(box.storage, {
@@ -111,8 +111,7 @@ describe("a run whose recorded identities are all gone", () => {
       })
 
       const report = reconcile(box, { processes: {}, groups: {} })
-      expect(report.finalized).toEqual(["run-dead"])
-      expect(readRunRecord(box.storage, "run-dead")?.state).toBe("completed")
+      expect(report.needsFinalization).toEqual(["run-dead"])
     })
   })
 
@@ -132,7 +131,7 @@ describe("a run whose recorded identities are all gone", () => {
         groups: { 200: [200] },
       })
 
-      expect(report.finalized).toEqual(["run-reused"])
+      expect(report.needsFinalization).toEqual(["run-reused"])
     })
   })
 
@@ -260,7 +259,12 @@ describe("a healthy root", () => {
       seedRun(box.storage, { runId: "run-done", state: "completed", completedAt: TIMESTAMP })
 
       const report = reconcile(box, { processes: {} })
-      expect(report).toMatchObject({ status: "alreadyHealthy", finalized: [], uncertain: [] })
+      expect(report).toMatchObject({
+        status: "alreadyHealthy",
+        needsFinalization: [],
+        uncertain: [],
+        slotsReleased: [],
+      })
     })
   })
 })

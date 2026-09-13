@@ -23,6 +23,7 @@ import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
 import { interpretRun } from "../interpreter/interpret.ts"
 import { inspectIndex } from "../interpreter/paging.ts"
+import type { XcresultTool } from "../interpreter/ports.ts"
 import { createXcresultTool } from "../interpreter/xcresulttool.ts"
 import {
   decodeMessages,
@@ -34,13 +35,12 @@ import { systemProbe } from "../runner/identity.ts"
 import { admit, releaseSlot, type AdmissionEnvironment } from "../runner/queue.ts"
 import {
   createRunDirectory,
-  newRunId,
   RUN_ARTIFACTS,
   runDirectory,
   writePrivateFileAtomic,
   type Storage,
 } from "../runner/paths.ts"
-import { reconcileRoot } from "../runner/recovery.ts"
+import { reclaimIsolatedDerivedData, reconcileRoot } from "../runner/recovery.ts"
 import { resolveTestRun } from "../runner/resolution.ts"
 import { advance, readRunRecord, writeRunRecord, type RunRecord } from "../runner/state.ts"
 import { buildArguments, buildEnvironment, XCODEBUILD } from "../runner/xcodebuild.ts"
@@ -67,6 +67,19 @@ export type ServiceEnvironment = {
   freeBytes(): number
   /** Durable root-local secret for opaque inspection cursors. */
   cursorSecret: Buffer
+  /**
+   * How a Result Bundle is read. Defaulted to the real frozen `xcresulttool`;
+   * overridden only so the recovery path can be exercised deterministically
+   * without a machine that happens to have Xcode on it.
+   */
+  xcresultToolFor?(bundlePath: string): XcresultTool
+}
+
+function readerFor(environment: ServiceEnvironment, bundlePath: string): XcresultTool {
+  return (
+    environment.xcresultToolFor?.(bundlePath) ??
+    createXcresultTool({ identity: environment.toolchain, bundlePath })
+  )
 }
 
 export function createTestToolService(environment: ServiceEnvironment): TestToolService {
@@ -79,20 +92,16 @@ export function createTestToolService(environment: ServiceEnvironment): TestTool
       return Promise.resolve(inspectRetained(environment, request))
     },
 
-    recover() {
-      const report = reconcileRoot({
-        storage: environment.storage,
-        probe: systemProbe,
-        timestamp: environment.timestamp,
-      })
-      return Promise.resolve({
+    async recover() {
+      const report = await reconcile(environment)
+      return {
         status: report.status,
         ...(report.uncertain.length === 0
           ? {}
           : {
               message: `${report.uncertain.length} run(s) could not be accounted for and still hold the execution slot.`,
             }),
-      })
+      }
     },
   }
 }
@@ -125,13 +134,31 @@ function startRun(
     }
 
     // Reconciliation runs before enrollment, never after.
-    reconcileRoot({
-      storage: environment.storage,
-      probe: systemProbe,
-      timestamp: environment.timestamp,
-    })
+    await reconcile(environment)
 
-    const admission = await admit(admissionEnvironment(environment))
+    const admittedAt = environment.timestamp()
+
+    // The run's durable state is created under the root lock, before the slot
+    // transfers to it. A crash in the other order would leave an active slot
+    // naming a run nothing can reconcile against, and wedge the trusted root.
+    const admission = await admit(admissionEnvironment(environment), {
+      prepare: (runId) => {
+        if (createRunDirectory(environment.storage, runId) === undefined) return false
+        writeRunRecord(environment.storage, {
+          schemaVersion: 1,
+          runId,
+          rootKey: environment.storage.rootKey,
+          state: "admitted",
+          admittedAt,
+          timeoutSeconds: resolution.resolved.timeoutSeconds.value,
+          derivedDataMode: resolution.resolved.derivedData.value.mode,
+          resolved: resolution.resolved,
+          requestedScope: request.requestedScope,
+          owner: selfIdentity(),
+        })
+        return true
+      },
+    })
     if (admission.status !== "admitted") {
       rejectAdmitted(new Error("the request did not reach admission"))
       return admission.status === "cancelled"
@@ -153,17 +180,20 @@ function startRun(
           }
     }
 
-    const runId = ensureRunDirectory(environment.storage, admission.runId)
-    const record: RunRecord = {
-      schemaVersion: 1,
-      runId,
-      rootKey: environment.storage.rootKey,
-      state: "admitted",
-      admittedAt: admission.admittedAt,
-      timeoutSeconds: resolution.resolved.timeoutSeconds.value,
-      derivedDataMode: resolution.resolved.derivedData.value.mode,
+    const runId = admission.runId
+    const record = readRunRecord(environment.storage, runId)
+    if (record === undefined) {
+      rejectAdmitted(new Error("the run record vanished immediately after admission"))
+      return {
+        schemaVersion: 1,
+        outcome: "infrastructureFailed",
+        phase: "queued",
+        reason: "recoveryFailed",
+        message: "the run's durable state could not be read back after admission",
+        queuedAt: admission.queuedAt,
+        queueDurationMs: admission.queueDurationMs,
+      }
     }
-    writeRunRecord(environment.storage, record)
 
     resolveAdmitted({
       runId,
@@ -185,10 +215,7 @@ function startRun(
         ...(cancellation === undefined ? {} : { cancellation }),
       })
     } finally {
-      // The slot is released only once the run is durably finished; a
-      // quarantined run keeps it, which is the supervisor's decision to make.
-      const final = readRunRecord(environment.storage, runId)
-      if (final?.quarantined !== true) releaseSlot(environment.storage, runId)
+      releaseOwnership(environment, runId)
     }
   })()
 
@@ -269,13 +296,168 @@ async function superviseAndInterpret(
       ...(record.signal === undefined ? {} : { signal: record.signal }),
       successfulExit: record.signal !== undefined ? "no" : record.exitCode === 0 ? "yes" : "no",
     },
-    tool: createXcresultTool({ identity: environment.toolchain, bundlePath: resultBundlePath }),
+    tool: readerFor(environment, resultBundlePath),
     clock: { now: environment.now },
   })
 
-  publishIndex(storage, record, index)
-  advance(storage, record, "completed", { completedAt: environment.timestamp() })
+  publishTerminal(environment, record, summary, index)
   return summary
+}
+
+/**
+ * Publish the terminal evidence, then finish the run.
+ *
+ * The order is the contract: the immutable index and the summary land first,
+ * so that a crash after this point leaves a run that is fully readable, and
+ * only then does the record say `completed`. Isolated DerivedData is scratch
+ * rather than evidence, so it is reclaimed before the run becomes retainable.
+ */
+function publishTerminal(
+  environment: ServiceEnvironment,
+  record: RunRecord,
+  summary: TestToolResult,
+  index: unknown,
+): void {
+  const { storage } = environment
+  writePrivateFileAtomic(
+    join(runDirectory(storage, record.runId), "index.json"),
+    `${JSON.stringify(index)}\n`,
+  )
+  writePrivateFileAtomic(
+    join(runDirectory(storage, record.runId), SUMMARY_ARTIFACT),
+    `${JSON.stringify(summary)}\n`,
+  )
+  const completed = advance(storage, record, "completed", { completedAt: environment.timestamp() })
+  reclaimIsolatedDerivedData(storage, completed)
+}
+
+/** The terminal summary, readable after a crash without rerunning anything. */
+export const SUMMARY_ARTIFACT = "summary.json"
+
+/**
+ * Reconcile the root, then finish whatever reconciliation handed back.
+ *
+ * Recovery deliberately does not invent a terminal result — interpretation
+ * lives here, on the adapter side of the seam, because the runner may not
+ * import the interpreter. So the two halves meet: recovery decides *which*
+ * runs are finishable and holds their slots; this publishes the same immutable
+ * summary and index a normal completed run publishes, and only then releases.
+ */
+export async function reconcile(environment: ServiceEnvironment) {
+  const report = reconcileRoot({
+    storage: environment.storage,
+    probe: systemProbe,
+    timestamp: environment.timestamp,
+  })
+
+  for (const runId of report.needsFinalization) {
+    await finalizeRecovered(environment, runId)
+  }
+
+  return report
+}
+
+/**
+ * Finish a run whose processes are gone and whose summary was never published.
+ *
+ * A run that reached `launchAuthorized` has a Result Bundle worth reading, so
+ * it is interpreted exactly as it would have been live — the artifacts are
+ * immutable, so the answer is the same one the original process would have
+ * produced. A run that never got that far has nothing to interpret, and is
+ * finished as a runner failure in the launching phase rather than left to look
+ * like it might still be running.
+ */
+export async function finalizeRecovered(
+  environment: ServiceEnvironment,
+  runId: string,
+): Promise<void> {
+  const record = readRunRecord(environment.storage, runId)
+  if (record === undefined) return
+
+  const directory = runDirectory(environment.storage, runId)
+  const resultBundlePath = join(directory, RUN_ARTIFACTS.resultBundle)
+  const scope = record.requestedScope ?? { kind: "all" as const }
+
+  let current = record
+  for (const state of ["supervisorReady", "childRecorded", "launchAuthorized", "executionCompleted"] as const) {
+    if (RUN_STATE_ORDER.indexOf(current.state) < RUN_STATE_ORDER.indexOf(state)) {
+      current = advance(environment.storage, current, state)
+    }
+  }
+
+  if (record.resolved === undefined) {
+    // Nothing describes what this run was asked to do, so no honest summary can
+    // be written. The slot is still given back; the artifacts stay for review.
+    advance(environment.storage, current, "completed", { completedAt: environment.timestamp() })
+    releaseOwnership(environment, runId)
+    return
+  }
+
+  const { summary, index } = await interpretRun({
+    facts: {
+      runId,
+      trustedRoot: environment.trustedRoot,
+      resultBundlePresent: existsSync(resultBundlePath),
+      bundleDigestVerified: "unknown",
+      toolchain: environment.toolchain,
+      log: logFacts(join(directory, RUN_ARTIFACTS.rawLog)),
+    },
+    requestedScope: scope,
+    resolved: record.resolved,
+    timing: {
+      admittedAt: record.admittedAt,
+      queueDurationMs: 0,
+      ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
+      elapsedBeforeInterpretationMs: 0,
+    },
+    terminationTrigger: record.terminationTrigger ?? "toolFailure",
+    termination: {
+      requested: record.terminationTrigger === undefined ? "no" : "yes",
+      gracefulTerminationObserved: "unknown",
+      forceEscalationRequired: "unknown",
+      terminationGraceExceeded: "unknown",
+      descendantsConfirmedExited: record.descendantsConfirmedExited ?? "unknown",
+    },
+    execution: {
+      execObserved: record.execObserved ?? "unknown",
+      ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }),
+      ...(record.signal === undefined ? {} : { signal: record.signal }),
+      successfulExit:
+        record.signal !== undefined ? "no" : record.exitCode === 0 ? "yes" : record.exitCode === undefined ? "unknown" : "no",
+    },
+    tool: readerFor(environment, resultBundlePath),
+    clock: { now: environment.now },
+  })
+
+  publishTerminal(environment, current, summary, index)
+  releaseOwnership(environment, runId)
+}
+
+const RUN_STATE_ORDER = [
+  "admitted",
+  "supervisorReady",
+  "childRecorded",
+  "launchAuthorized",
+  "executionCompleted",
+  "completed",
+] as const
+
+/**
+ * Give the execution slot back — or hold the root quarantined when the run's
+ * lifecycle could not be confirmed. Publishing quarantine is what makes the
+ * next admission fail fast with a reason instead of waiting out its deadline
+ * behind a run nobody can account for.
+ */
+function releaseOwnership(environment: ServiceEnvironment, runId: string): void {
+  const record = readRunRecord(environment.storage, runId)
+  if (record?.quarantined === true) {
+    releaseSlot(environment.storage, runId, {
+      reason: record.quarantineReason ?? "the Test Run lifecycle could not be confirmed",
+      since: environment.timestamp(),
+    })
+    return
+  }
+  releaseSlot(environment.storage, runId)
 }
 
 /**
@@ -424,11 +606,13 @@ function tombstoneExists(storage: Storage, runId: string): boolean {
 
 // --- shared ---------------------------------------------------------------
 
+/** This process, as recovery will later look for it. */
+function selfIdentity() {
+  return systemProbe.identify(process.pid) ?? { pid: process.pid, startedAt: "unknown" }
+}
+
 function admissionEnvironment(environment: ServiceEnvironment): AdmissionEnvironment {
-  const identity = systemProbe.identify(process.pid) ?? {
-    pid: process.pid,
-    startedAt: "unknown",
-  }
+  const identity = selfIdentity()
   return {
     storage: environment.storage,
     probe: systemProbe,
@@ -438,15 +622,6 @@ function admissionEnvironment(environment: ServiceEnvironment): AdmissionEnviron
     owner: identity,
     sleep: environment.sleep,
   }
-}
-
-function ensureRunDirectory(storage: Storage, preferred: string): string {
-  let runId = preferred
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    if (createRunDirectory(storage, runId) !== undefined) return runId
-    runId = newRunId()
-  }
-  throw new Error("a private run directory could not be created")
 }
 
 function queuedFailureMessage(reason: string): string {
