@@ -15,14 +15,9 @@
 import { createReadStream, createWriteStream } from "node:fs"
 import { join } from "node:path"
 
-import {
-  decodeMessages,
-  encodeMessage,
-  secretMatches,
-  type ControlMessage,
-} from "./control.ts"
-import { systemProbe } from "./identity.ts"
+import { decodeMessages, encodeMessage, secretMatches } from "./control.ts"
 import { spawnGatedChild } from "./gate.ts"
+import { systemProbe } from "./identity.ts"
 import { RUN_ARTIFACTS, storageFor, type Storage } from "./paths.ts"
 import { readRunRecord, type RunRecord } from "./state.ts"
 import { superviseRun } from "./supervisor.ts"
@@ -30,6 +25,10 @@ import { superviseRun } from "./supervisor.ts"
 /** The inherited descriptors the adapter sets up before spawning. */
 export const CONTROL_READ_FD = 3
 export const CONTROL_WRITE_FD = 4
+
+/** Exit statuses the adapter distinguishes. */
+export const EXIT_OK = 0
+export const EXIT_PROTOCOL = 70
 
 export type SupervisorLaunchSpec = {
   secret: string
@@ -43,89 +42,84 @@ export type SupervisorLaunchSpec = {
 }
 
 /**
- * Read the launch spec from the control channel and supervise the run.
+ * One reader for the whole channel.
  *
- * Exported rather than executed at import time, so the module can be loaded by
- * a test without spawning anything.
+ * The handshake and the later cancellation arrive on the same descriptor, so
+ * they are served by the same reader — two streams over one fd would race for
+ * the same bytes, and whichever lost would wait forever for a message the other
+ * had already consumed.
  */
-export async function main(): Promise<number> {
-  const control = createWriteStream("", { fd: CONTROL_WRITE_FD })
-  const spec = await readLaunchSpec()
-  if (spec === undefined) return 70
+class ControlChannel {
+  readonly #stream = createReadStream("", { fd: CONTROL_READ_FD })
+  readonly #writer = createWriteStream("", { fd: CONTROL_WRITE_FD })
+  #buffer = ""
+  #secret: string | undefined
+  #aborted = false
+  #announce: () => void = () => {}
 
-  const storage = storageFor(spec.homeDir, spec.trustedRoot)
-  const record = readRunRecord(storage, spec.runId)
-  if (record === undefined) return 70
+  readonly whenAborted = new Promise<void>((resolve) => {
+    this.#announce = resolve
+  })
 
-  control.write(encodeMessage({ type: "ready", runId: spec.runId }))
+  #onSpec: ((spec: SupervisorLaunchSpec | undefined) => void) | undefined
 
-  const cancellation = createCancellation(spec.secret)
-  const result = await superviseRun(
-    {
-      storage,
-      probe: systemProbe,
-      now: () => Number(process.hrtime.bigint() / 1_000_000n),
-      timestamp: () => new Date().toISOString(),
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      spawn: () =>
-        spawnGatedChild({
-          command: spec.command,
-          args: spec.args,
-          cwd: spec.trustedRoot,
-          environment: spec.environment,
-          logPath: logPathFor(storage, spec.runId),
-        }),
-      cancellation,
-    },
-    { record, supervisorIdentity: selfIdentity() },
-  )
+  constructor() {
+    this.#stream.on("data", (chunk) => this.#consume(String(chunk)))
+    this.#stream.on("error", () => this.#onSpec?.(undefined))
+    // Channel loss after the handshake is the adapter going away, which the
+    // supervisor is explicitly designed to survive.
+    this.#stream.on("end", () => this.#onSpec?.(undefined))
+  }
 
-  control.write(
-    encodeMessage({
-      type: "completed",
-      ...(result.execution.exitCode === undefined ? {} : { exitCode: result.execution.exitCode }),
-      ...(result.execution.signal === undefined ? {} : { signal: result.execution.signal }),
-    }),
-  )
+  get aborted(): boolean {
+    return this.#aborted
+  }
 
-  // Publish and exit. The supervisor never waits indefinitely for an absent
-  // plugin; reconciliation finalizes the run from immutable artifacts instead.
-  return 0
-}
+  /** The launch spec, or `undefined` when the channel produced no usable one. */
+  launchSpec(): Promise<SupervisorLaunchSpec | undefined> {
+    return new Promise((resolve) => {
+      this.#onSpec = (spec) => {
+        this.#onSpec = undefined
+        resolve(spec)
+      }
+      // A frame may already have arrived before this was called.
+      this.#consume("")
+    })
+  }
 
-export function logPathFor(storage: Storage, runId: string): string {
-  return join(storage.runsDir, runId, RUN_ARTIFACTS.rawLog)
-}
+  send(message: Parameters<typeof encodeMessage>[0]): void {
+    this.#writer.write(encodeMessage(message))
+  }
 
-function selfIdentity(): RunRecord["supervisor"] {
-  const probe = systemProbe.identify(process.pid)
-  return probe ?? { pid: process.pid, startedAt: "unknown" }
-}
+  close(): void {
+    this.#stream.destroy()
+    this.#writer.end()
+  }
 
-async function readLaunchSpec(): Promise<SupervisorLaunchSpec | undefined> {
-  const stream = createReadStream("", { fd: CONTROL_READ_FD })
-  let buffer = ""
+  #consume(chunk: string): void {
+    this.#buffer += chunk
+    const { messages, rest } = decodeMessages(this.#buffer)
+    this.#buffer = rest
 
-  for await (const chunk of stream) {
-    buffer += String(chunk)
-    const { messages, rest } = decodeMessages(buffer)
-    buffer = rest
     for (const message of messages) {
-      if (message.type !== "hello") continue
-      const spec = parseSpec(message)
-      if (spec !== undefined) return spec
-      return undefined
+      if (message.type === "hello") {
+        const spec = parseSpec(message as unknown as Partial<SupervisorLaunchSpec>)
+        this.#secret = spec?.secret
+        this.#onSpec?.(spec)
+        continue
+      }
+      if (message.type === "cancel") {
+        // Only an authenticated channel may cancel. An unauthenticated frame on
+        // a private channel is a protocol violation, not a cancellation.
+        if (this.#secret === undefined) continue
+        this.#aborted = true
+        this.#announce()
+      }
     }
   }
-  return undefined
 }
 
-/**
- * The spec travels with the handshake secret so the two are inseparable; a
- * frame carrying one without the other is rejected rather than partly used.
- */
-function parseSpec(message: ControlMessage & { type: "hello" }): SupervisorLaunchSpec | undefined {
-  const candidate = message as unknown as Partial<SupervisorLaunchSpec>
+function parseSpec(candidate: Partial<SupervisorLaunchSpec>): SupervisorLaunchSpec | undefined {
   if (
     typeof candidate.secret !== "string" ||
     typeof candidate.homeDir !== "string" ||
@@ -139,39 +133,67 @@ function parseSpec(message: ControlMessage & { type: "hello" }): SupervisorLaunc
   return candidate as SupervisorLaunchSpec
 }
 
-function createCancellation(secret: string) {
-  let aborted = false
-  let announce: () => void = () => {}
-  const whenAborted = new Promise<void>((resolve) => {
-    announce = resolve
-  })
+export async function main(): Promise<number> {
+  const channel = new ControlChannel()
 
-  const stream = createReadStream("", { fd: CONTROL_READ_FD })
-  let buffer = ""
-  stream.on("data", (chunk) => {
-    buffer += String(chunk)
-    const { messages, rest } = decodeMessages(buffer)
-    buffer = rest
-    for (const message of messages) {
-      // Only an authenticated cancel counts. An unauthenticated frame on a
-      // private channel is a protocol violation, not a cancellation.
-      if (message.type === "cancel") {
-        aborted = true
-        announce()
-      }
-      if (message.type === "hello" && !secretMatches(secret, message.secret)) {
-        stream.destroy()
-      }
-    }
-  })
+  try {
+    const spec = await channel.launchSpec()
+    if (spec === undefined) return EXIT_PROTOCOL
 
-  return {
-    get aborted() {
-      return aborted
-    },
-    whenAborted,
+    const storage = storageFor(spec.homeDir, spec.trustedRoot)
+    const record = readRunRecord(storage, spec.runId)
+    if (record === undefined) return EXIT_PROTOCOL
+
+    channel.send({ type: "ready", runId: spec.runId })
+
+    const result = await superviseRun(
+      {
+        storage,
+        probe: systemProbe,
+        now: () => Number(process.hrtime.bigint() / 1_000_000n),
+        timestamp: () => new Date().toISOString(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        spawn: () =>
+          spawnGatedChild({
+            command: spec.command,
+            args: spec.args,
+            cwd: spec.trustedRoot,
+            environment: spec.environment,
+            logPath: logPathFor(storage, spec.runId),
+          }),
+        cancellation: {
+          get aborted() {
+            return channel.aborted
+          },
+          whenAborted: channel.whenAborted,
+        },
+      },
+      { record, supervisorIdentity: selfIdentity() },
+    )
+
+    channel.send({
+      type: "completed",
+      ...(result.execution.exitCode === undefined ? {} : { exitCode: result.execution.exitCode }),
+      ...(result.execution.signal === undefined ? {} : { signal: result.execution.signal }),
+    })
+
+    return EXIT_OK
+  } finally {
+    // Publish and exit. The supervisor never waits indefinitely for an absent
+    // plugin; reconciliation finalizes the run from immutable artifacts instead.
+    channel.close()
   }
 }
+
+export function logPathFor(storage: Storage, runId: string): string {
+  return join(storage.runsDir, runId, RUN_ARTIFACTS.rawLog)
+}
+
+function selfIdentity(): RunRecord["supervisor"] {
+  return systemProbe.identify(process.pid) ?? { pid: process.pid, startedAt: "unknown" }
+}
+
+export { secretMatches }
 
 /**
  * True when this module is the process's entry, rather than merely imported.
@@ -186,9 +208,11 @@ export function isEntrypoint(url: string): boolean {
 if (isEntrypoint(import.meta.url)) {
   main()
     .then((code) => {
-      process.exitCode = code
+      // Exit explicitly: an inherited descriptor would otherwise keep the event
+      // loop alive after the run is finished and published.
+      process.exit(code)
     })
     .catch(() => {
-      process.exitCode = 70
+      process.exit(EXIT_PROTOCOL)
     })
 }

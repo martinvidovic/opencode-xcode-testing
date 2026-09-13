@@ -203,3 +203,48 @@ describe("deterministic identifiers", () => {
     expect(first.index.occurrences[0]?.id).not.toBe(second.index.occurrences[0]?.id)
   })
 })
+
+describe("a failure message from a real Result Bundle", () => {
+  test("carries its location in the text, and the decoder extracts it", async () => {
+    // Observed at schema 0.1.0: there is no `Source Code Reference` child, so a
+    // decoder that only looked for one would render every real failure with no
+    // location at all.
+    const { summary } = await interpretFixture("observed-failure-shape", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(summary.diagnostics.testFailures[0]?.location).toEqual({
+      path: "FailingTests.swift",
+      line: 8,
+    })
+  })
+
+  test("has the location prefix stripped out of the message", async () => {
+    const { summary } = await interpretFixture("observed-failure-shape", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(summary.diagnostics.testFailures[0]?.message).toBe(
+      'XCTAssertEqual failed: ("4") is not equal to ("5") - deliberate fixture failure',
+    )
+  })
+
+  test("is not doubled by the summary's copy of the same failure", async () => {
+    // The summary reports the same failure without the location prefix. Once
+    // the prefix is extracted the two are identical, so dedup can see it — and
+    // a caller is told one test failed once, not twice.
+    const { summary } = await interpretFixture("observed-failure-shape", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(summary.diagnostics.testFailureSection).toEqual({
+      total: 1,
+      shown: 1,
+      truncated: false,
+    })
+  })
+
+  test("still classifies the run as testFailed", async () => {
+    const { summary } = await interpretFixture("observed-failure-shape", {
+      request: { execution: FAILED_EXIT },
+    })
+    expect(summary.outcome).toBe("testFailed")
+  })
+})

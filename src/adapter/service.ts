@@ -44,7 +44,13 @@ import { reconcileRoot } from "../runner/recovery.ts"
 import { resolveTestRun } from "../runner/resolution.ts"
 import { advance, readRunRecord, writeRunRecord, type RunRecord } from "../runner/state.ts"
 import { buildArguments, buildEnvironment, XCODEBUILD } from "../runner/xcodebuild.ts"
-import type { AdmittedRun, ProtocolState, RunHandle, TestToolService } from "./tools.ts"
+import type {
+  AdmittedRun,
+  ProtocolState,
+  RunCancellation,
+  RunHandle,
+  TestToolService,
+} from "./tools.ts"
 
 export type ServiceEnvironment = {
   storage: Storage
@@ -65,8 +71,8 @@ export type ServiceEnvironment = {
 
 export function createTestToolService(environment: ServiceEnvironment): TestToolService {
   return {
-    start(request, hooks) {
-      return startRun(environment, request, hooks)
+    start(request, hooks, cancellation) {
+      return startRun(environment, request, hooks, cancellation)
     },
 
     inspect(request) {
@@ -95,6 +101,7 @@ function startRun(
   environment: ServiceEnvironment,
   request: TestRunRequest,
   hooks: { onState(state: ProtocolState): void },
+  cancellation?: RunCancellation,
 ): RunHandle {
   let resolveAdmitted: (run: AdmittedRun) => void = () => {}
   let rejectAdmitted: (error: Error) => void = () => {}
@@ -175,6 +182,7 @@ function startRun(
         admission,
         hooks,
         startedAt,
+        ...(cancellation === undefined ? {} : { cancellation }),
       })
     } finally {
       // The slot is released only once the run is durably finished; a
@@ -196,6 +204,7 @@ async function superviseAndInterpret(
     admission: { admittedAt: string; queueDurationMs: number }
     hooks: { onState(state: ProtocolState): void }
     startedAt: number
+    cancellation?: RunCancellation
   },
 ): Promise<TestToolResult> {
   const { storage } = environment
@@ -216,6 +225,7 @@ async function superviseAndInterpret(
     runId: input.record.runId,
     args,
     onState: input.hooks.onState,
+    ...(input.cancellation === undefined ? {} : { cancellation: input.cancellation }),
   })
 
   if (!supervision.ok) {
@@ -309,7 +319,12 @@ type SupervisionOutcome = { ok: true } | { ok: false; message: string }
 
 function runSupervisor(
   environment: ServiceEnvironment,
-  input: { runId: string; args: string[]; onState(state: ProtocolState): void },
+  input: {
+    runId: string
+    args: string[]
+    onState(state: ProtocolState): void
+    cancellation?: RunCancellation
+  },
 ): Promise<SupervisionOutcome> {
   return new Promise((resolve) => {
     const child = spawn(environment.runtimePath, [environment.supervisorEntrypoint], {
@@ -341,6 +356,13 @@ function runSupervisor(
         developerDirectory: environment.toolchain.developerDirectory,
       } as ControlMessage & Record<string, unknown>),
     )
+
+    // The supervisor owns termination, so cancellation is relayed to it
+    // rather than signalled from here: the plugin is outside the process group
+    // on purpose, and signalling into it would race the escalation ladder.
+    void input.cancellation?.whenAborted.then(() => {
+      toSupervisor?.write(encodeMessage({ type: "cancel" }))
+    })
 
     let buffer = ""
     fromSupervisor?.on("data", (chunk: Buffer) => {

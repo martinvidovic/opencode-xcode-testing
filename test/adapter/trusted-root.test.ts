@@ -63,6 +63,20 @@ describe("the trusted root", () => {
     })
   })
 
+  test("treats a root or empty worktree as absent, not as the filesystem root", () => {
+    // A host that finds no git worktree reports "/" — observed in the headless
+    // gate, where it silently disabled the plugin in every non-git project and
+    // would have keyed artifact storage and discovery to the whole filesystem.
+    withProject((root) => {
+      for (const worktree of ["", "   ", "/"]) {
+        expect(resolveTrustedRoot({ worktree, directory: root })).toEqual({
+          status: "resolved",
+          trustedRoot: realpathSync(root),
+        })
+      }
+    })
+  })
+
   test("canonicalizes once, so a link swapped later cannot redirect storage", () => {
     withProject((root) => {
       const real = join(root, "real")

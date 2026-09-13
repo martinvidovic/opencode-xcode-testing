@@ -9,6 +9,7 @@
  * point of keeping the entrypoint thin.
  */
 
+export * from "./args.ts"
 export * from "./budget.ts"
 export * from "./descriptions.ts"
 export * from "./document.ts"

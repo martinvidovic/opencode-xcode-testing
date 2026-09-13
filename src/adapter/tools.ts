@@ -23,6 +23,12 @@
 
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
+import {
+  toInspectRunRequest,
+  toTestRunRequest,
+  type InspectArguments,
+  type TestArguments,
+} from "./args.ts"
 import type { TestRunCancelled, TestToolResult } from "../domain/result.ts"
 import { SCHEMA_VERSION } from "../domain/result.ts"
 import { requestedScopeDigest, type RequestedScope } from "../domain/scope.ts"
@@ -60,8 +66,20 @@ export type RunHandle = {
   result: Promise<TestToolResult>
 }
 
+/** The caller's cancellation, shaped so the service can both poll and await it. */
+export type RunCancellation = { readonly aborted: boolean; readonly whenAborted: Promise<void> }
+
 export type TestToolService = {
-  start(request: TestRunRequest, hooks: { onState(state: ProtocolState): void }): RunHandle
+  start(
+    request: TestRunRequest,
+    hooks: { onState(state: ProtocolState): void },
+    /**
+     * Passed through to the supervisor. Without it the adapter would return
+     * `cancelled` while `xcodebuild` carried on running — the model would
+     * believe the run had stopped and the machine would disagree.
+     */
+    cancellation?: RunCancellation,
+  ): RunHandle
   inspect(request: InspectRunRequest): Promise<InspectionResponse<unknown>>
   recover(): Promise<{ status: RecoveryStatus; message?: string }>
 }
@@ -89,10 +107,11 @@ export type ToolDeps = {
 // --- xcode_test -----------------------------------------------------------
 
 export async function executeTest(
-  request: TestRunRequest,
+  args: TestArguments,
   context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
+  const request = toTestRunRequest(args)
   const budget = deps.budget ?? DEFAULT_BUDGET
   const startedAt = deps.now()
 
@@ -106,7 +125,14 @@ export async function executeTest(
     })
   }
 
-  const handle = deps.service.start(request, { onState: (state) => publish(state) })
+  const cancellation: RunCancellation = {
+    get aborted() {
+      return context.abort?.aborted === true
+    },
+    whenAborted: whenAborted(context, deps).then(() => undefined),
+  }
+
+  const handle = deps.service.start(request, { onState: (state) => publish(state) }, cancellation)
   void handle.admitted.then((admitted) => publish("admitted", admitted.runId)).catch(() => {})
 
   const settled = await raceAbort(handle.result, context, deps)
@@ -206,10 +232,11 @@ export function pendingCancellation(
  * useful than discarding it — this is adapter behavior, not a contract change.
  */
 export async function executeInspect(
-  request: InspectRunRequest,
+  args: InspectArguments,
   _context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
+  const request = toInspectRunRequest(args)
   const response = await deps.service.inspect(request)
   return serialize(renderInspection(request, response), deps.budget ?? DEFAULT_BUDGET).text
 }

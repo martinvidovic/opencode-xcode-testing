@@ -1,0 +1,106 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
+    "scenario": "observed-failure-shape",
+    "observedShape": "a Failure Message carrying its location in the message text, with no Source Code Reference child",
+    "note": "captured from a real xcodebuild failure; the summary repeats the same failure without the location prefix"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
+      "hasTestResults": true,
+      "logs": [
+        "build",
+        "action"
+      ]
+    },
+    "get build-results": {
+      "status": "failed",
+      "errorCount": 0,
+      "errors": []
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "1",
+          "configurationName": "Test Scheme Action"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "iPhone 17",
+          "platform": "iOS Simulator",
+          "osVersion": "26.4.1"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "result": "Failed",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "result": "Failed",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "DeliberateFailureTests",
+                  "result": "Failed",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testFailsDeliberately()",
+                      "nodeIdentifier": "DeliberateFailureTests/testFailsDeliberately()",
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/DeliberateFailureTests/testFailsDeliberately",
+                      "result": "Failed",
+                      "duration": "0,26s",
+                      "durationInSeconds": 0.26051902770996094,
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "FailingTests.swift:8: XCTAssertEqual failed: (\"4\") is not equal to (\"5\") - deliberate fixture failure"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "title": "Test - App",
+      "result": "Failed",
+      "totalTestCount": 1,
+      "passedTests": 0,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "expectedFailures": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertEqual failed: (\"4\") is not equal to (\"5\") - deliberate fixture failure",
+          "targetName": "AppTests",
+          "testIdentifier": 1,
+          "testIdentifierString": "DeliberateFailureTests/testFailsDeliberately()",
+          "testIdentifierURL": "test://com.apple.xcode/App/AppTests/DeliberateFailureTests/testFailsDeliberately",
+          "testName": "testFailsDeliberately()"
+        }
+      ]
+    }
+  }
+}
