@@ -108,19 +108,54 @@ describe("facet paging", () => {
   })
 
   test("never serves log content from the index", async () => {
+    // The log lives on disk under the retention contract. Index paging is by
+    // record position and the log is read by byte range: a caller that reached
+    // here asked the wrong question, and is told so rather than handed a page.
     const index = await manyFailures()
-    expect(inspect(index, { facet: "log" })).toMatchObject({ status: "unsupported", facet: "log" })
+    expect(inspect(index, { facet: "log" })).toMatchObject({ status: "invalid" })
   })
 })
 
 describe("focused records", () => {
-  test("resolve a diagnostic by id", async () => {
+  test("resolve a diagnostic by id, as the expanded view rather than the page record", async () => {
     const index = await manyFailures()
-    const id = index.testFailures[3]?.id ?? ""
-    const response = inspect(index, { diagnosticId: id })
-    expect(response.status === "available" && response.data.records).toEqual([
-      index.testFailures[3],
-    ])
+    const summary = index.testFailures[3]
+    const response = inspect(index, { diagnosticId: summary?.id ?? "" })
+
+    // The point of focusing is to see past the caps a page applies, so the
+    // answer is a different shape, not a one-record page.
+    if (response.status !== "incomplete") throw new Error("expected an incomplete focused view")
+    expect(response.data).toMatchObject({
+      facet: "failures",
+      focused: { id: summary?.id, kind: "testFailure", message: summary?.message },
+    })
+    expect("records" in response.data).toBe(false)
+  })
+
+  test("carry the identity the diagnostic belongs to", async () => {
+    const index = await manyFailures()
+    const summary = index.testFailures[3]
+    const response = inspect(index, { diagnosticId: summary?.id ?? "" })
+
+    if (response.status !== "incomplete") throw new Error("expected an incomplete focused view")
+    const focused = (response.data as { focused: { identity?: { canonical: string } } }).focused
+    expect(focused.identity?.canonical).toBe(
+      index.occurrences.find((o) => o.id === summary?.testId)?.identity.canonical,
+    )
+  })
+
+  test("resolve a test by id, with every attempt it made", async () => {
+    const index = await manyFailures()
+    const occurrence = index.occurrences[0]
+    const response = inspect(index, { facet: "tests", testId: occurrence?.id ?? "" })
+
+    // A focused test never degrades: attempts and diagnostics are both
+    // indexed, so nothing here depends on reopening the Result Bundle.
+    if (response.status !== "available") throw new Error("expected an available focused view")
+    expect(response.data).toMatchObject({
+      facet: "tests",
+      focused: { id: occurrence?.id, status: occurrence?.status },
+    })
   })
 
   test("report notFound without revealing which run holds the id", async () => {

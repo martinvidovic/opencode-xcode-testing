@@ -178,6 +178,22 @@ export function assertSafeFile(path: string): void {
  * link swapped in at any moment fails the open rather than redirecting it.
  */
 export function readPrivateFile(path: string): string {
+  const handle = openPrivateFile(path)
+  try {
+    return readFileSync(handle.fd, "utf8")
+  } finally {
+    closeSync(handle.fd)
+  }
+}
+
+/**
+ * The same guarantee, left open, for a file too large to read whole.
+ *
+ * The caller owns the descriptor and must close it. This exists for the
+ * retained log, which can be gigabytes: reading it in full to return a window
+ * of it is the one implementation that cannot be bounded.
+ */
+export function openPrivateFile(path: string): { fd: number; size: number } {
   let fd: number
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -193,9 +209,10 @@ export function readPrivateFile(path: string): string {
     const stats = fstatSync(fd)
     if (!stats.isFile()) throw new UnsafeArtifactError(path, "is not a regular file")
     assertOwnedPrivately(path, stats.uid, stats.mode)
-    return readFileSync(fd, "utf8")
-  } finally {
+    return { fd, size: stats.size }
+  } catch (error) {
     closeSync(fd)
+    throw error
   }
 }
 

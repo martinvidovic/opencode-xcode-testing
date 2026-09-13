@@ -100,6 +100,7 @@ describe("a retained index that cannot be trusted", () => {
       observedOutsideScope: 0,
       build: { completeness: "unavailable" },
       tests: { completeness: "unavailable" },
+      diagnostics: { completeness: "unavailable" },
       log: { availability: "unavailable", retainedBytesExact: false },
       bundleDigestVerified: "unknown",
     })

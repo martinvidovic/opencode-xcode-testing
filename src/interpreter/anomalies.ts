@@ -16,6 +16,7 @@ export type XcresultCommand =
   | "get build-results"
   | "get test-results tests"
   | "get test-results summary"
+  | "get test-results test-details"
 
 export type Anomaly = {
   command: XcresultCommand

@@ -134,3 +134,26 @@ export type FocusedDiagnostic = {
   activities: ActivityNode[]
   attachments: AttachmentMetadata[]
 }
+
+/**
+ * The expanded view of a single test, reachable only by `testId`.
+ *
+ * Carries the attempts because a test that passed on its second run is a
+ * different fact from one that passed outright, and a compact record cannot
+ * say which happened.
+ */
+export type FocusedTest = {
+  id: string
+  identity: TestIdentity
+  status: TestStatus
+  durationMs?: number
+  attempts: TestAttempt[]
+  /** Every diagnostic this test produced, so a caller need not search for them. */
+  diagnostics: DiagnosticSummary[]
+}
+
+export type TestAttempt = {
+  ordinal: number
+  status: TestStatus
+  durationMs?: number
+}

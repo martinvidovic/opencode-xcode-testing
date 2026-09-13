@@ -6,7 +6,12 @@
  * structure — not the Result Bundle — is what a later inspection answers from.
  */
 
-import type { BuildEvidence, TestCounts, TestEvidence } from "../domain/evidence.ts"
+import type {
+  BuildEvidence,
+  EvidenceCompleteness,
+  TestCounts,
+  TestEvidence,
+} from "../domain/evidence.ts"
 import type { DiagnosticSummary, FacetAvailability } from "../domain/inspection.ts"
 import type { ScopeAttestation, ScopeVerdict } from "../domain/scope.ts"
 import { isArrayOf, isRecord } from "../domain/json.ts"
@@ -41,6 +46,18 @@ export type NormalizedIndex = {
   counts?: TestCounts
   build: BuildEvidence
   tests: TestEvidence
+  /**
+   * How much of the *diagnostic* record survived, which is not the same
+   * question as how many tests were counted.
+   *
+   * A run can count every test correctly and still lose failure detail — the
+   * Result Summary's supplemental failures are the usual way, since the schema
+   * declares that field with a shape the decoder has to work around. Folding
+   * the two together would make an empty failures page look authoritative on
+   * the strength of the test counts being fine, which is exactly the claim
+   * that would be wrong.
+   */
+  diagnostics: { completeness: EvidenceCompleteness }
   log: LogFacetEvidence
   /**
    * Stabilization-time digest re-verification. A mismatch never invalidates
@@ -83,6 +100,7 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
     typeof index.observedOutsideScope === "number" &&
     isFacet(index.build) &&
     isFacet(index.tests) &&
+    isFacet(index.diagnostics) &&
     isLogFacet(index.log) &&
     typeof index.bundleDigestVerified === "string"
   )

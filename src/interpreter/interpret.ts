@@ -117,6 +117,8 @@ type Gathered = {
   occurrences: NormalizedOccurrence[]
   buildIssues: RawBuildIssue[]
   supplementalFailures: RawTestFailure[]
+  /** Set when supplemental failure detail could not be read losslessly. */
+  diagnosticsDegraded: boolean
   testingReached: boolean | "unknown"
   defect?: EvidenceDefect
   cancelledDuringInterpretation: boolean
@@ -150,6 +152,7 @@ async function gather(
     occurrences: [],
     buildIssues: [],
     supplementalFailures: [],
+    diagnosticsDegraded: false,
     testingReached: "unknown",
     cancelledDuringInterpretation: false,
   }
@@ -330,6 +333,9 @@ async function gather(
   if (summaryResponse.ok) {
     const decoded = decodeTestSummary(summaryResponse.payload, anomalies)
     if (!decoded.ok) {
+      // The summary is gone, so any failure it would have supplemented is
+      // gone with it. The counts may still be perfectly good.
+      state.diagnosticsDegraded = true
       anomalies.record({
         command: "get test-results summary",
         fieldPath: decoded.fieldPath,
@@ -339,6 +345,7 @@ async function gather(
       })
     } else {
       state.supplementalFailures = decoded.value.testFailures
+      if (decoded.value.testFailuresDegraded) state.diagnosticsDegraded = true
       const contradiction = reconcileSummary(decoded.value, state, availability.value)
       if (contradiction !== undefined) setDefect("contradictoryEvidence", contradiction)
     }
@@ -493,6 +500,17 @@ function publish(
     ...(counts === undefined ? {} : { counts }),
     build: gathered.build,
     tests: gathered.tests,
+    // Diagnostics are as complete as the tests facet allows *and* as the
+    // supplemental read allowed. Either one failing makes an empty failures
+    // page unauthoritative, and neither implies the other.
+    diagnostics: {
+      completeness:
+        gathered.tests.completeness === "unavailable"
+          ? "unavailable"
+          : gathered.diagnosticsDegraded || gathered.tests.completeness === "partial"
+            ? "partial"
+            : "complete",
+    },
     log: {
       availability: request.facts.log.retainedBytes === undefined ? "unavailable" : "available",
       ...(request.facts.log.retainedBytes === undefined

@@ -14,7 +14,7 @@
 
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs"
+import { closeSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs"
 import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
@@ -26,7 +26,16 @@ import type { InspectionResponse, InspectRunRequest } from "../domain/inspection
 import { interpretRun } from "../interpreter/interpret.ts"
 import { INDEX_VERSION, isNormalizedIndex, type NormalizedIndex } from "../interpreter/index-model.ts"
 import { DECODER_VERSION, REQUESTED_SCHEMA_VERSION } from "../interpreter/schema.ts"
-import { inspectIndex } from "../interpreter/paging.ts"
+import { decodeTestDetails } from "../interpreter/decode.ts"
+import type { LazyDetail } from "../interpreter/focus.ts"
+import { safeLocationFromSourceURL } from "../interpreter/locations.ts"
+import { toolchainIdentityMatches } from "../interpreter/ports.ts"
+import {
+  inspectIndex,
+  inspectLog,
+  resolveLogWindow,
+  type FacetPage,
+} from "../interpreter/paging.ts"
 import type { XcresultTool } from "../interpreter/ports.ts"
 import { SUPERVISOR_STARTUP_DEADLINE_MS } from "../runner/supervisor.ts"
 import { createXcresultTool } from "../interpreter/xcresulttool.ts"
@@ -42,6 +51,7 @@ import {
   createPrivateDirectory,
   createRunDirectory,
   isRunId,
+  openPrivateFile,
   readPrivateFile,
   RUN_ARTIFACTS,
   runDirectory,
@@ -153,7 +163,7 @@ export function createTestToolService(environment: ServiceEnvironment): TestTool
     },
 
     inspect(request) {
-      return Promise.resolve(inspectRetained(environment, request))
+      return inspectRetained(environment, request)
     },
 
     async recover() {
@@ -487,6 +497,7 @@ function emptyIndex(runId: string): NormalizedIndex {
     observedOutsideScope: 0,
     build: { completeness: "unavailable" },
     tests: { completeness: "unavailable" },
+    diagnostics: { completeness: "unavailable" },
     log: { availability: "unavailable", retainedBytesExact: false },
     bundleDigestVerified: "unknown",
   }
@@ -869,10 +880,10 @@ function runSupervisor(
 
 // --- inspection -----------------------------------------------------------
 
-function inspectRetained(
+async function inspectRetained(
   environment: ServiceEnvironment,
   request: InspectRunRequest,
-): InspectionResponse<unknown> {
+): Promise<InspectionResponse<unknown>> {
   // A handle that cannot address storage names nothing, and is answered as
   // such. It never reaches the filesystem, so there is no traversal to
   // defend against further down.
@@ -920,7 +931,151 @@ function inspectRetained(
     return { status: "invalid", message: "the retained index does not belong to this Test Run" }
   }
 
-  return inspectIndex(parsed, request, environment.cursorSecret) as InspectionResponse<unknown>
+  if (request.facet === "log") {
+    return inspectRetainedLog(environment, parsed, request) as InspectionResponse<unknown>
+  }
+
+  const lazy =
+    request.diagnosticId === undefined
+      ? undefined
+      : await lazyDetailFor(environment, parsed, request.diagnosticId)
+
+  return inspectIndex(parsed, request, environment.cursorSecret, lazy) as InspectionResponse<unknown>
+}
+
+/**
+ * Detail read from the Result Bundle, or `undefined` when it must not be.
+ *
+ * Three gates, and any one of them closing degrades the focused view rather
+ * than failing it. The index is immutable and was written when the evidence
+ * was fresh, so ordinary paging is unaffected by all of this — only the part
+ * that would have to go back to the bundle is.
+ *
+ * - **The digest.** A bundle that no longer matches what was recorded is not
+ *   the bundle the index describes. Reading detail from it would attach that
+ *   detail to a diagnostic derived from different bytes.
+ * - **The toolchain.** #8's rule is that a bundle is read back with the same
+ *   installation that wrote it; a different one may decode the same file
+ *   differently, and silently.
+ * - **The budget.** A lazy read is a subprocess, and an inspection is a
+ *   question someone is waiting on. It gets a bounded share and no more.
+ */
+async function lazyDetailFor(
+  environment: ServiceEnvironment,
+  index: NormalizedIndex,
+  diagnosticId: string,
+): Promise<LazyDetail | undefined> {
+  if (index.bundleDigestVerified !== "yes") return undefined
+  if (index.schemaVersion !== environment.toolchain.schemaVersion) return undefined
+
+  // The bundle-facing identifier, not our derived one: `xcresulttool` has
+  // never heard of a run-local diagnostic id.
+  const subject = subjectFor(index, diagnosticId)
+  if (subject === undefined) return undefined
+
+  const bundlePath = join(
+    runDirectory(environment.storage, index.runId),
+    RUN_ARTIFACTS.resultBundle,
+  )
+  if (!existsSync(bundlePath)) return undefined
+
+  const tool = readerFor(environment, bundlePath)
+  if (!toolchainIdentityMatches(tool.identity, environment.toolchain)) return undefined
+
+  const response = await tool.run("get test-results test-details", LAZY_READ_BUDGET_MS, subject)
+  if (!response.ok) return undefined
+
+  const decoded = decodeTestDetails(response.payload)
+  if (!decoded.ok) return undefined
+
+  return {
+    activities: decoded.value.activities,
+    attachments: decoded.value.attachments,
+    stackFrames: decoded.value.stackFrames.map((frame) => ({
+      ...(frame.symbol === undefined ? {} : { symbol: frame.symbol }),
+      ...(frame.module === undefined ? {} : { module: frame.module }),
+      ...safeFrameLocation(frame.sourceURL, environment.trustedRoot),
+    })),
+  }
+}
+
+/** The Xcode identifier of the test a diagnostic belongs to, if it has one. */
+function subjectFor(index: NormalizedIndex, diagnosticId: string): string | undefined {
+  const diagnostic = index.testFailures.find((entry) => entry.id === diagnosticId)
+  if (diagnostic?.testId === undefined) return undefined
+  return index.occurrences.find((entry) => entry.id === diagnostic.testId)?.identity.canonical
+}
+
+function safeFrameLocation(sourceURL: string | undefined, trustedRoot: string) {
+  const location = safeLocationFromSourceURL(sourceURL, trustedRoot)
+  return location === undefined ? {} : { location }
+}
+
+/**
+ * One bounded window of the retained raw log.
+ *
+ * The window is resolved before the file is opened and only those bytes are
+ * read: a retained log can be gigabytes, and "read it, then return a slice" is
+ * the one implementation that cannot be made to fit the response cap.
+ */
+function inspectRetainedLog(
+  environment: ServiceEnvironment,
+  index: NormalizedIndex,
+  request: InspectRunRequest,
+): InspectionResponse<FacetPage> {
+  const resolved = resolveLogWindow(index, request, environment.cursorSecret)
+  if (!resolved.ok) return resolved.response
+
+  // Asked before the file is opened. "No log was ever retained" and "the
+  // retained log is gone" are different answers, and only the index can tell
+  // them apart — a missing file looks identical from the filesystem.
+  const unavailable = logAvailability(index)
+  if (unavailable !== undefined) return unavailable
+
+  const { byteOffset, maxBytes } = resolved.window
+  let read: { bytes: Buffer; totalBytes: number }
+  try {
+    read = readLogWindow(
+      join(runDirectory(environment.storage, request.runId), RUN_ARTIFACTS.rawLog),
+      byteOffset,
+      maxBytes,
+    )
+  } catch (error) {
+    // The index said the log was retained and it is not readable now. That is
+    // a retained artifact that stopped being one, not a facet this run never
+    // had, so it reads as expiry rather than as "unsupported".
+    if (error instanceof UnsafeArtifactError) {
+      return { status: "invalid", message: "the retained log for this Test Run is not trustworthy" }
+    }
+    return { status: "expired" }
+  }
+
+  return inspectLog(index, read.bytes, byteOffset, read.totalBytes, environment.cursorSecret)
+}
+
+function logAvailability(index: NormalizedIndex): InspectionResponse<FacetPage> | undefined {
+  if (index.log.availability === "unavailable") return { status: "unsupported", facet: "log" }
+  if (index.log.availability === "expired") return { status: "expired" }
+  return undefined
+}
+
+/** Read `maxBytes` at `byteOffset`, from a descriptor validated as private. */
+function readLogWindow(
+  path: string,
+  byteOffset: number,
+  maxBytes: number,
+): { bytes: Buffer; totalBytes: number } {
+  const handle = openPrivateFile(path)
+  try {
+    const totalBytes = handle.size
+    if (byteOffset >= totalBytes) return { bytes: Buffer.alloc(0), totalBytes }
+
+    const bytes = Buffer.alloc(Math.min(maxBytes, totalBytes - byteOffset))
+    const read = readSync(handle.fd, bytes, 0, bytes.length, byteOffset)
+    return { bytes: bytes.subarray(0, read), totalBytes }
+  } finally {
+    closeSync(handle.fd)
+  }
 }
 
 function tombstoneExists(storage: Storage, runId: string): boolean {
@@ -1004,6 +1159,15 @@ function stabilize(
  * digest that never finishes must not hold a run open.
  */
 export const DIGEST_BUDGET_MS = 30_000
+
+/**
+ * What a lazy detail read may spend.
+ *
+ * An inspection is a question someone is waiting on, and this is the optional
+ * part of the answer: it gets a small bounded share, and a read that wants
+ * more returns the indexed view instead of keeping the caller waiting.
+ */
+export const LAZY_READ_BUDGET_MS = 5_000
 
 /**
  * A deterministic content digest (#8): recursive, name-ordered, and dependent
