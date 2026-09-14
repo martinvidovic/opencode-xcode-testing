@@ -88,17 +88,21 @@ export const RESPONSE_ENVELOPE_BYTES = 1_024
  * The most structured output a single `xcresulttool` read may stage.
  *
  * The tool is given a Result Bundle this repository did not write, for a test
- * suite whose size nothing here controls, so the read needs a bound. What the
- * bound is *on* matters as much as its value: output is streamed to a private
- * file rather than accumulated, so this limits bytes written to a disk that
- * has room for them, not bytes a process must hold at once.
+ * suite whose size nothing here controls, so the read needs a bound. Staging
+ * the output in a private file rather than accumulating it is what lets the
+ * bound be this high: the old ceiling had to cover the payload held as chunks,
+ * again as one buffer, again as a string and again as objects, so it rejected
+ * suites that were merely large — as `unsupported`, which reads as "this
+ * schema is wrong" when the truth is "this suite is big".
  *
- * That is why it is generous. A cap sized for memory would reject a valid
- * bundle — and reject it as `unsupported`, which reads as "this schema is
- * wrong" when the truth is "this suite is large". A cap sized for disk is
- * reached only by output no filesystem should be asked to hold either.
+ * It is deliberately **not** disk-sized, though, because disk is not the
+ * binding constraint. Decoding turns the staged bytes into one JavaScript
+ * string, and a runtime will not build a string of any size; a cap above that
+ * limit would admit payloads that stage perfectly and then fail at the last
+ * step, which is a worse answer arrived at more slowly. This is the largest
+ * output that can actually be decoded, with room to spare.
  */
-export const MAX_STAGED_PAYLOAD_BYTES = 2 * 1024 * 1024 * 1024
+export const MAX_STAGED_PAYLOAD_BYTES = 512 * 1024 * 1024
 
 /**
  * The largest tool-managed file read whole into memory.

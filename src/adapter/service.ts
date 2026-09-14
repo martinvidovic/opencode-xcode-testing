@@ -827,7 +827,16 @@ function preLaunchMessage(record: RunRecord): string {
     : "the Test Run was interrupted before its process was authorized to start the tests"
 }
 
-/** When this run was admitted, as a monotonic-comparable millisecond value. */
+/**
+ * When this run was admitted, as a monotonic-comparable millisecond value.
+ *
+ * The one place a wall clock is read on purpose. `admittedAt` is an ISO
+ * timestamp written by a process that may since have crashed, so there is no
+ * monotonic reading of it to recover — the two clocks have to be bridged
+ * somewhere, and here is where. It produces a reported duration rather than a
+ * deadline, so a clock that has moved skews a number a reader sees instead of
+ * cutting work short or letting it run unbounded.
+ */
 function admissionMs(environment: ServiceEnvironment, record: RunRecord): number {
   const admitted = Date.parse(record.admittedAt)
   return Number.isNaN(admitted) ? environment.now() : environment.now() - (Date.now() - admitted)

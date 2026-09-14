@@ -16,6 +16,7 @@ import { join } from "node:path"
 import { createXcresultTool } from "../../src/interpreter/xcresulttool.ts"
 import { decodeTestResults } from "../../src/interpreter/decode.ts"
 import { identityFor, loadFixture } from "./harness.ts"
+import { withJumpingWallClock } from "../wall-clock.ts"
 
 /** How many test cases to emit. Comfortably past a one-megabyte buffer. */
 const CASE_COUNT = 12_000
@@ -63,7 +64,7 @@ function largePayloadTool(): {
 
   const identity = { ...identityFor(loadFixture("passed")), xcresulttoolPath: script }
   return {
-    tool: createXcresultTool({ identity, bundlePath: bundle, stagingDir: directory }),
+    tool: createXcresultTool({ identity, bundlePath: bundle }),
     directory,
     dispose: () => rmSync(directory, { recursive: true, force: true }),
   }
@@ -160,11 +161,36 @@ describe("staging a read", () => {
 
     try {
       const identity = { ...identityFor(loadFixture("passed")), xcresulttoolPath: script }
-      const tool = createXcresultTool({ identity, bundlePath: bundle, stagingDir: directory })
+      const tool = createXcresultTool({ identity, bundlePath: bundle })
 
       const response = await tool.run("get test-results tests", 300)
 
       expect(response).toMatchObject({ ok: false, failure: "timedOut" })
+      expect(stagedFiles(directory)).toEqual([])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test("leaves nothing behind when the read fails before it has begun", async () => {
+    // The window an asynchronously-opened stream leaves: the read settles
+    // immediately — here because the command cannot be started at all — and
+    // cleanup runs before the file it is cleaning up has been created. The
+    // file then appears a moment later and stays forever.
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-staged-"))
+    const bundle = join(directory, "result.xcresult")
+    mkdirSync(bundle, { recursive: true })
+
+    try {
+      const identity = {
+        ...identityFor(loadFixture("passed")),
+        xcresulttoolPath: join(directory, "does-not-exist"),
+      }
+      const tool = createXcresultTool({ identity, bundlePath: bundle })
+
+      const response = await tool.run("get test-results tests", 30_000)
+
+      expect(response).toMatchObject({ ok: false, failure: "commandFailed" })
       expect(stagedFiles(directory)).toEqual([])
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -179,15 +205,10 @@ describe("a wall clock that jumps while a read is in flight", () => {
     // or discarded as late was a wall-clock question. An NTP step of an hour
     // turns a read that took a second into a timeout.
     const { tool, dispose } = largePayloadTool()
-    const real = Date.now
-    let calls = 0
-    Date.now = () => (calls++ === 0 ? real() : real() + 3_600_000)
-
     try {
-      const response = await tool.run("get test-results tests", 30_000)
+      const response = await withJumpingWallClock(() => tool.run("get test-results tests", 30_000))
       expect(response.ok).toBe(true)
     } finally {
-      Date.now = real
       dispose()
     }
   }, 60_000)

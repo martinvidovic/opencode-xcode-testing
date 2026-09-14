@@ -15,6 +15,7 @@ import { join } from "node:path"
 
 import { bundleDigest, DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
+import { withJumpingWallClock } from "../wall-clock.ts"
 
 /** A bundle holding one file far larger than any chunk of it. */
 function bundleWithLargeFile(box: Sandbox, bytes: number): string {
@@ -89,18 +90,6 @@ describe("digesting a large Result Bundle", () => {
 })
 
 describe("a wall clock that moves under a digest in progress", () => {
-  /** Run `work` with `Date.now` jumped forward by an hour after its first call. */
-  function withJumpingWallClock<T>(work: () => T): T {
-    const real = Date.now
-    let calls = 0
-    Date.now = () => (calls++ === 0 ? real() : real() + 3_600_000)
-    try {
-      return work()
-    } finally {
-      Date.now = real
-    }
-  }
-
   test("does not expire a budget the walk has not spent", async () => {
     await withSandbox((box) => {
       // An NTP correction, a daylight change, a user setting the clock: the

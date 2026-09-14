@@ -30,7 +30,8 @@
  */
 
 import { spawn } from "node:child_process"
-import { createWriteStream, existsSync, readFileSync, rmSync } from "node:fs"
+import { randomBytes } from "node:crypto"
+import { createWriteStream, existsSync, openSync, readFileSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 import type { XcresultCommand } from "./anomalies.ts"
@@ -83,15 +84,12 @@ function schemaPinned(words: string[], common: string[]): string[] {
 export function createXcresultTool(input: {
   identity: ToolchainIdentity
   bundlePath: string
-  /**
-   * Where a read stages its output. Defaults to the directory holding the
-   * bundle, which in production is the run's own `0700` directory — so the
-   * default is private for the same reason the evidence beside it is, and a
-   * staged file cannot outlive the run whose retention sweeps that directory.
-   */
-  stagingDir?: string
 }): XcresultTool {
-  const stagingDir = input.stagingDir ?? dirname(input.bundlePath)
+  // The directory holding the bundle, which in production is the run's own
+  // `0700` directory — so a staged file is private for the same reason the
+  // evidence beside it is, and cannot outlive the run whose retention sweeps
+  // that directory.
+  const stagingDir = dirname(input.bundlePath)
 
   return {
     identity: input.identity,
@@ -107,7 +105,11 @@ export function createXcresultTool(input: {
       return read({
         identity: input.identity,
         bundlePath: input.bundlePath,
-        stagingDir,
+        // Random, not a process id and a counter. Those repeat: a crash leaves
+        // a staged file behind, the pid is eventually recycled, and the next
+        // read of that bundle collides with a leftover it must not write
+        // through — turning a perfectly good read into a failure.
+        staged: join(stagingDir, `.xcresult-read-${randomBytes(8).toString("hex")}.json`),
         command,
         budgetMs,
         ...(subject === undefined ? {} : { subject }),
@@ -116,18 +118,11 @@ export function createXcresultTool(input: {
   }
 }
 
-/**
- * A staged file nothing else can be holding.
- *
- * Opened `wx` at mode `0600`: exclusive creation refuses an existing path rather
- * than writing through it, so a name that somehow already exists — a leftover,
- * a link planted by something else — fails the read instead of silently
- * becoming its output.
- */
-let stagedReads = 0
-function stagedPath(stagingDir: string): string {
-  stagedReads += 1
-  return join(stagingDir, `.xcresult-read-${process.pid}-${stagedReads}.json`)
+/** The one wording for an expired read, used wherever the deadline is checked. */
+const TIMED_OUT: XcresultResponse = {
+  ok: false,
+  failure: "timedOut",
+  message: "the structured read exceeded its remaining budget",
 }
 
 /** How long a structured read has to stop politely before it is killed. */
@@ -146,17 +141,37 @@ function stopGroup(pid: number | undefined, signal: NodeJS.Signals): void {
 type StagedRead = {
   identity: ToolchainIdentity
   bundlePath: string
-  stagingDir: string
+  /** Where this read's output goes. One path, used by one read, then removed. */
+  staged: string
   command: XcresultCommand
   budgetMs: number
   subject?: string
 }
 
 function read(input: StagedRead): Promise<XcresultResponse> {
-  return new Promise((resolve) => {
-    const { command } = input
-    const staged = stagedPath(input.stagingDir)
+  const { command, staged } = input
 
+  // Created **before** anything can settle, and synchronously.
+  // `createWriteStream` opens in the background, which leaves a window where a
+  // read that fails immediately — a spawn error, a budget of a millisecond —
+  // cleans up a file that does not exist yet and is created a moment later.
+  //
+  // `wx` at `0600`: exclusive creation refuses an existing path rather than
+  // writing through it, so a leftover or a planted link fails the read instead
+  // of silently becoming its output. Nothing is deleted on that refusal —
+  // removing the file would be writing through it by another route.
+  let fd: number
+  try {
+    fd = openSync(staged, "wx", 0o600)
+  } catch {
+    return Promise.resolve({
+      ok: false,
+      failure: "commandFailed",
+      message: "the structured output could not be staged for reading",
+    })
+  }
+
+  return new Promise((resolve) => {
     // Its own process group, so a read that has to be stopped is stopped
     // whole — `xcresulttool` spawns helpers, and signalling only the parent
     // leaves them behind holding the bundle open.
@@ -172,7 +187,8 @@ function read(input: StagedRead): Promise<XcresultResponse> {
 
     const budgetMs = Math.max(1, input.budgetMs)
     const deadline = monotonicNow() + budgetMs
-    const sink = createWriteStream(staged, { flags: "wx", mode: 0o600 })
+    // The path is ignored while `fd` is given; it is passed for legibility.
+    const sink = createWriteStream(staged, { fd, autoClose: true })
     let stagedBytes = 0
     let settled = false
 
@@ -181,17 +197,13 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       settled = true
       clearTimeout(timer)
       sink.destroy()
-      // The staged file is scratch, not evidence: it is removed on every exit
-      // from this read, including the ones nobody plans for.
+      // Scratch, not evidence, and this path was created by this call — so it
+      // is removed on every exit from this read, including the ones nobody
+      // plans for. Unlinking by name is safe while the stream still holds the
+      // descriptor: writes to an unlinked file harm nothing.
       rmSync(staged, { force: true })
       resolve(response)
     }
-
-    const timedOut = (): XcresultResponse => ({
-      ok: false,
-      failure: "timedOut",
-      message: "the structured read exceeded its remaining budget",
-    })
 
     // The remaining budget is the caller's, and a read that outlives it is
     // stopped rather than left to finish into a deadline that has passed.
@@ -199,7 +211,7 @@ function read(input: StagedRead): Promise<XcresultResponse> {
     const timer = setTimeout(() => {
       stopGroup(child.pid, "SIGTERM")
       setTimeout(() => stopGroup(child.pid, "SIGKILL"), ESCALATION_GRACE_MS).unref?.()
-      finish(timedOut())
+      finish(TIMED_OUT)
     }, budgetMs)
 
     sink.on("error", () =>
@@ -268,32 +280,27 @@ function read(input: StagedRead): Promise<XcresultResponse> {
 /**
  * Turn a staged file into a payload, or into the reason it could not be one.
  *
- * The deadline is checked here as well as around the wait, because decoding is
- * real work: a payload that spent its whole budget arriving must not then
- * spend another one being understood.
+ * The deadline is checked here rather than only around the wait, because
+ * decoding is real work: a read that spent its whole budget arriving must not
+ * then start a decode it has no time for.
+ *
+ * It is checked *before* that decode and not during it, and the difference is
+ * worth naming. A synchronous parse cannot be interrupted once it has begun —
+ * nothing else runs while it is on the stack, timers included — so what bounds
+ * the decode itself is `MAX_STAGED_PAYLOAD_BYTES`, a bound on size rather than
+ * on time. The deadline's job here is to refuse to start, not to cut short.
  */
 function decodeStaged(staged: string, deadline: number): XcresultResponse {
-  if (monotonicNow() >= deadline) {
-    return {
-      ok: false,
-      failure: "timedOut",
-      message: "the structured read exceeded its remaining budget",
-    }
-  }
+  if (monotonicNow() >= deadline) return TIMED_OUT
 
   let text: string
   try {
     text = readFileSync(staged, "utf8")
   } catch {
-    // Reaching this means output that was staged successfully cannot be read
-    // back, or is larger than this runtime can hold as a single string. Either
-    // way it is output this tool cannot work with, which is what
-    // `unsupported` says — and it says it with the size, so the message is
-    // about the suite rather than about the schema.
     return {
       ok: false,
-      failure: "unsupported",
-      message: "the structured output could not be read back from its staged file",
+      failure: "commandFailed",
+      message: "the staged structured output could not be read back",
     }
   }
 
