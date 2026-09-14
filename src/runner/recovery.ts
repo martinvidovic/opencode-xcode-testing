@@ -307,14 +307,23 @@ function canClearQuarantine(environment: RecoveryEnvironment, runId: string): bo
 }
 
 /**
- * Whether anything belonging to this run may still be running.
+ * Whether anything belonging to this **completed** run may still be running.
  *
- * Three questions, because the run records three different kinds of thing and
- * only the first two can be answered by identity.
+ * Both callers ask only about completed runs, and that is what makes the set
+ * of processes worth asking about smaller than it first looks.
  *
- * A recorded process — the owner, the supervisor, the gated child — is
- * checked by start identity, so a reused PID number, which is ordinary on a
- * busy machine, never holds a root on its own.
+ * The owner is deliberately not among them. It is the OpenCode process that
+ * started the run — ordinarily the editor the user is still sitting in front
+ * of, which will outlive the run by hours. While the run is unfinished a live
+ * owner means someone is still driving it, and `classify` says so; once the
+ * run is durably completed there is nothing left to drive, and holding the
+ * root on the owner's account would mean a quarantine that cannot clear until
+ * the user quits their editor. That is the failure mode quarantine must not
+ * have, wearing the costume of caution.
+ *
+ * What is left is the two recorded processes that actually execute the run,
+ * each checked by start identity so a reused PID number — ordinary on a busy
+ * machine — never holds a root on its own.
  *
  * **Descendants are the hard case.** `xcodebuild` spawns processes this tool
  * never sees, and they are not recorded individually, so there are no
@@ -327,10 +336,6 @@ function canClearQuarantine(environment: RecoveryEnvironment, runId: string): bo
  */
 function stillAttributable(environment: RecoveryEnvironment, record: RunRecord): boolean {
   const { probe } = environment
-
-  // A live owner is still driving this run, including through the window
-  // between the supervisor exiting and the summary being published.
-  if (record.owner !== undefined && !allIdentitiesGone(probe, [record.owner])) return true
 
   if (
     record.child !== undefined &&

@@ -27,10 +27,10 @@ import {
 } from "../runner/paths.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
 import { noteRootSeen, runHousekeeping } from "../runner/housekeeping.ts"
-import { reconcileRoot } from "../runner/recovery.ts"
 import { systemProbe } from "../runner/identity.ts"
 import { resolveToolchain } from "../runner/toolchain.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
+import { monotonicNow } from "../domain/clock.ts"
 import { readOutputLimits, resolveBudget } from "./budget.ts"
 import { descriptionFor, DESCRIPTION_FILES } from "./descriptions.ts"
 import {
@@ -39,6 +39,7 @@ import {
   resolveRuntime,
   type RuntimeResolution,
 } from "./runtime.ts"
+import { reconcileRootBounded } from "./reconciliation.ts"
 import { createTestToolService, unavailableService } from "./service.ts"
 import { inspectArguments, recoverArguments, testArguments, type ZodNamespace } from "./schema.ts"
 import { hostVersionDiagnostic, runStartup, HOST_VERSION_BUDGET_MS } from "./startup.ts"
@@ -104,18 +105,16 @@ export const server: Plugin = async (input) => {
     async reconcileRoot(deadlineMs: number) {
       prepareStorage(storage)
       noteRootSeen(storage, Date.now())
-      reconcileRoot({
+
+      // `deadlineMs` was built from `now` below, and `reconcileRootBounded`
+      // reads the same clock. Handing it to something that measured against
+      // the wall clock instead would not make the pass late — it would make it
+      // cancelled before it began, on every start.
+      reconcileRootBounded({
         storage,
         probe: systemProbe,
+        deadlineMs,
         timestamp: () => new Date().toISOString(),
-        // A getter, read afresh between runs. The pass is synchronous, so a
-        // timer outside it can never fire while it is on the stack — the only
-        // deadline that can hold is one the scan asks about itself.
-        signal: {
-          get aborted() {
-            return Date.now() >= deadlineMs
-          },
-        },
       })
     },
 
@@ -127,7 +126,7 @@ export const server: Plugin = async (input) => {
       })
     },
 
-    now: () => Number(process.hrtime.bigint() / 1_000_000n),
+    now: monotonicNow,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   })
 
@@ -165,7 +164,7 @@ export const server: Plugin = async (input) => {
   const deps: ToolDeps = {
     service,
     budget: async () => resolveBudget(await hostOutputLimits()),
-    now: () => Number(process.hrtime.bigint() / 1_000_000n),
+    now: monotonicNow,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     timestamp: () => new Date().toISOString(),
   }
@@ -305,7 +304,7 @@ function serviceFor(input: {
       hostVersion: input.hostVersion,
     },
     supervisorEntrypoint: SUPERVISOR_ENTRYPOINT,
-    now: () => Number(process.hrtime.bigint() / 1_000_000n),
+    now: monotonicNow,
     timestamp: () => new Date().toISOString(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     freeBytes: freeBytesOn(input.storage.toolRoot),
