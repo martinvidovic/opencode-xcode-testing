@@ -21,8 +21,9 @@
 
 import type { Suite } from "./options.ts"
 import {
-  isConditional,
+  isBootstrapFailure,
   isRegistered,
+  isStanding,
   registryProblems,
   STANDING,
   standingFor,
@@ -263,9 +264,27 @@ export function registryDisagreements(observed: Observations): string[] {
     if (!entry.completed) continue
 
     const results = observed.scenarios.slice(entry.from, entry.to)
-    // A conditional scenario that failed is a suite saying why it could not
-    // proceed. It has accounted for itself; the rest is `unreached`'s job.
-    if (results.some((s) => s.status === "failed" && isConditional(s.name))) continue
+
+    // A bootstrap failure is a suite saying it never got started, or got no
+    // further: no host, no SDK. What it could not reach is `unreached`'s to
+    // report, and naming the same scenarios here would say it twice.
+    //
+    // *Terminal* is the test, not "did it happen". Both suites that can
+    // report one do so from a catch, beside whatever already ran — so a host
+    // that dies after the third of six checks genuinely prevented the other
+    // three, and excusing it only when nothing at all had run would turn a
+    // crash into a page of drift warnings about checks the crash explains.
+    //
+    // A standing check recorded *after* one is the case that must not be
+    // excused: the suite carried on, so the failure did not stop it, and
+    // whatever is missing is missing for some other reason.
+    const lastBootstrapFailure = results.findLastIndex(
+      (result) => result.status === "failed" && isBootstrapFailure(entry.suite, result.name),
+    )
+    const carriedOn =
+      lastBootstrapFailure !== -1 &&
+      results.slice(lastBootstrapFailure + 1).some((r) => isStanding(entry.suite, r.name))
+    if (lastBootstrapFailure !== -1 && !carriedOn) continue
 
     const produced = new Set(results.map((scenario) => scenario.name))
     for (const name of STANDING[entry.suite]) {
