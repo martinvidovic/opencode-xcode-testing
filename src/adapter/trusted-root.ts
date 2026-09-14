@@ -16,7 +16,7 @@ import { join } from "node:path"
 
 import { DERIVED_DATA_MODES, type ProjectConfiguration } from "../domain/request.ts"
 import { MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS } from "../domain/limits.ts"
-import { isRecord } from "../domain/json.ts"
+import { isRecord, oneOf } from "../domain/json.ts"
 import { canonicalizeTrustedRoot } from "../runner/paths.ts"
 
 export const CONFIG_DIRECTORY = ".opencode"
@@ -133,7 +133,9 @@ export function readProjectConfiguration(trustedRoot: string): ConfigurationResu
     }
   }
 
-  return { status: "loaded", configuration: record as unknown as ProjectConfiguration }
+  // Every field has now been checked against the contract, so this is a
+  // narrowing rather than an assertion about something unexamined.
+  return { status: "loaded", configuration: record as ProjectConfiguration }
 }
 
 /**
@@ -169,21 +171,43 @@ function fieldProblems(record: Record<string, unknown>): string[] {
 
 function containerProblem(value: unknown): string | undefined {
   if (!isRecord(value)) return "must be an object"
-  if (value["kind"] !== "workspace" && value["kind"] !== "project") {
-    return "must have kind `workspace` or `project`"
+  const extra = unknownKeys(value, ["kind", "path"])
+  if (extra !== undefined) return extra
+  if (!oneOf(value["kind"], CONTAINER_KINDS)) {
+    return `must have kind ${CONTAINER_KINDS.join(" or ")}`
   }
   const path = nonEmptyStringProblem(value["path"])
   return path === undefined ? undefined : `path ${path}`
+}
+
+const CONTAINER_KINDS = ["workspace", "project"] as const
+
+/**
+ * Unknown keys are refused inside nested objects for the same reason as at the
+ * top level: a typo'd key that silently does nothing is how a project ends up
+ * testing something other than what its configuration says, and nesting does
+ * not make that less true.
+ */
+function unknownKeys(value: Record<string, unknown>, known: readonly string[]): string | undefined {
+  const extra = Object.keys(value)
+    .filter((key) => !known.includes(key))
+    .sort()
+  return extra.length === 0 ? undefined : `has unknown fields: ${extra.join(", ")}`
 }
 
 function destinationProblem(value: unknown): string | undefined {
   if (!isRecord(value)) return "must be an object"
 
   if (value["kind"] === "id") {
+    const extra = unknownKeys(value, ["kind", "id"])
+    if (extra !== undefined) return extra
     const id = nonEmptyStringProblem(value["id"])
     return id === undefined ? undefined : `id ${id}`
   }
   if (value["kind"] === "named") {
+    const extra = unknownKeys(value, ["kind", "platform", "name", "os"])
+    if (extra !== undefined) return extra
+
     for (const field of ["platform", "name"]) {
       const problem = nonEmptyStringProblem(value[field])
       if (problem !== undefined) return `${field} ${problem}`
@@ -202,7 +226,9 @@ function destinationProblem(value: unknown): string | undefined {
 
 function derivedDataProblem(value: unknown): string | undefined {
   if (!isRecord(value)) return "must be an object"
-  return (DERIVED_DATA_MODES as readonly string[]).includes(value["mode"] as string)
+  const extra = unknownKeys(value, ["mode"])
+  if (extra !== undefined) return extra
+  return oneOf(value["mode"], DERIVED_DATA_MODES)
     ? undefined
     : `mode must be one of ${DERIVED_DATA_MODES.join(", ")}`
 }

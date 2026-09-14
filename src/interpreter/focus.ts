@@ -39,7 +39,7 @@ import {
   STACK_FRAME_TEXT_CHAR_CAP,
   SUMMARY_TEST_FAILURE_CAP,
 } from "../domain/limits.ts"
-import { responseBytes } from "./cap.ts"
+import { halve, responseBytes } from "./cap.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
 import { extractFrames } from "./frames.ts"
 import type { NormalizedIndex } from "./index-model.ts"
@@ -174,35 +174,46 @@ export function focusedTest(
  * start of a truncated message is always what survives.
  */
 function fit<T extends { message?: string }>(view: T, truncation: TruncationState): Focused<T> {
-  let current: Record<string, unknown> = { ...view }
-  let shed = false
+  const current: Record<string, unknown> = { ...view }
+  let shedCollection = false
+  let shortenedField = false
 
-  const steps: Array<() => boolean> = [
-    () => drop(current, "attachments"),
-    () => drop(current, "activities"),
-    () => drop(current, "stackFrames"),
-    () => drop(current, "diagnostics"),
-    () => halveMessage(current),
+  const steps: Array<{ run: () => boolean; field: boolean }> = [
+    { run: () => drop(current, "attachments"), field: false },
+    { run: () => drop(current, "activities"), field: false },
+    { run: () => drop(current, "stackFrames"), field: false },
+    { run: () => drop(current, "diagnostics"), field: false },
+    // Attempts are shed too. A focused test with a long retry history is
+    // otherwise the one shape that can pass everything above and still not fit.
+    { run: () => drop(current, "attempts"), field: false },
+    { run: () => halveMessage(current), field: true },
   ]
 
   for (const step of steps) {
-    if (responseBytes(current) + RESPONSE_ENVELOPE_BYTES <= RESPONSE_BYTE_CAP) break
+    if (fits(current)) break
     // Each step is retried until it stops helping, so halving the message runs
     // as many times as it must rather than once.
-    while (
-      responseBytes(current) + RESPONSE_ENVELOPE_BYTES > RESPONSE_BYTE_CAP &&
-      step()
-    ) {
-      shed = true
+    while (!fits(current) && step.run()) {
+      if (step.field) shortenedField = true
+      else shedCollection = true
     }
   }
 
   return {
     focused: current as T,
-    truncation: shed
-      ? { ...truncation, responseTruncated: true, collectionTruncated: true }
-      : truncation,
+    truncation: {
+      ...truncation,
+      // Each fact reported as itself. Saying a collection was cut when a
+      // string was shortened is not a smaller inaccuracy than saying nothing.
+      fieldTruncated: truncation.fieldTruncated || shortenedField,
+      collectionTruncated: truncation.collectionTruncated || shedCollection,
+      responseTruncated: shedCollection || shortenedField,
+    },
   }
+}
+
+function fits(view: unknown): boolean {
+  return responseBytes(view) + RESPONSE_ENVELOPE_BYTES <= RESPONSE_BYTE_CAP
 }
 
 /** Remove the last element of a collection. Returns false when it is empty. */
@@ -217,7 +228,7 @@ function drop(view: Record<string, unknown>, key: string): boolean {
 function halveMessage(view: Record<string, unknown>): boolean {
   const message = view["message"]
   if (typeof message !== "string" || message.length <= 1) return false
-  view["message"] = message.slice(0, Math.floor(message.length / 2))
+  view["message"] = halve(message)
   return true
 }
 

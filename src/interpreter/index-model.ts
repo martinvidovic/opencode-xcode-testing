@@ -18,10 +18,11 @@ import {
   type FacetAvailability,
 } from "../domain/inspection.ts"
 import { EVIDENCE_COMPLETENESS, EVIDENCE_FACTS, TEST_STATUSES } from "../domain/evidence.ts"
+import { staysInside } from "./locations.ts"
 import { SCOPE_VERDICTS } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { ScopeAttestation, ScopeVerdict } from "../domain/scope.ts"
-import { isArrayOf, isRecord } from "../domain/json.ts"
+import { isArrayOf, isRecord, oneOf } from "../domain/json.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
 
 /**
@@ -134,18 +135,6 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
   )
 }
 
-/**
- * A value from a closed set, not merely a string of the right type.
- *
- * The difference is what a caller does next. A facet page hands these
- * straight to a model, and a `scopeVerdict` of `"definitely fine"` reads as
- * authoritative while meaning nothing this tool ever produced — so the set is
- * the check, and anything outside it makes the whole index unreadable.
- */
-function oneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
-  return typeof value === "string" && (allowed as readonly string[]).includes(value)
-}
-
 /** Every recorded message must be text, because every one of them is shown. */
 function isMessageMap(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string")
@@ -249,28 +238,11 @@ function isDiagnosticSummary(value: unknown): value is DiagnosticSummary {
  */
 function isSafeLocation(value: unknown): boolean {
   if (!isRecord(value)) return false
-  if (typeof value.path !== "string" || !isContainedPath(value.path)) return false
+  if (typeof value.path !== "string" || !staysInside(value.path)) return false
   return (
     (value.line === undefined || typeof value.line === "number") &&
     (value.column === undefined || typeof value.column === "number")
   )
-}
-
-/** Relative, and never walking out of the repository it is relative to. */
-function isContainedPath(path: string): boolean {
-  if (path.length === 0 || path.startsWith("/")) return false
-
-  let depth = 0
-  for (const part of path.split("/")) {
-    if (part === "" || part === ".") continue
-    if (part !== "..") {
-      depth += 1
-      continue
-    }
-    depth -= 1
-    if (depth < 0) return false
-  }
-  return true
 }
 
 function isAttestation(value: unknown): value is ScopeAttestation {

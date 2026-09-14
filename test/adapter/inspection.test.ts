@@ -271,6 +271,50 @@ describe("the response cap", () => {
     )
   })
 
+  test("holds even when the oversized field is one a caller acts on", async () => {
+    // A canonical identity is an identifier, and identifiers are the last
+    // thing to give — but the cap is not a preference. A record whose
+    // *identifier* is what makes it oversized has to give somewhere, or the
+    // response goes over the one bound that exists to never be crossed.
+    const occurrence = {
+      id: "occ-1",
+      identity: { canonical: `AppTests/Suite/test${"x".repeat(200_000)}()` },
+      identityComplete: true,
+      status: "passed" as const,
+      position: "0",
+      attempts: [],
+      failures: [],
+    }
+
+    await retained(
+      indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests" })
+        if (response.status !== "available") throw new Error("expected a page")
+
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+        expect((response.data as { records: unknown[] }).records).toHaveLength(1)
+        expect(response.truncation.fieldTruncated).toBe(true)
+      },
+    )
+  })
+
+  test("does not claim a field was truncated when none was", async () => {
+    await retained(
+      indexWith({ attestations: bulkyAttestations(3) as NormalizedIndex["attestations"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "scope" })
+        if (response.status !== "available") throw new Error("expected a page")
+
+        // An ordinary page reports nothing truncated, because nothing was.
+        expect(response.truncation.fieldTruncated).toBe(false)
+        expect(response.truncation.responseTruncated).toBe(false)
+      },
+    )
+  })
+
   test("shortens the same oversized record the same way every time", async () => {
     const enormous = [
       {

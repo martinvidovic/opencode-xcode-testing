@@ -84,6 +84,28 @@ export const LOG_CHUNK_MIN_BYTES = 4
  */
 export const RESPONSE_ENVELOPE_BYTES = 1_024
 
+/**
+ * The most structured output a single `xcresulttool` read may produce.
+ *
+ * The tool is given a Result Bundle this repository did not write, for a test
+ * suite whose size nothing here controls. Without a bound the decoder holds the
+ * whole payload in memory and then doubles it to turn it into a string — so a
+ * large enough suite stops being a slow read and becomes an exhausted process.
+ * Generous enough that no plausible real suite reaches it, and finite.
+ */
+export const MAX_STRUCTURED_PAYLOAD_BYTES = 256 * 1024 * 1024
+
+/**
+ * The largest tool-managed file read whole into memory.
+ *
+ * Indexes, run records, the queue and the registry are written by this tool,
+ * so their size is its own doing — but they are read back from a filesystem it
+ * does not exclusively control, and "we wrote it" is not a guarantee about
+ * what is there now. Reading without a bound makes every one of them a way to
+ * exhaust the process.
+ */
+export const MAX_PRIVATE_FILE_BYTES = 64 * 1024 * 1024
+
 /** Seconds a Test Run runs for when neither request nor configuration says otherwise. */
 export const DEFAULT_TIMEOUT_SECONDS = 900
 

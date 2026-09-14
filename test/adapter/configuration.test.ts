@@ -14,14 +14,18 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { MAX_TIMEOUT_SECONDS } from "../../src/domain/limits.ts"
-import { readProjectConfiguration } from "../../src/adapter/trusted-root.ts"
+import {
+  CONFIG_DIRECTORY,
+  CONFIG_FILENAME,
+  readProjectConfiguration,
+} from "../../src/adapter/trusted-root.ts"
 
 /** Write this configuration into a throwaway project and read it back. */
 function read(configuration: unknown) {
   const root = mkdtempSync(join(tmpdir(), "xcode-test-config-"))
   try {
-    mkdirSync(join(root, ".opencode"), { recursive: true })
-    writeFileSync(join(root, ".opencode", "xcode-test.json"), JSON.stringify(configuration))
+    mkdirSync(join(root, CONFIG_DIRECTORY), { recursive: true })
+    writeFileSync(join(root, CONFIG_DIRECTORY, CONFIG_FILENAME), JSON.stringify(configuration))
     return readProjectConfiguration(root)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -135,5 +139,32 @@ describe("several things wrong at once", () => {
     expect(message).toContain("scheme")
     expect(message).toContain("timeoutSeconds")
     expect(message).toContain("derivedData")
+  })
+})
+
+describe("a nested object with an extra key", () => {
+  test("is refused, because nesting does not make a typo harmless", () => {
+    // The same reasoning as the top level: a key that silently does nothing is
+    // how a project ends up testing something other than what it says.
+    expect(
+      invalidMessage({
+        schemaVersion: 1,
+        derivedData: { mode: "shared", stratergy: "fast" },
+      }),
+    ).toContain("stratergy")
+
+    expect(
+      invalidMessage({
+        schemaVersion: 1,
+        xcodeContainer: { kind: "project", path: "App.xcodeproj", branch: "main" },
+      }),
+    ).toContain("branch")
+
+    expect(
+      invalidMessage({
+        schemaVersion: 1,
+        destination: { kind: "id", id: "SIM", arch: "arm64" },
+      }),
+    ).toContain("arch")
   })
 })

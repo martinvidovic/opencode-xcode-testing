@@ -27,6 +27,7 @@ import {
 } from "node:fs"
 import { join } from "node:path"
 
+import { isRecord } from "../domain/json.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
 import type { ResultProvenance, TestRunSummary, TestToolResult } from "../domain/result.ts"
 import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
@@ -1161,20 +1162,30 @@ async function inspectRetained(
       : { status: "notFound", subject: "run" }
   }
 
-  // Everything past this point concerns a file that is *present*. Unreadable
-  // content is therefore `invalid`, never `notFound`: the evidence exists and
-  // cannot be trusted, which is a different thing to tell a caller than that
-  // the run was never known.
+  // Everything past this point concerns a file that is *present*, so none of
+  // it is `notFound`: the evidence exists, and what it cannot be trusted to
+  // say is a different thing to tell a caller than that the run was never
+  // known. #8 then separates the two ways it can fail to say anything.
   let parsed: unknown
   try {
     parsed = JSON.parse(contents)
   } catch {
-    return { status: "invalid", message: "the retained index for this Test Run could not be read" }
+    return corruptedIndex()
   }
 
-  if (!isNormalizedIndex(parsed)) {
-    return { status: "invalid", message: "the retained index for this Test Run could not be read" }
+  // A readable index this decoder does not know how to read. Retained indexes
+  // outlive decoders within the retention window, and "written by a version
+  // that came after this one" is a different answer from "damaged" — nothing
+  // is wrong with it, and nothing here can read it.
+  //
+  // It has to *declare* a version to qualify. A file with no version at all is
+  // not an index from another decoder; it is damage that happens to parse.
+  const declared = isRecord(parsed) ? parsed["indexVersion"] : undefined
+  if (typeof declared === "number" && declared !== INDEX_VERSION) {
+    return { status: "unsupported", facet: request.facet }
   }
+
+  if (!isNormalizedIndex(parsed)) return corruptedIndex()
   // The index names the run it was published for. A file that disagrees is not
   // this run's evidence, whatever directory it was found in.
   if (parsed.runId !== request.runId) {
@@ -1388,6 +1399,32 @@ function readLogWindow(path: string, window: LogWindow): { bytes: Buffer; totalB
     return { bytes: bytes.subarray(0, read), totalBytes }
   } finally {
     closeSync(handle.fd)
+  }
+}
+
+/**
+ * Damaged retained evidence, in the shape #8 asks for.
+ *
+ * `incomplete` rather than `invalid`: the run happened, its index was
+ * published, and what is on disk no longer describes it. A caller is being
+ * told the evidence is partial — which it is, to the point of being absent —
+ * not that their request was malformed.
+ *
+ * The message says nothing about what was found. It is describing a file this
+ * tool did not write and cannot vouch for, and quoting it would be quoting
+ * whatever wrote it.
+ */
+function corruptedIndex(): InspectionResponse<unknown> {
+  return {
+    status: "incomplete",
+    data: undefined,
+    truncation: {
+      fieldTruncated: false,
+      collectionTruncated: false,
+      responseTruncated: false,
+      hasMore: false,
+    },
+    annotation: "the retained evidence for this Test Run could not be read",
   }
 }
 
