@@ -293,6 +293,22 @@ function page(
 
   if (completeness === "unavailable") return { status: "unsupported", facet }
   if (completeness === "partial") return { status: "incomplete", data, truncation }
+
+  // An omitted record makes the page incomplete, whatever the evidence behind
+  // it says. `available` carries a strong promise — that an empty page
+  // authoritatively means zero records — and a page that silently dropped the
+  // only record it had would break exactly that promise, in the direction a
+  // caller cannot detect: they would read "no failures" from a run that had
+  // one too large to show them.
+  if (capped.omitted > 0) {
+    return {
+      status: "incomplete",
+      data,
+      truncation,
+      annotation: `${capped.omitted} record(s) could not be returned within the response cap`,
+    }
+  }
+
   return { status: "available", completeness, data, truncation }
 }
 

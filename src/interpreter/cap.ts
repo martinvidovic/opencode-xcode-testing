@@ -60,6 +60,11 @@ export type CappedPage<T> = {
    * Records the caller will never see, because they could not be represented
    * at all. Distinct from `dropped`: a dropped record arrives on the next
    * page, and an omitted one does not exist as far as paging is concerned.
+   *
+   * At most one per page in practice, because only the *first* record is ever
+   * made to fit — every later one simply waits for the next page, where it
+   * becomes a first record and gets the same chance. A count rather than a
+   * flag because that is what it is counting.
    */
   omitted: number
   /**
@@ -88,7 +93,7 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
     // The separator is part of the cost, or a record that fits "exactly"
     // lands a byte over once it is in a list.
     const size = responseBytes(record) + 1
-    const first = kept.length === 0 && omitted === 0
+    const first = kept.length === 0
 
     if (used + size <= RESPONSE_BYTE_CAP) {
       used += size
@@ -126,26 +131,35 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
  * Fields a shortened record keeps, whatever it costs to keep them.
  *
  * These are what a caller *acts* on, and none of them survives being
- * shortened: an id addresses a thing, a status is a claim about it. The cap is
- * still absolute — a record whose identifier alone is oversized is omitted
- * rather than returned — but it is met by leaving the record out, never by
- * returning a corrupted one.
+ * shortened: an id addresses a thing, a status is a claim about it, a bundle
+ * name says which selection a verdict is about. The cap is still absolute — a
+ * record whose identifier alone is oversized is omitted rather than returned —
+ * but it is met by leaving the record out, never by returning a corrupted one.
  */
-const STRUCTURAL_FIELDS = new Set(["id", "testId", "kind", "status", "verdict", "canonical"])
+const STRUCTURAL_FIELDS = new Set([
+  "id",
+  "testId",
+  "kind",
+  "status",
+  "verdict",
+  "canonical",
+  "bundle",
+  "position",
+])
 
 /**
  * Shorten a record until it fits, deterministically. `undefined` when it cannot.
  *
- * Two stages, and the order is the contract. Display strings go first, longest
- * first, so the field costing the most is the one that gives and the same
- * record always shrinks the same way. If that is not enough, everything but
- * the structural fields is dropped in one step — which is a smaller record
- * than any amount of further halving would produce, and an honest one.
+ * Display strings only, longest first, so the field costing the most is the
+ * one that gives and the same record always shrinks the same way.
  *
- * What never happens is a structural field being altered. A caller reading a
+ * A structural field is never altered, at any budget. A caller reading a
  * halved id cannot tell it from a whole one; they will ask about a test that
- * does not exist and be told it is not there. Returning less is recoverable.
- * Returning something that looks right and is not is not.
+ * does not exist and be told, correctly and uselessly, that it is not there.
+ * Nor is a record ever returned stripped down to its identifiers: that would
+ * be an object of the declared type with its required fields missing, which is
+ * the same lie one level down. Returning nothing is recoverable — the page
+ * reports it, and a caller knows there is something here they cannot have.
  */
 function shrink<T>(record: T, budget: number): { record?: T; shortened: boolean } {
   let current: unknown = structuredClone(record)
@@ -157,46 +171,11 @@ function shrink<T>(record: T, budget: number): { record?: T; shortened: boolean 
     shortened = true
   }
 
-  // Every display string is gone and it still does not fit. What is left is
-  // the part a caller acts on, and either it fits or the record cannot be
-  // represented at all.
-  const reduced = structural(record)
-  if (responseBytes(reduced) <= budget) return { record: reduced as T, shortened: true }
+  // Every display string is gone and it still does not fit. There is nothing
+  // further to give that would leave a record a caller could use: what remains
+  // is identifiers, kinds and statuses, and none of those survives being
+  // shortened. So the record is not represented, and the page says so.
   return { shortened: true }
-}
-
-/**
- * A record reduced to the fields a caller acts on, unaltered.
- *
- * #7 names them: identifiers, kinds, statuses and safe numeric fields. They
- * are what addresses a thing and what says which thing it is — a message that
- * loses its tail is still the same message, while a truncated verdict is a
- * different verdict.
- *
- * Only the top level is kept. A nested collection is where the size came from,
- * and keeping a shortened version of one would be the same lie one level down.
- */
-function structural(record: unknown): unknown {
-  if (!isObject(record)) return record
-
-  const reduced: Record<string, unknown> = {}
-  for (const key of Object.keys(record).sort()) {
-    const value = record[key]
-    if (STRUCTURAL_FIELDS.has(key) && (typeof value === "string" || typeof value === "number")) {
-      reduced[key] = value
-      continue
-    }
-    // An identity is addressed by its canonical form, so it is kept whole or
-    // not at all — a partial one names nothing.
-    if (key === "identity" && isObject(value) && typeof value.canonical === "string") {
-      reduced[key] = { canonical: value.canonical }
-    }
-  }
-  return reduced
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 /** Enough halvings to reduce any plausible field to nothing. */

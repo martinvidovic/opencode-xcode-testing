@@ -66,6 +66,7 @@ describe("closed sets are closed", () => {
     const occurrence = {
       id: "occ-1",
       identity: { canonical: "AppTests/T/test()" },
+      identityComplete: true,
       status: "probably-passed",
       position: "0",
       failures: [],
@@ -149,6 +150,7 @@ describe("nested collections", () => {
     const occurrence = {
       id: "occ-1",
       identity: { canonical: "AppTests/T/test()" },
+      identityComplete: true,
       status: "failed",
       position: "0",
       // A failure whose location escapes is still a location that would be
@@ -163,6 +165,7 @@ describe("nested collections", () => {
     const occurrence = {
       id: "occ-1",
       identity: { canonical: "AppTests/T/test()" },
+      identityComplete: true,
       status: "passed",
       position: "0",
       failures: [],
@@ -175,6 +178,7 @@ describe("nested collections", () => {
     const occurrence = {
       id: "occ-1",
       identity: { canonical: "AppTests/T/test()", suite: 7 },
+      identityComplete: true,
       status: "passed",
       position: "0",
       failures: [],
@@ -246,6 +250,7 @@ describe("numbers that are not numbers", () => {
     const occurrence = {
       id: "occ-1",
       identity: { canonical: "AppTests/T/test()" },
+      identityComplete: true,
       status: "passed",
       position: "0",
       failures: [],
@@ -259,6 +264,7 @@ describe("numbers that are not numbers", () => {
     const occurrence = {
       id: "occ-1",
       identity: { canonical: "AppTests/T/test()" },
+      identityComplete: true,
       status: "passed",
       position: "0",
       failures: [],
@@ -293,5 +299,49 @@ describe("the selection an attestation is about", () => {
       matchedTestCount: -3,
     }
     expect(isNormalizedIndex(index({ attestations: [attestation] }))).toBe(false)
+  })
+})
+
+describe("fields that decide what other evidence means", () => {
+  test("an occurrence with no completeness flag is not an occurrence", () => {
+    // `identityComplete` is read to decide whether identities can be matched
+    // at all, so its absence does not degrade a display — it silently changes
+    // what the scope verdicts say a run covered.
+    const occurrence = {
+      id: "occ-1",
+      identity: { canonical: "AppTests/T/test()" },
+      status: "passed",
+      position: "0",
+      failures: [],
+      attempts: [],
+    }
+    expect(isNormalizedIndex(index({ occurrences: [occurrence] }))).toBe(false)
+    expect(
+      isNormalizedIndex(index({ occurrences: [{ ...occurrence, identityComplete: true }] })),
+    ).toBe(true)
+  })
+})
+
+describe("identifiers that address nothing", () => {
+  test("an empty identifier is refused wherever one is required", () => {
+    // `""` is a string, so a shape check passes it, and it then reaches a
+    // caller as a handle for something — indistinguishable at the point of use
+    // from one that was never there.
+    expect(isNormalizedIndex(index({ runId: "" }))).toBe(false)
+    expect(isNormalizedIndex(index({ scopeDigest: "" }))).toBe(false)
+
+    const occurrence = {
+      id: "",
+      identity: { canonical: "AppTests/T/test()" },
+      identityComplete: true,
+      status: "passed",
+      position: "0",
+      failures: [],
+      attempts: [],
+    }
+    expect(isNormalizedIndex(index({ occurrences: [occurrence] }))).toBe(false)
+
+    const nameless = { ...occurrence, id: "occ-1", identity: { canonical: "" } }
+    expect(isNormalizedIndex(index({ occurrences: [nameless] }))).toBe(false)
   })
 })

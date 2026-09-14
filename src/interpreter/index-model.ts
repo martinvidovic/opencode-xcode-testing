@@ -26,8 +26,16 @@ import {
 import { staysInside } from "./locations.ts"
 import { SCOPE_VERDICTS } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
-import type { ScopeAttestation, ScopeVerdict } from "../domain/scope.ts"
-import { isArrayOf, isCount, isMeasurement, isPosition, isRecord, oneOf } from "../domain/json.ts"
+import type { ScopeAttestation, ScopeVerdict, TestSelection } from "../domain/scope.ts"
+import {
+  isArrayOf,
+  isCount,
+  isDuration,
+  isIdentifier,
+  isPosition,
+  isRecord,
+  oneOf,
+} from "../domain/json.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
 
 /**
@@ -119,7 +127,7 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
 
   return (
     index.indexVersion === INDEX_VERSION &&
-    typeof index.runId === "string" &&
+    isIdentifier(index.runId) &&
     isCount(index.decoderVersion) &&
     typeof index.schemaVersion === "string" &&
     isArrayOf(index.occurrences, isIndexedOccurrence) &&
@@ -127,7 +135,7 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
     isArrayOf(index.buildErrors, isDiagnosticSummary) &&
     isArrayOf(index.attestations, isAttestation) &&
     oneOf(index.scopeVerdict, SCOPE_VERDICTS) &&
-    typeof index.scopeDigest === "string" &&
+    isIdentifier(index.scopeDigest) &&
     isCount(index.requestedSelectionCount) &&
     isCount(index.observedOutsideScope) &&
     isCounts(index.counts) &&
@@ -178,13 +186,16 @@ function isToolchainIdentity(value: unknown): value is ToolchainIdentity {
 function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
   if (!isRecord(value)) return false
   return (
-    typeof value.id === "string" &&
+    isIdentifier(value.id) &&
     isTestIdentity(value.identity) &&
     oneOf(value.status, TEST_STATUSES) &&
     typeof value.position === "string" &&
     isArrayOf(value.failures, isNormalizedFailure) &&
     isArrayOf(value.attempts, isAttempt) &&
-    (value.durationMs === undefined || isMeasurement(value.durationMs))
+    // Read by attestation to decide whether identities can be matched at all,
+    // so a missing or non-boolean one silently changes what scope verdicts say.
+    typeof value.identityComplete === "boolean" &&
+    (value.durationMs === undefined || isDuration(value.durationMs))
   )
 }
 
@@ -195,7 +206,7 @@ function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
  */
 function isTestIdentity(value: unknown): boolean {
   if (!isRecord(value)) return false
-  if (typeof value.canonical !== "string") return false
+  if (!isIdentifier(value.canonical)) return false
   return ["bundle", "suite", "test"].every(
     (field) => value[field] === undefined || typeof value[field] === "string",
   )
@@ -217,18 +228,18 @@ function isAttempt(value: unknown): boolean {
     // attempt is one a caller cannot ask about again.
     isPosition(value.ordinal) &&
     oneOf(value.status, TEST_STATUSES) &&
-    (value.durationMs === undefined || isMeasurement(value.durationMs))
+    (value.durationMs === undefined || isDuration(value.durationMs))
   )
 }
 
 function isDiagnosticSummary(value: unknown): value is DiagnosticSummary {
   if (!isRecord(value)) return false
   return (
-    typeof value.id === "string" &&
+    isIdentifier(value.id) &&
     (value.kind === "testFailure" || value.kind === "buildError") &&
     typeof value.message === "string" &&
     typeof value.inspectionAvailable === "boolean" &&
-    (value.testId === undefined || typeof value.testId === "string") &&
+    (value.testId === undefined || isIdentifier(value.testId)) &&
     (value.location === undefined || isSafeLocation(value.location))
   )
 }
@@ -272,11 +283,12 @@ function isAttestation(value: unknown): value is ScopeAttestation {
   )
 }
 
-function isTestSelection(value: unknown): boolean {
+function isTestSelection(value: unknown): value is TestSelection {
   if (!isRecord(value)) return false
-  if (typeof value.bundle !== "string" || value.bundle.length === 0) return false
-  return ["suite", "test"].every(
-    (field) => value[field] === undefined || typeof value[field] === "string",
+  return (
+    isIdentifier(value.bundle) &&
+    (value.suite === undefined || isIdentifier(value.suite)) &&
+    (value.test === undefined || isIdentifier(value.test))
   )
 }
 
@@ -316,13 +328,16 @@ function isTestEvidence(value: unknown): boolean {
 }
 
 /** Absent, or a whole consistent set. Never a partly-shaped one. */
-function isCounts(value: unknown): boolean {
+function isCounts(value: unknown): value is TestCounts | undefined {
   if (value === undefined) return true
   if (!isRecord(value)) return false
 
-  const fields = ["total", "passed", "failed", "skipped", "expectedFailure", "unknown"]
-  if (!fields.every((field) => isCount(value[field]))) return false
-  return countsAreConsistent(value as unknown as TestCounts)
+  const { total, passed, failed, skipped, expectedFailure, unknown } = value
+  if (![total, passed, failed, skipped, expectedFailure, unknown].every(isCount)) return false
+
+  // Rebuilt rather than asserted: the checks above prove each field, and an
+  // assertion would claim the whole shape on the strength of that.
+  return countsAreConsistent({ total, passed, failed, skipped, expectedFailure, unknown })
 }
 
 function isLogFacet(value: unknown): boolean {
@@ -330,7 +345,7 @@ function isLogFacet(value: unknown): boolean {
   return (
     oneOf(value.availability, FACET_AVAILABILITIES) &&
     typeof value.retainedBytesExact === "boolean" &&
-    (value.retainedBytes === undefined || isMeasurement(value.retainedBytes))
+    (value.retainedBytes === undefined || isCount(value.retainedBytes))
   )
 }
 

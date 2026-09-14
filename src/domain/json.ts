@@ -48,13 +48,13 @@ export function isCount(value: unknown): value is number {
 }
 
 /**
- * A measurement: finite, not negative, and not necessarily whole.
+ * An elapsed time in milliseconds: finite, not negative, possibly fractional.
  *
- * Durations and byte counts are the two here. Unlike a count they may be
- * fractional, but a duration of `NaN` renders as "NaN ms" and a negative one
- * describes a test that finished before it started.
+ * The one quantity here that is legitimately not whole. `NaN` renders as
+ * "NaN ms" and a negative one describes a test that finished before it
+ * started; both are numbers that have stopped meaning what their name says.
  */
-export function isMeasurement(value: unknown): value is number {
+export function isDuration(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
 }
 
@@ -67,4 +67,16 @@ export function isMeasurement(value: unknown): value is number {
  */
 export function isPosition(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
+}
+
+/**
+ * Text that identifies something: a run id, a digest, a canonical test name.
+ *
+ * Emptiness is the case worth naming. `""` is a string, so a shape check
+ * passes, and it then reaches a caller as an identifier that addresses
+ * nothing — indistinguishable, at the point of use, from one that was never
+ * there.
+ */
+export function isIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0
 }

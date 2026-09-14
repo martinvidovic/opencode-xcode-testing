@@ -290,7 +290,10 @@ describe("the response cap", () => {
       indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
       async (inspect) => {
         const response = await inspect({ facet: "tests" })
-        if (response.status !== "available") throw new Error("expected a page")
+
+        // Never `available`: that status promises an empty page means zero
+        // records, and here it would mean one the caller cannot be shown.
+        if (response.status !== "incomplete") throw new Error("expected an incomplete page")
 
         expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
           RESPONSE_BYTE_CAP,
@@ -306,36 +309,23 @@ describe("the response cap", () => {
     )
   })
 
-  test("keeps the fields a caller acts on when only the display strings are oversized", async () => {
-    // The reduction, rather than the omission: everything shortenable has been
-    // shortened and it still does not fit, so what survives is exactly what a
-    // caller addresses the record by — whole, never halved.
-    const occurrence = {
-      id: "occ-1",
-      identity: { canonical: "AppTests/Suite/testThing()" },
-      identityComplete: true,
-      status: "failed" as const,
-      position: "0",
-      attempts: [],
-      failures: Array.from({ length: 400 }, (_, index) => ({
-        message: "x".repeat(400),
-        position: String(index),
-      })),
+  test("omits an attestation whose selection is what makes it oversized", async () => {
+    // The same rule for the other record shape. A bundle name is what a
+    // verdict is *about*; halving it would attribute a verdict to a selection
+    // nobody made.
+    const attestation = {
+      selection: { bundle: `AppTests${"x".repeat(200_000)}` },
+      verdict: "matched" as const,
     }
 
     await retained(
-      indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
+      indexWith({ attestations: [attestation] as NormalizedIndex["attestations"] }),
       async (inspect) => {
-        const response = await inspect({ facet: "tests" })
-        if (response.status !== "available") throw new Error("expected a page")
+        const response = await inspect({ facet: "scope" })
+        if (response.status !== "incomplete") throw new Error("expected an incomplete page")
 
-        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
-          RESPONSE_BYTE_CAP,
-        )
-        const records = (response.data as { records: Array<Record<string, unknown>> }).records
-        expect(records).toHaveLength(1)
-        expect(records[0]?.id).toBe("occ-1")
-        expect(records[0]?.status).toBe("failed")
+        expect((response.data as { records: unknown[] }).records).toHaveLength(0)
+        expect(response.truncation.recordsOmitted).toBe(1)
       },
     )
   })
