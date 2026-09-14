@@ -226,6 +226,23 @@ describe("the response cap", () => {
     expect(truncation.responseTruncated).toBe(true)
   })
 
+  test("reports which kind of truncation it actually did", () => {
+    // Saying a collection was cut when a string was shortened is not a smaller
+    // inaccuracy than saying nothing: a caller deciding whether to ask again
+    // reads one, and a caller deciding whether the record is faithful reads
+    // the other.
+    const { truncation } = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP), oversized)
+
+    expect(truncation.responseTruncated).toBe(true)
+    expect(truncation.collectionTruncated).toBe(true)
+
+    // Nothing was shed here, and the message did not have to shrink, so
+    // neither fact may be claimed.
+    const modest = focus("short message", { activities: [], attachments: [] })
+    expect(modest.truncation.fieldTruncated).toBe(false)
+    expect(modest.truncation.responseTruncated).toBe(false)
+  })
+
   test("sheds in reverse priority, so identity and message outlive attachments", () => {
     const { focused } = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP), oversized)
 

@@ -184,8 +184,8 @@ describe("the response cap", () => {
   function bulkyAttestations(count: number) {
     return Array.from({ length: count }, (_, n) => ({
       selection: { bundle: "AppTests", suite: `Suite${n}`, test: `test${"x".repeat(2_000)}()` },
-      verdict: "observed" as const,
-      observed: 1,
+      verdict: "matched" as const,
+      matchedTestCount: 1,
     }))
   }
 
@@ -241,8 +241,8 @@ describe("the response cap", () => {
     const enormous = [
       {
         selection: { bundle: "AppTests", suite: "S", test: `test${"x".repeat(200_000)}()` },
-        verdict: "observed" as const,
-        observed: 1,
+        verdict: "matched" as const,
+        matchedTestCount: 1,
       },
     ]
     await retained(
@@ -253,9 +253,85 @@ describe("the response cap", () => {
 
         // Returning nothing would freeze the cursor at this position forever,
         // and the caller could never reach anything beyond it.
-        expect((response.data as { records: unknown[] }).records).toHaveLength(1)
+        const records = (response.data as { records: Array<Record<string, unknown>> }).records
+        expect(records).toHaveLength(1)
+
+        // And it still fits: a mandatory record that cannot be dropped is
+        // shortened instead, never returned over the cap.
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+        expect(response.truncation.fieldTruncated).toBe(true)
+
+        // What survives is what a caller acts on. A truncated verdict would be
+        // a different verdict.
+        expect(records[0]?.["verdict"]).toBe("matched")
+        expect(records[0]?.["matchedTestCount"]).toBe(1)
       },
     )
+  })
+
+  test("holds even when the oversized field is one a caller acts on", async () => {
+    // A canonical identity is an identifier, and identifiers are the last
+    // thing to give — but the cap is not a preference. A record whose
+    // *identifier* is what makes it oversized has to give somewhere, or the
+    // response goes over the one bound that exists to never be crossed.
+    const occurrence = {
+      id: "occ-1",
+      identity: { canonical: `AppTests/Suite/test${"x".repeat(200_000)}()` },
+      identityComplete: true,
+      status: "passed" as const,
+      position: "0",
+      attempts: [],
+      failures: [],
+    }
+
+    await retained(
+      indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests" })
+        if (response.status !== "available") throw new Error("expected a page")
+
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+        expect((response.data as { records: unknown[] }).records).toHaveLength(1)
+        expect(response.truncation.fieldTruncated).toBe(true)
+      },
+    )
+  })
+
+  test("does not claim a field was truncated when none was", async () => {
+    await retained(
+      indexWith({ attestations: bulkyAttestations(3) as NormalizedIndex["attestations"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "scope" })
+        if (response.status !== "available") throw new Error("expected a page")
+
+        // An ordinary page reports nothing truncated, because nothing was.
+        expect(response.truncation.fieldTruncated).toBe(false)
+        expect(response.truncation.responseTruncated).toBe(false)
+      },
+    )
+  })
+
+  test("shortens the same oversized record the same way every time", async () => {
+    const enormous = [
+      {
+        selection: { bundle: "AppTests", suite: "S", test: `test${"x".repeat(200_000)}()` },
+        verdict: "matched" as const,
+        matchedTestCount: 1,
+      },
+    ]
+    const page = async () =>
+      retained(
+        indexWith({ attestations: enormous as NormalizedIndex["attestations"] }),
+        async (inspect) => JSON.stringify(await inspect({ facet: "scope" })),
+      )
+
+    // Determinism is the difference between a caller that can compare two
+    // reads and one that cannot.
+    expect(await page()).toBe(await page())
   })
 })
 

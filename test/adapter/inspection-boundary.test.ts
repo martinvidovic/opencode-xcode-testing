@@ -68,18 +68,28 @@ describe("an inspection handle that could address storage", () => {
 })
 
 describe("a retained index that cannot be trusted", () => {
-  test("is invalid rather than parsed for whatever it happens to say", async () => {
-    // The file is present, so it is not "not found": the evidence exists and
-    // cannot be trusted, which is a different thing to tell a caller.
+  test("is incomplete rather than parsed for whatever it happens to say", async () => {
+    // The file is present, so it is not "not found": the run happened and its
+    // index was published. #8 calls damaged evidence `incomplete` — the caller
+    // is told the evidence is partial, not that their request was malformed.
     expect(await inspectWith("run-real", "not json at all")).toMatchObject({
-      status: "invalid",
+      status: "incomplete",
     })
-    expect(await inspectWith("run-real", "{}")).toMatchObject({ status: "invalid" })
+    expect(await inspectWith("run-real", "{}")).toMatchObject({ status: "incomplete" })
   })
 
-  test("is invalid when it was published by a different index version", async () => {
+  test("says nothing about the contents it could not read", async () => {
+    // It is describing a file this tool did not write and cannot vouch for.
+    const response = await inspectWith("run-real", '{"secret": "/Users/someone/thing"}')
+    expect(JSON.stringify(response)).not.toContain("/Users/someone")
+  })
+
+  test("is unsupported when it was published by a later index version", async () => {
+    // Nothing is wrong with it, and nothing here can read it. Retained indexes
+    // outlive decoders within the retention window, so that is a different
+    // answer from "damaged".
     const index = JSON.stringify({ indexVersion: INDEX_VERSION + 1, runId: "run-real" })
-    expect(await inspectWith("run-real", index)).toMatchObject({ status: "invalid" })
+    expect(await inspectWith("run-real", index)).toMatchObject({ status: "unsupported" })
   })
 
   test("is invalid when it names a different run", async () => {
@@ -144,5 +154,52 @@ describe("a retained index that cannot be trusted", () => {
     })
 
     expect(response).toMatchObject({ status: "invalid" })
+  })
+
+  test("is refused when a location in it names somewhere on this machine", async () => {
+    // The index is the last thing between a planted file and a model. A
+    // location it carries is rendered as a place to go and look.
+    const index = JSON.stringify({
+      indexVersion: INDEX_VERSION,
+      runId: "run-real",
+      decoderVersion: 1,
+      schemaVersion: "0.1.0",
+      occurrences: [],
+      testFailures: [
+        {
+          id: "diag-1",
+          kind: "testFailure",
+          message: "it failed",
+          inspectionAvailable: true,
+          location: { path: "/Users/someone/Secret/Login.swift" },
+        },
+      ],
+      buildErrors: [],
+      attestations: [],
+      scopeVerdict: "matched",
+      scopeDigest: "d",
+      requestedSelectionCount: 0,
+      observedOutsideScope: 0,
+      build: { completeness: "complete" },
+      tests: { completeness: "complete" },
+      diagnostics: { completeness: "complete" },
+      fullMessages: {},
+      toolchain: {
+        developerDirectory: "/x",
+        xcodeVersion: "26.4.1",
+        xcodeBuild: "17E202",
+        xcresulttoolPath: "/x/t",
+        xcresulttoolVersion: "24757",
+        xcresulttoolDigest: "d",
+        schemaVersion: "0.1.0",
+      },
+      log: { availability: "unavailable", retainedBytesExact: false },
+      bundleDigestVerified: "yes",
+    })
+
+    const response = await inspectWith("run-real", index)
+    expect(response).toMatchObject({ status: "incomplete" })
+    // And the refusal says nothing about what it refused.
+    expect(JSON.stringify(response)).not.toContain("/Users/someone")
   })
 })

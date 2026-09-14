@@ -13,10 +13,21 @@
  */
 
 import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
-import { closeSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs"
+import { createHash, type Hash } from "node:crypto"
+import {
+  closeSync,
+  constants,
+  existsSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  readSync,
+} from "node:fs"
 import { join } from "node:path"
 
+import { isRecord } from "../domain/json.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
 import type { ResultProvenance, TestRunSummary, TestToolResult } from "../domain/result.ts"
 import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
@@ -1151,20 +1162,30 @@ async function inspectRetained(
       : { status: "notFound", subject: "run" }
   }
 
-  // Everything past this point concerns a file that is *present*. Unreadable
-  // content is therefore `invalid`, never `notFound`: the evidence exists and
-  // cannot be trusted, which is a different thing to tell a caller than that
-  // the run was never known.
+  // Everything past this point concerns a file that is *present*, so none of
+  // it is `notFound`: the evidence exists, and what it cannot be trusted to
+  // say is a different thing to tell a caller than that the run was never
+  // known. #8 then separates the two ways it can fail to say anything.
   let parsed: unknown
   try {
     parsed = JSON.parse(contents)
   } catch {
-    return { status: "invalid", message: "the retained index for this Test Run could not be read" }
+    return corruptedIndex()
   }
 
-  if (!isNormalizedIndex(parsed)) {
-    return { status: "invalid", message: "the retained index for this Test Run could not be read" }
+  // A readable index this decoder does not know how to read. Retained indexes
+  // outlive decoders within the retention window, and "written by a version
+  // that came after this one" is a different answer from "damaged" — nothing
+  // is wrong with it, and nothing here can read it.
+  //
+  // It has to *declare* a version to qualify. A file with no version at all is
+  // not an index from another decoder; it is damage that happens to parse.
+  const declared = isRecord(parsed) ? parsed["indexVersion"] : undefined
+  if (typeof declared === "number" && declared !== INDEX_VERSION) {
+    return { status: "unsupported", facet: request.facet }
   }
+
+  if (!isNormalizedIndex(parsed)) return corruptedIndex()
   // The index names the run it was published for. A file that disagrees is not
   // this run's evidence, whatever directory it was found in.
   if (parsed.runId !== request.runId) {
@@ -1381,6 +1402,32 @@ function readLogWindow(path: string, window: LogWindow): { bytes: Buffer; totalB
   }
 }
 
+/**
+ * Damaged retained evidence, in the shape #8 asks for.
+ *
+ * `incomplete` rather than `invalid`: the run happened, its index was
+ * published, and what is on disk no longer describes it. A caller is being
+ * told the evidence is partial — which it is, to the point of being absent —
+ * not that their request was malformed.
+ *
+ * The message says nothing about what was found. It is describing a file this
+ * tool did not write and cannot vouch for, and quoting it would be quoting
+ * whatever wrote it.
+ */
+function corruptedIndex(): InspectionResponse<unknown> {
+  return {
+    status: "incomplete",
+    data: undefined,
+    truncation: {
+      fieldTruncated: false,
+      collectionTruncated: false,
+      responseTruncated: false,
+      hasMore: false,
+    },
+    annotation: "the retained evidence for this Test Run could not be read",
+  }
+}
+
 function tombstoneExists(storage: Storage, runId: string): boolean {
   try {
     return readdirSync(storage.tombstonesDir).includes(`${runId}.json`)
@@ -1474,8 +1521,24 @@ export const DIGEST_BUDGET_MS = 30_000
 export const LAZY_DEADLINE_MS = 60_000
 
 /**
+ * How much of a file is held in memory at once while digesting it.
+ *
+ * A Result Bundle near the 5 GiB retention target contains single files far
+ * larger than anything that should be resident, and a digest is a streaming
+ * operation by nature: the hash never needs more than the chunk in front of
+ * it. Reading a file whole to hash it turns a bounded operation into one whose
+ * memory is whatever the project happened to produce.
+ */
+export const DIGEST_CHUNK_BYTES = 1024 * 1024
+
+/**
  * A deterministic content digest (#8): recursive, name-ordered, and dependent
  * on nothing but the bytes — so two machines reading the same bundle agree.
+ *
+ * Bounded in both directions. Memory is one chunk at a time, whatever the file
+ * size; time is the caller's budget, checked *inside* each file as well as
+ * between them, because a single large file is exactly where an overrun would
+ * otherwise go unnoticed.
  *
  * Returns `undefined` when the budget runs out. Verification is never skipped;
  * an unfinished one is reported as unfinished.
@@ -1507,10 +1570,38 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string 
       const stats = lstatSync(child)
       if (stats.isSymbolicLink()) hash.update(readlinkSync(child))
       else if (stats.isDirectory()) walk(child)
-      else if (stats.isFile()) hash.update(readFileSync(child))
+      else if (stats.isFile() && !hashFile(hash, child, deadline)) {
+        expired = true
+        return
+      }
     }
   }
 
   walk(path)
   return expired ? undefined : hash.digest("hex")
+}
+
+/**
+ * Stream one file into the hash. False when the budget ran out part-way.
+ *
+ * Opened with `O_NOFOLLOW` but not with the owner-only checks tool-managed
+ * files get: the contents of a Result Bundle are written by `xcodebuild` with
+ * the ambient umask, and what protects them is the `0700` run directory they
+ * sit inside, not their own mode. The caller has already established this
+ * entry is a regular file rather than a link.
+ */
+function hashFile(hash: Hash, path: string, deadline: number): boolean {
+  const buffer = Buffer.allocUnsafe(DIGEST_CHUNK_BYTES)
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+
+  try {
+    while (true) {
+      if (Date.now() >= deadline) return false
+      const read = readSync(fd, buffer, 0, buffer.length, null)
+      if (read <= 0) return true
+      hash.update(buffer.subarray(0, read))
+    }
+  } finally {
+    closeSync(fd)
+  }
 }

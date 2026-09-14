@@ -12,10 +12,17 @@ import type {
   TestCounts,
   TestEvidence,
 } from "../domain/evidence.ts"
-import type { DiagnosticSummary, FacetAvailability } from "../domain/inspection.ts"
+import {
+  FACET_AVAILABILITIES,
+  type DiagnosticSummary,
+  type FacetAvailability,
+} from "../domain/inspection.ts"
+import { EVIDENCE_COMPLETENESS, EVIDENCE_FACTS, TEST_STATUSES } from "../domain/evidence.ts"
+import { staysInside } from "./locations.ts"
+import { SCOPE_VERDICTS } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { ScopeAttestation, ScopeVerdict } from "../domain/scope.ts"
-import { isArrayOf, isRecord } from "../domain/json.ts"
+import { isArrayOf, isRecord, oneOf } from "../domain/json.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
 
 /**
@@ -114,18 +121,44 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
     isArrayOf(index.testFailures, isDiagnosticSummary) &&
     isArrayOf(index.buildErrors, isDiagnosticSummary) &&
     isArrayOf(index.attestations, isAttestation) &&
-    typeof index.scopeVerdict === "string" &&
+    oneOf(index.scopeVerdict, SCOPE_VERDICTS) &&
     typeof index.scopeDigest === "string" &&
     typeof index.requestedSelectionCount === "number" &&
     typeof index.observedOutsideScope === "number" &&
     isFacet(index.build) &&
     isFacet(index.tests) &&
     isFacet(index.diagnostics) &&
-    isRecord(index.fullMessages) &&
-    isRecord(index.toolchain) &&
+    isMessageMap(index.fullMessages) &&
+    isToolchainIdentity(index.toolchain) &&
     isLogFacet(index.log) &&
-    typeof index.bundleDigestVerified === "string"
+    oneOf(index.bundleDigestVerified, EVIDENCE_FACTS)
   )
+}
+
+/** Every recorded message must be text, because every one of them is shown. */
+function isMessageMap(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string")
+}
+
+/**
+ * The toolchain identity #8 requires, field by field.
+ *
+ * This is what a lazy read compares against before it reopens a Result Bundle.
+ * A partly-shaped identity would compare unequal and quietly disable
+ * bundle-backed detail forever; a forged one would let a different Xcode read
+ * a bundle it did not write.
+ */
+function isToolchainIdentity(value: unknown): value is ToolchainIdentity {
+  if (!isRecord(value)) return false
+  return [
+    "developerDirectory",
+    "xcodeVersion",
+    "xcodeBuild",
+    "xcresulttoolPath",
+    "xcresulttoolVersion",
+    "xcresulttoolDigest",
+    "schemaVersion",
+  ].every((field) => typeof value[field] === "string")
 }
 
 /**
@@ -140,12 +173,42 @@ function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
   if (!isRecord(value)) return false
   return (
     typeof value.id === "string" &&
-    isRecord(value.identity) &&
-    typeof value.identity.canonical === "string" &&
-    typeof value.status === "string" &&
+    isTestIdentity(value.identity) &&
+    oneOf(value.status, TEST_STATUSES) &&
     typeof value.position === "string" &&
-    Array.isArray(value.failures) &&
-    Array.isArray(value.attempts) &&
+    isArrayOf(value.failures, isNormalizedFailure) &&
+    isArrayOf(value.attempts, isAttempt) &&
+    (value.durationMs === undefined || typeof value.durationMs === "number")
+  )
+}
+
+/**
+ * The identity a scope attestation is decided against, and the one a focused
+ * view shows. Its optional parts are still typed when present: a `suite` that
+ * is a number would reach a model as one.
+ */
+function isTestIdentity(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  if (typeof value.canonical !== "string") return false
+  return ["bundle", "suite", "test"].every(
+    (field) => value[field] === undefined || typeof value[field] === "string",
+  )
+}
+
+function isNormalizedFailure(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.message === "string" &&
+    typeof value.position === "string" &&
+    (value.location === undefined || isSafeLocation(value.location))
+  )
+}
+
+function isAttempt(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.ordinal === "number" &&
+    oneOf(value.status, TEST_STATUSES) &&
     (value.durationMs === undefined || typeof value.durationMs === "number")
   )
 }
@@ -162,10 +225,21 @@ function isDiagnosticSummary(value: unknown): value is DiagnosticSummary {
   )
 }
 
+/**
+ * A location safe to put in front of a model — checked on the way *out* of
+ * storage, not only on the way in.
+ *
+ * The interpreter makes these repository-relative when it writes them. This is
+ * the read side, and the file it reads is one a crash, a full volume, or
+ * anything else on the machine may have touched: a retained index claiming
+ * `/Users/someone/…` would hand a model an absolute path that says where this
+ * machine keeps things, and one claiming `../../` would describe a file
+ * outside the repository as if it were inside it.
+ */
 function isSafeLocation(value: unknown): boolean {
   if (!isRecord(value)) return false
+  if (typeof value.path !== "string" || !staysInside(value.path)) return false
   return (
-    typeof value.path === "string" &&
     (value.line === undefined || typeof value.line === "number") &&
     (value.column === undefined || typeof value.column === "number")
   )
@@ -173,16 +247,20 @@ function isSafeLocation(value: unknown): boolean {
 
 function isAttestation(value: unknown): value is ScopeAttestation {
   if (!isRecord(value)) return false
-  return typeof value.verdict === "string" && isRecord(value.selection)
+  return oneOf(value.verdict, SCOPE_VERDICTS) && isRecord(value.selection)
 }
 
 function isFacet(value: unknown): boolean {
-  return isRecord(value) && typeof value.completeness === "string"
+  return isRecord(value) && oneOf(value.completeness, EVIDENCE_COMPLETENESS)
 }
 
 function isLogFacet(value: unknown): boolean {
   if (!isRecord(value)) return false
-  return typeof value.availability === "string" && typeof value.retainedBytesExact === "boolean"
+  return (
+    oneOf(value.availability, FACET_AVAILABILITIES) &&
+    typeof value.retainedBytesExact === "boolean" &&
+    (value.retainedBytes === undefined || typeof value.retainedBytes === "number")
+  )
 }
 
 /** Count every occurrence. Scope attestation is what deduplicates identities. */

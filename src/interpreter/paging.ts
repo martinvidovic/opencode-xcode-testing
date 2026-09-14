@@ -269,9 +269,11 @@ function page(
   // more records exist. A caller deciding whether to ask again needs the
   // second; one deciding whether the page is a faithful picture needs the first.
   const truncation: TruncationState = {
-    fieldTruncated: false,
+    // Set when a mandatory record had to be shortened to fit at all, which is
+    // a different fact from records being dropped and both can be true.
+    fieldTruncated: capped.fieldTruncated,
     collectionTruncated: hasMore,
-    responseTruncated: capped.dropped > 0,
+    responseTruncated: capped.dropped > 0 || capped.fieldTruncated,
     hasMore,
     ...(cursor === undefined ? {} : { nextCursor: cursor }),
   }

@@ -30,6 +30,8 @@ import {
 } from "node:fs"
 import { join } from "node:path"
 
+import { MAX_PRIVATE_FILE_BYTES } from "../domain/limits.ts"
+
 export const TOOL_DIRECTORY = "opencode-xcode-test"
 
 /** Fixed names inside a run's private directory. */
@@ -180,6 +182,13 @@ export function assertSafeFile(path: string): void {
 export function readPrivateFile(path: string): string {
   const handle = openPrivateFile(path)
   try {
+    // Bounded even though this tool wrote it. "We wrote it" describes the
+    // past; what is on disk now is whatever a crash, a full volume, or
+    // anything else with access left there, and reading it whole without a
+    // limit makes every one of these files a way to exhaust the process.
+    if (handle.size > MAX_PRIVATE_FILE_BYTES) {
+      throw new UnsafeArtifactError(path, "is larger than a tool-managed file may be")
+    }
     return readFileSync(handle.fd, "utf8")
   } finally {
     closeSync(handle.fd)

@@ -51,9 +51,17 @@ export function safeDisplayPath(path: string, trustedRoot: string): string {
   return staysInside(relative) ? relative : basename(path)
 }
 
-/** Purely lexical, and deliberately so: this is about what is *displayed*. */
-function staysInside(relative: string): boolean {
-  if (relative.startsWith("/")) return false
+/**
+ * Whether a repository-relative path stays inside the repository.
+ *
+ * Purely lexical, and deliberately so: this is about what is *displayed*, and
+ * about a string that may have come off disk rather than off a filesystem walk.
+ * Exported because the read side needs the same rule — a retained index is one
+ * a crash or anything else on the machine may have touched, and the rule that
+ * decides what may be shown has to be the same one in both directions.
+ */
+export function staysInside(relative: string): boolean {
+  if (relative.length === 0 || relative.startsWith("/")) return false
 
   let depth = 0
   for (const part of relative.split("/")) {

@@ -23,6 +23,7 @@ import { existsSync } from "node:fs"
 
 import type { XcresultCommand } from "./anomalies.ts"
 import type { ToolchainIdentity, XcresultResponse, XcresultTool } from "./ports.ts"
+import { MAX_STRUCTURED_PAYLOAD_BYTES } from "../domain/limits.ts"
 import { REQUESTED_SCHEMA_VERSION } from "./schema.ts"
 
 /**
@@ -117,6 +118,8 @@ function read(
     })
 
     const chunks: Buffer[] = []
+    let accumulated = 0
+    const deadline = Date.now() + Math.max(1, budgetMs)
     let settled = false
     const finish = (response: XcresultResponse) => {
       if (settled) return
@@ -138,7 +141,22 @@ function read(
       })
     }, Math.max(1, budgetMs))
 
-    child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk))
+    child.stdout?.on("data", (chunk: Buffer) => {
+      accumulated += chunk.length
+      if (accumulated > MAX_STRUCTURED_PAYLOAD_BYTES) {
+        // Refused rather than absorbed. The alternative is holding an
+        // arbitrarily large payload in memory and then doubling it to decode,
+        // on behalf of a process whose output size nothing here controls.
+        stopGroup(child.pid, "SIGKILL")
+        finish({
+          ok: false,
+          failure: "unsupported",
+          message: `the structured output exceeded ${MAX_STRUCTURED_PAYLOAD_BYTES} bytes`,
+        })
+        return
+      }
+      chunks.push(chunk)
+    })
     child.on("error", () =>
       finish({
         ok: false,
@@ -162,6 +180,18 @@ function read(
       // `metadata get` is a readability preflight; its payload is not decoded.
       if (command === "metadata get") {
         finish({ ok: true, payload: {} })
+        return
+      }
+
+      // The deadline covers decoding, not merely waiting. Parsing hundreds
+      // of megabytes takes real time, and a read that spent its whole budget
+      // arriving must not then spend another one being understood.
+      if (Date.now() >= deadline) {
+        finish({
+          ok: false,
+          failure: "timedOut",
+          message: "the structured read exceeded its remaining budget",
+        })
         return
       }
 
