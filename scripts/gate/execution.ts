@@ -29,6 +29,7 @@ import {
 } from "./provider.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
 import type { ScenarioSink } from "./observations.ts"
+import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
@@ -64,13 +65,13 @@ export async function runExecutionGate(
     "index.js",
   )
   if (!existsSync(sdkPath)) {
-    record(failure("b2 execution", "@opencode-ai/sdk was not found under the OpenCode config directory"))
+    record(failure(SCENARIO["b2 execution"], "@opencode-ai/sdk was not found under the OpenCode config directory"))
     return
   }
   if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
     record(
       failure(
-        "b2 execution",
+        SCENARIO["b2 execution"],
         "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`.",
       ),
     )
@@ -109,7 +110,7 @@ export async function runExecutionGate(
     // Beside what already ran, not instead of it. Every scenario this suite
     // finished is already in the report, so a failure here adds a reason
     // rather than replacing eleven results with one.
-    record(failure("b2 execution", `the stub-provider route could not be driven: ${safeDiagnostic(error)}`))
+    record(failure(SCENARIO["b2 execution"], `the stub-provider route could not be driven: ${safeDiagnostic(error)}`))
   } finally {
     stub?.stop()
     process.chdir(previousCwd)
@@ -129,30 +130,30 @@ async function scenarios(
     tool: "xcode_test",
     args: scope(FIXTURE.passingSuite),
   })
-  record(expectOutcome("b2 passing", passed, "Test Run passed"))
+  record(expectOutcome(SCENARIO["b2 passing"], passed, "Test Run passed"))
   record(
     stub.turns > 0
-      ? success("b2 driven by a model turn", `${stub.turns} scripted turns served, credential-free`)
-      : failure("b2 driven by a model turn", "the stub provider was never called"),
+      ? success(SCENARIO["b2 driven by a model turn"], `${stub.turns} scripted turns served, credential-free`)
+      : failure(SCENARIO["b2 driven by a model turn"], "the stub provider was never called"),
   )
 
   const failed = await invoke(client, stub, roots.passing, {
     tool: "xcode_test",
     args: scope(FIXTURE.failingSuite),
   })
-  record(expectOutcome("b2 testFailed", failed, "Test Run testFailed"))
+  record(expectOutcome(SCENARIO["b2 testFailed"], failed, "Test Run testFailed"))
   record(
     /failures \(\d+\):\n\s+\S+:\d+/.test(failed)
-      ? success("b2 rendered diagnostics", diagnosticExcerpt(failed))
-      : failure("b2 rendered diagnostics", "a real failing run rendered no located failure"),
+      ? success(SCENARIO["b2 rendered diagnostics"], diagnosticExcerpt(failed))
+      : failure(SCENARIO["b2 rendered diagnostics"], "a real failing run rendered no located failure"),
   )
   record(
     lineCount(failed) <= budget.maxLines && byteLength(failed) <= budget.maxBytes
       ? success(
-          "b2 budget invariant",
+          SCENARIO["b2 budget invariant"],
           `${lineCount(failed)} lines, ${byteLength(failed)} bytes, within ${budget.maxLines}/${budget.maxBytes}`,
         )
-      : failure("b2 budget invariant", "a real run exceeded the adapter's own output budget"),
+      : failure(SCENARIO["b2 budget invariant"], "a real run exceeded the adapter's own output budget"),
   )
 
   const zeroMatch = await invoke(client, stub, roots.passing, {
@@ -163,18 +164,18 @@ async function scenarios(
   // any wrong answer at all, and a caller reading this text needs to be told
   // their *selection* was the problem rather than their code.
   record(
-    expectOutcome("b2 zero-match", zeroMatch, "Test Run infrastructureFailed: scopeMismatch"),
+    expectOutcome(SCENARIO["b2 zero-match"], zeroMatch, "Test Run infrastructureFailed: scopeMismatch"),
   )
 
   const buildFailed = await invoke(client, stub, roots.broken, {
     tool: "xcode_test",
     args: { scope: { kind: "all" } },
   })
-  record(expectOutcome("b2 buildFailed", buildFailed, "Test Run buildFailed"))
+  record(expectOutcome(SCENARIO["b2 buildFailed"], buildFailed, "Test Run buildFailed"))
 
   const runId = /^run\s+(\S+)/m.exec(failed)?.[1]
   if (runId === undefined) {
-    record(failure("b2 inspection without rerun", "no run id was rendered to inspect"))
+    record(failure(SCENARIO["b2 inspection without rerun"], "no run id was rendered to inspect"))
   } else {
     const inspected = await invoke(client, stub, roots.passing, {
       tool: "xcode_test_inspect",
@@ -205,15 +206,15 @@ async function scenarios(
 function logFacetResult(rendered: string, runId: string): ScenarioResult {
   const headline = firstLine(rendered)
   if (!headline.startsWith(`Inspection of log for run ${runId}`)) {
-    return failure("b2 log facet", `not a log inspection of this run: ${headline}`)
+    return failure(SCENARIO["b2 log facet"], `not a log inspection of this run: ${headline}`)
   }
   if (!/^bytes\s+\d+\.\.\d+$/m.test(rendered)) {
-    return failure("b2 log facet", `no byte range to continue from: ${headline}`)
+    return failure(SCENARIO["b2 log facet"], `no byte range to continue from: ${headline}`)
   }
   if (!rendered.includes("begin untrusted log") || !rendered.includes("end untrusted log")) {
-    return failure("b2 log facet", "the log was not fenced and labelled as untrusted")
+    return failure(SCENARIO["b2 log facet"], "the log was not fenced and labelled as untrusted")
   }
-  return success("b2 log facet", headline)
+  return success(SCENARIO["b2 log facet"], headline)
 }
 
 /**
@@ -226,21 +227,21 @@ function logFacetResult(rendered: string, runId: string): ScenarioResult {
  */
 function inspectionResult(rendered: string, runId: string): ScenarioResult {
   if (!rendered.includes(runId)) {
-    return failure("b2 inspection without rerun", "the response named a different run")
+    return failure(SCENARIO["b2 inspection without rerun"], "the response named a different run")
   }
   if (!/Inspection of failures/.test(rendered)) {
-    return failure("b2 inspection without rerun", `not a failures inspection: ${firstLine(rendered)}`)
+    return failure(SCENARIO["b2 inspection without rerun"], `not a failures inspection: ${firstLine(rendered)}`)
   }
 
   const records = /records \((\d+)\)/.exec(rendered)
   if (records === null) {
-    return failure("b2 inspection without rerun", `no records section: ${firstLine(rendered)}`)
+    return failure(SCENARIO["b2 inspection without rerun"], `no records section: ${firstLine(rendered)}`)
   }
   if (Number.parseInt(records[1] as string, 10) === 0) {
-    return failure("b2 inspection without rerun", "a failing run inspected to zero failure records")
+    return failure(SCENARIO["b2 inspection without rerun"], "a failing run inspected to zero failure records")
   }
 
-  return success("b2 inspection without rerun", `${firstLine(rendered)} — ${records[0]}`)
+  return success(SCENARIO["b2 inspection without rerun"], `${firstLine(rendered)} — ${records[0]}`)
 }
 
 /** Script one call, drive one turn, and return the rendered tool output. */

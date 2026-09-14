@@ -20,7 +20,13 @@
  */
 
 import type { Suite } from "./options.ts"
-import { expectedScenarios, SUITE_ROSTER } from "./roster.ts"
+import {
+  isConditional,
+  isRegistered,
+  registryProblems,
+  STANDING,
+  standingFor,
+} from "./scenarios.ts"
 import type { RunReport, ScenarioResult } from "./report.ts"
 
 /**
@@ -78,9 +84,9 @@ export type Observations = {
  *
  * `from` is recorded before the suite can do anything and `to` only once it has
  * finished, so the scenarios between them are exactly the ones it produced.
- * Attributing them by name instead would mean consulting the roster to decide
- * which suite a scenario belonged to — and the roster is the thing being
- * checked, which would make the check agree with itself.
+ * Attributing them by name instead would mean consulting the registry to
+ * decide which suite a scenario belonged to — and the registry is the thing
+ * being checked, which would make the check agree with itself.
  */
 export type SuiteRun = {
   suite: Suite
@@ -158,14 +164,24 @@ export function reportFrom(
   diagnostic?: string,
 ): RunReport {
   const unreached = unreachedScenarios(observed)
+  const problems = [...registryProblems(), ...registryDisagreements(observed)]
 
   return {
     schemaVersion: 1,
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
     selected: observed.selected,
-    suites: observed.suites.map((entry) => ({ ...entry })),
+    // Only what a reader needs. `from` and `to` are how this file attributes
+    // scenarios to suites, and a durable record is not the place for the
+    // bookkeeping that produced it — an index into an array is meaningless to
+    // anyone reading the file a week later, and invites being trusted.
+    suites: observed.suites.map((entry) => ({
+      suite: entry.suite,
+      entered: entry.entered,
+      completed: entry.completed,
+    })),
     ...(unreached.length === 0 ? {} : { unreached }),
+    ...(problems.length === 0 ? {} : { registryProblems: problems }),
     ...(observed.project === true ? { project: true } : {}),
     // Copied, never aliased. A shared object handed to every report is one
     // any reader could edit for all of them.
@@ -194,42 +210,70 @@ export function reportFrom(
  * same in a list of four, and a reader of a failed report is asking precisely
  * which of those happened.
  *
- * A scenario is unreached when the roster expects it and nothing recorded it.
+ * A scenario is unreached when the registry lists it as standing for a
+ * selected suite and nothing recorded it.
  * That covers both ways of not arriving — a suite that threw part-way, and one
  * that was never entered at all — because from the report's point of view they
  * are the same fact: this was going to be checked, and it was not.
  */
 export function unreachedScenarios(observed: Observations): string[] {
   const recorded = new Set(observed.scenarios.map((scenario) => scenario.name))
-  return expectedScenarios(observed.selected).filter((name) => !recorded.has(name))
+  return standingFor(observed.selected).filter((name) => !recorded.has(name))
 }
 
 /**
- * Roster entries a suite that ran cleanly to the end did not produce.
+ * Ways the registry and the run disagree.
  *
- * The check that keeps the roster honest. A stale roster is worse than none —
- * it would report scenarios that no longer exist as unreached, on every failed
- * run — and nothing else would notice, because a roster is only consulted when
- * something has already gone wrong.
+ * Bidirectional, and each direction catches what the other cannot.
  *
- * Asked per suite, and only of clean ones. A suite that completed *having
- * recorded a failure* is missing scenarios for a reason it already stated, so
- * reporting that as drift would raise a false alarm on exactly the runs whose
- * reports matter most. Asking the question of the whole run instead would be
- * the same mistake one size up: one failing layer4 scenario would hide a
- * genuinely stale b1 roster, which is the case this exists to catch.
+ * A scenario **emitted but not registered** is one no report can account for:
+ * it appears among the results and never among the expectations, so a reader
+ * comparing the two is quietly missing a row. Emitters take their names from
+ * the registry, so reaching this means someone bypassed it.
+ *
+ * A standing scenario **registered but not emitted by a suite that ran
+ * normally** is the other half: the suite got to the end and did not do what
+ * the registry says it does. Either the registry is stale or a check silently
+ * stopped running, and both matter.
+ *
+ * "Ran normally" is doing real work in that sentence. Two suites catch their
+ * own failures and report them as a conditional scenario — a host that will
+ * not start, an SDK that is not installed — and then return, so they
+ * *complete* having run almost nothing. Asking them what they missed would
+ * name every standing check they have, on every machine without a host, and
+ * say the same thing `unreached` already says, twice and as noise. A suite
+ * that reported a conditional failure has explained its own incompleteness
+ * and is not asked again.
+ *
+ * Nothing else is suppressed. Unlike the one-directional check this replaces,
+ * an *ordinary* scenario failure does not silence anything: a failing run is
+ * exactly when a stale registry does its damage, because it is the run whose
+ * report gets read.
  */
-export function rosterDrift(observed: Observations): string[] {
-  return observed.suites.filter((entry) => entry.completed).flatMap((entry) => {
-    const produced = observed.scenarios.slice(entry.from, entry.to)
+export function registryDisagreements(observed: Observations): string[] {
+  const problems: string[] = []
 
-    // Gating failures only. `real cancellation` and `timeout escalation` are
-    // report-only precisely because they are timing-sensitive, and letting one
-    // flaky report-only result silence this check would mean the roster stops
-    // being verified on whichever runs happen to be slow.
-    if (produced.some((s) => s.kind === "gating" && s.status === "failed")) return []
+  for (const scenario of observed.scenarios) {
+    if (!isRegistered(scenario.name)) {
+      problems.push(`\`${scenario.name}\` was reported but is not in the registry`)
+    }
+  }
 
-    const names = new Set(produced.map((scenario) => scenario.name))
-    return SUITE_ROSTER[entry.suite].filter((name) => !names.has(name))
-  })
+  for (const entry of observed.suites) {
+    if (!entry.completed) continue
+
+    const results = observed.scenarios.slice(entry.from, entry.to)
+    // A conditional scenario that failed is a suite saying why it could not
+    // proceed. It has accounted for itself; the rest is `unreached`'s job.
+    if (results.some((s) => s.status === "failed" && isConditional(s.name))) continue
+
+    const produced = new Set(results.map((scenario) => scenario.name))
+    for (const name of STANDING[entry.suite]) {
+      if (!produced.has(name)) {
+        problems.push(`\`${name}\` is a standing ${entry.suite} check and was not reported`)
+      }
+    }
+  }
+
+  return problems
 }

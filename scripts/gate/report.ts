@@ -15,9 +15,11 @@ import { basename, join } from "node:path"
 
 import { TOOL_DIRECTORY } from "../../src/runner/paths.ts"
 import type { Suite } from "./options.ts"
+import type { ScenarioName } from "./scenarios.ts"
 
 export type ScenarioResult = {
-  name: string
+  /** A registered name. The registry is what makes `unreached` meaningful. */
+  name: ScenarioName
   /** `gating` scenarios fail the gate; `report-only` ones never do. */
   kind: "gating" | "report-only"
   status: "passed" | "failed" | "skipped"
@@ -48,6 +50,19 @@ export type RunReport = {
    */
   suites?: Array<{ suite: Suite; entered: true; completed: boolean }>
   /**
+   * Ways the registry and this run disagree.
+   *
+   * Written on every path, including the ones that throw, because that is what
+   * makes it a check rather than a courtesy: a scenario nobody registered
+   * would otherwise land in a report with nothing to say so, and the runs
+   * where that happens are precisely the ones that ended early.
+   *
+   * Never gating. A registry is bookkeeping about the gate, not evidence about
+   * the tool, and the same argument that keeps freshness drift report-only
+   * applies here.
+   */
+  registryProblems?: string[]
+  /**
    * Scenarios the selected suites set out to run and did not reach.
    *
    * Stated rather than left to inference. `scenarios` says what happened and
@@ -56,7 +71,7 @@ export type RunReport = {
    * question a reader has. Additive, so it needs no `schemaVersion` bump, and
    * absent on a run that reached everything.
    */
-  unreached?: string[]
+  unreached?: ScenarioName[]
   /**
    * Whether a real project was supplied. Deliberately a boolean: a project
    * path is a private fact about someone's machine, and the report says that
@@ -147,6 +162,11 @@ export function renderReport(report: RunReport, path: string): string {
     const duration = scenario.durationMs === undefined ? "" : ` ${scenario.durationMs}ms`
     lines.push(`  ${mark} ${scenario.name}${suffix}${duration}`)
     if (scenario.detail.length > 0) lines.push(`       ${scenario.detail}`)
+  }
+
+  if (report.registryProblems !== undefined && report.registryProblems.length > 0) {
+    // Printed, not only serialized. A check nobody reads is not a check.
+    lines.push("", `registry      ${report.registryProblems.join("; ")}`)
   }
 
   if (report.unreached !== undefined && report.unreached.length > 0) {

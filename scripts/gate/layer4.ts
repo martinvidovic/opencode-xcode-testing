@@ -30,6 +30,7 @@ import { loadCursorSecret } from "../../src/runner/secrets.ts"
 import { examineBundle, type BundleExamination } from "../freshness-check.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
+import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 
 /**
@@ -79,33 +80,33 @@ export async function runLayer4(
 
     const service = serviceFor(passing, homeDir, { ...options, configured: "fixture" })
 
-    const passed = await timed("passing run", () =>
+    const passed = await timed(SCENARIO["passing run"], () =>
       service.start(scoped(FIXTURE.passingSuite), noop).result,
     )
     record(
-      expect(passed, "passing run", (result) =>
+      expect(passed, SCENARIO["passing run"], (result) =>
         outcomeOf(result) === "passed"
           ? undefined
           : `expected passed, got ${describe(result)}`,
       ),
     )
 
-    const failed = await timed("failing run", () =>
+    const failed = await timed(SCENARIO["failing run"], () =>
       service.start(scoped(FIXTURE.failingSuite), noop).result,
     )
     record(
-      expect(failed, "failing run", (result) =>
+      expect(failed, SCENARIO["failing run"], (result) =>
         outcomeOf(result) === "testFailed"
           ? undefined
           : `expected testFailed, got ${describe(result)}`,
       ),
     )
 
-    const zeroMatch = await timed("zero-match detection", () =>
+    const zeroMatch = await timed(SCENARIO["zero-match detection"], () =>
       service.start(scoped("NoSuchSuiteExists"), noop).result,
     )
     record(
-      expect(zeroMatch, "zero-match detection", (result) => {
+      expect(zeroMatch, SCENARIO["zero-match detection"], (result) => {
         // The exact contract, not merely "not passed". Xcode exits zero here,
         // so an exit-code wrapper reports a green empty run — but so does a
         // tool that notices something is wrong and says the wrong thing about
@@ -126,11 +127,11 @@ export async function runLayer4(
     )
 
     const brokenService = serviceFor(broken, homeDir, { ...options, configured: "fixture" })
-    const buildFailed = await timed("buildFailed", () =>
+    const buildFailed = await timed(SCENARIO["buildFailed"], () =>
       brokenService.start({ requestedScope: { kind: "all" } }, noop).result,
     )
     record(
-      expect(buildFailed, "buildFailed", (result) =>
+      expect(buildFailed, SCENARIO["buildFailed"], (result) =>
         outcomeOf(result) === "buildFailed"
           ? undefined
           : `expected buildFailed, got ${describe(result)}`,
@@ -176,17 +177,17 @@ async function inspectionScenario(
   failed: TestToolResult,
 ): Promise<ScenarioResult> {
   if (!isTestRunSummary(failed)) {
-    return fail("inspection without rerun", "the failing run produced no run id to inspect")
+    return fail(SCENARIO["inspection without rerun"], "the failing run produced no run id to inspect")
   }
 
   const response = await service.inspect({ runId: failed.runId, facet: "failures" })
   if (response.status !== "available") {
-    return fail("inspection without rerun", `the failures facet returned ${response.status}`)
+    return fail(SCENARIO["inspection without rerun"], `the failures facet returned ${response.status}`)
   }
 
   const records = (response.data as { records: Array<{ id: string }> }).records
   if (records.length === 0) {
-    return fail("inspection without rerun", "the failures facet was empty for a failing run")
+    return fail(SCENARIO["inspection without rerun"], "the failures facet was empty for a failing run")
   }
 
   // The summary already named its failures. Reading them again from retained
@@ -197,7 +198,7 @@ async function inspectionScenario(
   const shared = records.map((record) => record.id).filter((id) => summarised.includes(id))
   if (shared.length === 0) {
     return fail(
-      "inspection without rerun",
+      SCENARIO["inspection without rerun"],
       "the retained failures share no diagnostic id with the summary, so they describe a different run",
     )
   }
@@ -210,7 +211,7 @@ async function inspectionScenario(
     diagnosticId: first.id,
   })
   if (focused.status !== "available" && focused.status !== "incomplete") {
-    return fail("inspection without rerun", `focusing a diagnostic returned ${focused.status}`)
+    return fail(SCENARIO["inspection without rerun"], `focusing a diagnostic returned ${focused.status}`)
   }
   const page = focused.data as {
     view?: string
@@ -223,14 +224,14 @@ async function inspectionScenario(
   // this gate's fixture only if the fixture has become enormous — so it is a
   // failure, and it says the right thing about why.
   if (page.view === "omitted") {
-    return fail("inspection without rerun", `the focused view was withheld: ${page.reason ?? ""}`)
+    return fail(SCENARIO["inspection without rerun"], `the focused view was withheld: ${page.reason ?? ""}`)
   }
   if (page.focused?.id !== first.id) {
-    return fail("inspection without rerun", "focusing a diagnostic did not return that diagnostic")
+    return fail(SCENARIO["inspection without rerun"], "focusing a diagnostic did not return that diagnostic")
   }
 
   return pass(
-    "inspection without rerun",
+    SCENARIO["inspection without rerun"],
     `${records.length} failure record(s) and focused detail read from the retained bundle; ${shared.length} id(s) match the summary`,
   )
 }
@@ -240,17 +241,17 @@ async function pagingScenario(
   passed: TestToolResult,
 ): Promise<ScenarioResult> {
   if (!isTestRunSummary(passed)) {
-    return fail("capped and cursor inspection", "no run id to page through")
+    return fail(SCENARIO["capped and cursor inspection"], "no run id to page through")
   }
 
   const all = await service.inspect({ runId: passed.runId, facet: "tests", limit: 100 })
   if (all.status !== "available") {
-    return fail("capped and cursor inspection", `the tests facet returned ${all.status}`)
+    return fail(SCENARIO["capped and cursor inspection"], `the tests facet returned ${all.status}`)
   }
   const single = (all.data as { records: Array<{ id: string }> }).records.map((r) => r.id)
   if (single.length < 2) {
     return fail(
-      "capped and cursor inspection",
+      SCENARIO["capped and cursor inspection"],
       `the fixture project must run at least two tests to page through; it ran ${single.length}`,
     )
   }
@@ -270,12 +271,12 @@ async function pagingScenario(
       ...(cursor === undefined ? {} : { cursor }),
     })
     if (response.status !== "available") {
-      return fail("capped and cursor inspection", `page ${page} returned ${response.status}`)
+      return fail(SCENARIO["capped and cursor inspection"], `page ${page} returned ${response.status}`)
     }
 
     const records = (response.data as { records: Array<{ id: string }> }).records
     if (records.length !== 1) {
-      return fail("capped and cursor inspection", `page ${page} returned ${records.length} records`)
+      return fail(SCENARIO["capped and cursor inspection"], `page ${page} returned ${records.length} records`)
     }
     seen.push((records[0] as { id: string }).id)
 
@@ -283,26 +284,26 @@ async function pagingScenario(
 
     const next = response.truncation.nextCursor
     if (next === undefined || next === cursor) {
-      return fail("capped and cursor inspection", `page ${page} did not advance its cursor`)
+      return fail(SCENARIO["capped and cursor inspection"], `page ${page} did not advance its cursor`)
     }
     cursor = next
   }
 
   if (seen.length !== single.length) {
     return fail(
-      "capped and cursor inspection",
+      SCENARIO["capped and cursor inspection"],
       `paging one at a time yielded ${seen.length} of ${single.length} records`,
     )
   }
   if (new Set(seen).size !== seen.length) {
-    return fail("capped and cursor inspection", "paging returned the same record twice")
+    return fail(SCENARIO["capped and cursor inspection"], "paging returned the same record twice")
   }
   if (seen.join(",") !== single.join(",")) {
-    return fail("capped and cursor inspection", "paged order differs from a single page's order")
+    return fail(SCENARIO["capped and cursor inspection"], "paged order differs from a single page's order")
   }
 
   return pass(
-    "capped and cursor inspection",
+    SCENARIO["capped and cursor inspection"],
     `${single.length} record(s) paged one at a time, each exactly once and in a single page's order`,
   )
 }
@@ -326,7 +327,7 @@ async function projectScenarios(
 ): Promise<ScenarioResult[]> {
   const started = Date.now()
   const scenario = (status: "passed" | "failed", detail: string): ScenarioResult => ({
-    name: "supplied project run",
+    name: SCENARIO["supplied project run"],
     // Gating, per ADR 0001: "`--project` runs must pass if invoked but do not
     // form the gate." Somebody who named a project wants to be told.
     kind: "gating",
@@ -405,7 +406,7 @@ async function cancellationScenario(
   const outcome = describe(result)
 
   return {
-    name: "real cancellation",
+    name: SCENARIO["real cancellation"],
     kind: "report-only",
     status: outcome === "cancelled" ? "passed" : "failed",
     detail: `observed ${outcome} after ${Date.now() - started}ms`,
@@ -428,7 +429,7 @@ async function timeoutScenario(
 
   const outcome = describe(result)
   return {
-    name: "timeout escalation",
+    name: SCENARIO["timeout escalation"],
     kind: "report-only",
     status: outcome === "timedOut" ? "passed" : "failed",
     detail: `observed ${outcome} after ${Date.now() - started}ms`,
