@@ -21,50 +21,75 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { createTestToolService, LAZY_DEADLINE_MS, type ServiceEnvironment } from "../../src/adapter/service.ts"
+import {
+  bundleDigest,
+  createTestToolService,
+  INDEX_ARTIFACT,
+  LAZY_DEADLINE_MS,
+  type ServiceEnvironment,
+} from "../../src/adapter/service.ts"
 import type { XcresultCommand } from "../../src/interpreter/anomalies.ts"
 import type { XcresultTool } from "../../src/interpreter/ports.ts"
 import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { createRunDirectory, runDirectory, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
-import { mkdirSync, writeFileSync } from "node:fs"
 
 const RUN = "run-lazy"
-const INDEX_ARTIFACT = "index.json"
 
-/** A reader that always answers, so only the clock can end the read. */
-function alwaysAnswers(): XcresultTool {
+/**
+ * A reader that answers, and a clock that only runs out once it has.
+ *
+ * The two are built together on purpose. Pinning the check by *counting*
+ * clock readings works and is silently wrong the moment anything on the path
+ * reads the clock once more or once less: every expiry returns the same
+ * outcome, so a miscounted test goes on passing while it asserts a different
+ * check. Tying the clock to the event instead — the payload has arrived, so
+ * the budget is now spent — says what the test means and cannot drift.
+ */
+function readerThatExhaustsTheBudget(): { tool: XcresultTool; now: () => number } {
   const fixture = loadFixture("passed")
+  let spent = false
+
   return {
-    identity: identityFor(fixture),
-    async run(command: XcresultCommand) {
-      return command === "get test-results test-details"
-        ? { ok: true as const, payload: { testRuns: [] } }
-        : { ok: true as const, payload: fixture.payloads[command] ?? {} }
+    now: () => (spent ? LAZY_DEADLINE_MS + 3_600_000 : 0),
+    tool: {
+      identity: identityFor(fixture),
+      async run(command: XcresultCommand) {
+        if (command !== "get test-results test-details") {
+          return { ok: true as const, payload: fixture.payloads[command] ?? {} }
+        }
+        // Answered in time; the decoding that follows is what overruns.
+        spent = true
+        return { ok: true as const, payload: { testRuns: [] } }
+      },
     },
   }
 }
 
-/**
- * A clock that stays put until `lateFrom` readings have been taken, then jumps
- * an hour past any deadline built from it.
- *
- * Counting readings rather than stepping by a fixed amount is what makes this
- * a test of one check: every reading the path takes before the decode sees the
- * same instant, so nothing earlier can expire by accident.
- */
-function clockLateAfter(lateFrom: number): () => number {
-  let reading = 0
-  return () => {
-    reading += 1
-    return reading < lateFrom ? 0 : LAZY_DEADLINE_MS + 3_600_000
+/** A reader with a budget that never runs out. */
+function readerWithTimeToSpare(): { tool: XcresultTool; now: () => number } {
+  const fixture = loadFixture("passed")
+  return {
+    now: () => 0,
+    tool: {
+      identity: identityFor(fixture),
+      async run(command: XcresultCommand) {
+        return command === "get test-results test-details"
+          ? { ok: true as const, payload: { testRuns: [] } }
+          : { ok: true as const, payload: fixture.payloads[command] ?? {} }
+      },
+    },
   }
 }
 
-function environmentFor(box: Sandbox, now: () => number): ServiceEnvironment {
+function environmentFor(
+  box: Sandbox,
+  reader: { tool: XcresultTool; now: () => number },
+): ServiceEnvironment {
   return {
     storage: box.storage,
     trustedRoot: "/workspace",
@@ -72,12 +97,12 @@ function environmentFor(box: Sandbox, now: () => number): ServiceEnvironment {
     toolchain: identityFor(loadFixture("passed")),
     runtime: { path: "/opt/bun" },
     supervisorEntrypoint: "/repo/src/runner/supervisor-entry.ts",
-    now,
+    now: reader.now,
     timestamp: () => "2026-09-13T12:00:00.000Z",
     sleep: () => Promise.resolve(),
     freeBytes: () => Number.MAX_SAFE_INTEGER,
     cursorSecret: Buffer.alloc(32, 7),
-    xcresultToolFor: () => alwaysAnswers(),
+    xcresultToolFor: () => reader.tool,
   }
 }
 
@@ -129,7 +154,6 @@ async function retained<T>(work: (box: Sandbox) => Promise<T>): Promise<T> {
     mkdirSync(bundle, { recursive: true })
     writeFileSync(join(bundle, "Data"), "bytes")
 
-    const { bundleDigest } = await import("../../src/adapter/service.ts")
     seedRun(box.storage, {
       runId: RUN,
       state: "completed",
@@ -146,11 +170,11 @@ async function retained<T>(work: (box: Sandbox) => Promise<T>): Promise<T> {
 
 describe("a lazy read whose budget runs out while it is decoding", () => {
   test("is incomplete and says it timed out, not available", async () => {
-    // The sixth reading is the one taken after the payload has been decoded.
-    // Everything before it sees the same instant, so this is the new check
-    // firing and not an earlier one.
+    // The budget is spent at the moment the payload arrives, so every step
+    // before the decode sees a clock with time left and only the check after
+    // it can fire.
     const response = await retained(async (box) => {
-      const service = createTestToolService(environmentFor(box, clockLateAfter(6)))
+      const service = createTestToolService(environmentFor(box, readerThatExhaustsTheBudget()))
       return service.inspect({ runId: RUN, facet: "tests", testId: "occ-1" })
     })
 
@@ -163,13 +187,10 @@ describe("a lazy read whose budget runs out while it is decoding", () => {
     // The other direction, so the test above cannot pass by refusing
     // everything: a clock that never moves produces a focused view.
     const response = await retained(async (box) => {
-      const service = createTestToolService(environmentFor(box, () => 0))
+      const service = createTestToolService(environmentFor(box, readerWithTimeToSpare()))
       return service.inspect({ runId: RUN, facet: "tests", testId: "occ-1" })
     })
 
-    expect(["available", "incomplete"]).toContain(response.status)
-    if (response.status === "incomplete") {
-      expect(response.annotation ?? "").not.toContain("deadline")
-    }
+    expect(response.status).toBe("available")
   })
 })

@@ -19,8 +19,6 @@
  * something a test can build, run and assert against with no host at all.
  */
 
-import { homedir } from "node:os"
-
 import { monotonicNow } from "../domain/clock.ts"
 import { noteRootSeen, runHousekeeping } from "../runner/housekeeping.ts"
 import { systemProbe } from "../runner/identity.ts"
@@ -38,7 +36,7 @@ export type StartupWiring = {
   storage: Storage
   configuration: ConfigurationOutcome
   /** Files a static import graph cannot protect: entrypoint and sidecars. */
-  requiredFiles: string[]
+  requiredFiles(): string[]
   regularFileExists(path: string): boolean
   readHostVersion(): Promise<string>
   /** Told what the probe resolved, since the caller needs it after startup. */
@@ -48,7 +46,7 @@ export type StartupWiring = {
 export function startupPortsFor(wiring: StartupWiring): StartupPorts {
   return {
     markerExists: () => enablementMarkerExists(wiring.trustedRoot),
-    requiredFiles: () => wiring.requiredFiles,
+    requiredFiles: wiring.requiredFiles,
     regularFileExists: wiring.regularFileExists,
     readHostVersion: wiring.readHostVersion,
 
@@ -104,7 +102,7 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
       runHousekeeping({
         storage: wiring.storage,
         now: () => Date.now(),
-        storageForRootKey: (rootKey) => storageForRootKey(wiring.homeDir || homedir(), rootKey),
+        storageForRootKey: (rootKey) => storageForRootKey(wiring.homeDir, rootKey),
       })
     },
 

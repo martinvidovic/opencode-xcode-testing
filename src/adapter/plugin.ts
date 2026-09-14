@@ -54,7 +54,7 @@ export const server: Plugin = async (input) => {
       homeDir,
       storage,
       configuration,
-      requiredFiles: [SUPERVISOR_ENTRYPOINT, ...DESCRIPTION_FILES],
+      requiredFiles: () => [SUPERVISOR_ENTRYPOINT, ...DESCRIPTION_FILES],
       regularFileExists: isRegularFile,
       readHostVersion: () => readHostVersion(input.serverUrl),
       onRuntime: (resolved) => {

@@ -61,7 +61,7 @@ function portsFor(box: Sandbox, trustedRoot: string) {
     configuration: { status: "absent" },
     // Structural verification is a separate concern; an empty list keeps this
     // about the clock without asserting where a checkout puts its files.
-    requiredFiles: [],
+    requiredFiles: () => [],
     regularFileExists: () => true,
     readHostVersion: async () => "1.18.29",
     onRuntime: () => {},
@@ -88,14 +88,11 @@ describe("the ports the plugin entrypoint actually builds", () => {
     })
   })
 
-  test("give reconciliation a deadline on the clock the pass reads", async () => {
+  test("are given a deadline on the clock the pass reads", async () => {
     await withSandbox(async (box) => {
       const trustedRoot = join(box.homeDir, "project")
       crashedRoot(box, trustedRoot)
 
-      // The same pairing stated directly. A wall-clock deadline is larger than
-      // any budget by twelve orders of magnitude, so this catches the mismatch
-      // even where the reconciliation happens to have nothing to do.
       let handed: number | undefined
       const ports = portsFor(box, trustedRoot)
       const real = ports.reconcileRoot.bind(ports)
@@ -106,9 +103,28 @@ describe("the ports the plugin entrypoint actually builds", () => {
 
       await runStartup(ports)
 
+      // A wall-clock deadline is larger than any budget by twelve orders of
+      // magnitude, so this catches the mismatch on startup's side of the pair.
       expect(handed).toBeDefined()
       expect((handed as number) - monotonicNow()).toBeLessThanOrEqual(RECONCILIATION_BUDGET_MS)
       expect(handed as number).toBeGreaterThan(0)
+    })
+  })
+
+  test("honour the deadline they are handed rather than one of their own", async () => {
+    await withSandbox(async (box) => {
+      const trustedRoot = join(box.homeDir, "project")
+      crashedRoot(box, trustedRoot)
+
+      // The port's side of the pair, and the direction the other tests cannot
+      // see. A port that quietly derived its own deadline — from the wall
+      // clock, say — would be handed an instant that has already passed and
+      // reconcile anyway, because a wall-clock deadline is effectively
+      // infinite to a monotonic reader. The budget would stop bounding
+      // anything, silently, while every other assertion here still held.
+      await portsFor(box, trustedRoot).reconcileRoot(monotonicNow() - 1)
+
+      expect(readQueue(box.storage).quarantine?.runId).toBe(RUN)
     })
   })
 

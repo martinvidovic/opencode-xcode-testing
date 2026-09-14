@@ -1272,7 +1272,9 @@ async function lazyDetailFor(
 ): Promise<LazyOutcome> {
   // One fixed monotonic deadline covering toolchain verification, digest
   // verification and extraction together, per #8. Checked between steps, so a
-  // step that finishes late cannot spend the next one's budget.
+  // step that finishes late cannot spend the next one's budget — and after the
+  // last one, so a read that finished everything late is not reported as one
+  // that finished in time.
   const deadline = environment.now() + LAZY_DEADLINE_MS
   const expired = () => environment.now() >= deadline
 
