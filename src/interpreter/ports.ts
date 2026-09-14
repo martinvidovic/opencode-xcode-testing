@@ -33,6 +33,21 @@ export type XcresultResponse =
   | { ok: false; failure: XcresultFailure; message: string }
 
 /**
+ * The one wording for a read that ran out of its budget.
+ *
+ * Here rather than in either half of a staged read, because both halves reach
+ * it: the wait can expire before a payload arrives, and the decode can expire
+ * turning one into a value. A caller told "the structured read exceeded its
+ * remaining budget" should not be able to tell which, because the answer is
+ * the same either way — there is no result, and the deadline is why.
+ */
+export const TIMED_OUT: XcresultResponse = {
+  ok: false,
+  failure: "timedOut",
+  message: "the structured read exceeded its remaining budget",
+}
+
+/**
  * The frozen same-Xcode `xcresulttool`. Implementations spawn it in their own
  * process group under the remaining budget; the interpreter only ever asks.
  */

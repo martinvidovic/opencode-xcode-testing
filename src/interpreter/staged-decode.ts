@@ -20,14 +20,7 @@
 import { readFileSync } from "node:fs"
 
 import { monotonicNow } from "../domain/clock.ts"
-import type { XcresultResponse } from "./ports.ts"
-
-/** The one wording for an expired read, used wherever the deadline is checked. */
-export const TIMED_OUT: XcresultResponse = {
-  ok: false,
-  failure: "timedOut",
-  message: "the structured read exceeded its remaining budget",
-}
+import { TIMED_OUT, type XcresultResponse } from "./ports.ts"
 
 /**
  * Turn a staged file into a payload, or into the reason it could not be one.

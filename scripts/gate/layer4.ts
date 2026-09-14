@@ -212,8 +212,20 @@ async function inspectionScenario(
   if (focused.status !== "available" && focused.status !== "incomplete") {
     return fail("inspection without rerun", `focusing a diagnostic returned ${focused.status}`)
   }
-  const detail = (focused.data as { focused?: { id?: string; message?: string } }).focused
-  if (detail?.id !== first.id) {
+  const page = focused.data as {
+    view?: string
+    reason?: string
+    focused?: { id?: string; message?: string }
+  }
+
+  // Distinguished from a wrong record on purpose. A withheld view means the
+  // record was found and will not fit the cap, which is a correct answer about
+  // this gate's fixture only if the fixture has become enormous — so it is a
+  // failure, and it says the right thing about why.
+  if (page.view === "omitted") {
+    return fail("inspection without rerun", `the focused view was withheld: ${page.reason ?? ""}`)
+  }
+  if (page.focused?.id !== first.id) {
     return fail("inspection without rerun", "focusing a diagnostic did not return that diagnostic")
   }
 

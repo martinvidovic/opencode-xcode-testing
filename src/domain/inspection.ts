@@ -80,13 +80,17 @@ export type TruncationState = {
   nextCursor?: string
   /**
    * Records passed over because they could not be represented within the cap
-   * without altering an identifier, a kind or a status.
+   * without altering an identifier, a kind, a status or a safe location.
    *
    * A different fact from every other field here, and the only one describing
-   * a loss that paging cannot undo: a record left off this page for size
-   * arrives on the next one, and one counted here never arrives at all. The
-   * cursor has already moved past it. Additive, so it needs no `schemaVersion`
-   * bump, and absent on every ordinary page.
+   * a loss that asking again cannot undo. A record left off a page for size
+   * arrives on the next one; one counted here never arrives. On a paged read
+   * that is because the cursor has already moved past it, and on a focused
+   * read it is because the record itself is what does not fit — the same fact
+   * about the same cap, reached two ways.
+   *
+   * Additive, so it needs no `schemaVersion` bump, and absent on every
+   * ordinary response.
    */
   recordsOmitted?: number
 }

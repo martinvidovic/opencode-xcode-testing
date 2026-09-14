@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { createTestToolService, INDEX_ARTIFACT, type ServiceEnvironment } from "../../src/adapter/service.ts"
-import { RESPONSE_BYTE_CAP } from "../../src/domain/limits.ts"
+import { RESPONSE_BYTE_CAP, RESPONSE_ENVELOPE_BYTES } from "../../src/domain/limits.ts"
 import type { InspectRunRequest, InspectionResponse } from "../../src/domain/inspection.ts"
 import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { RUN_ARTIFACTS, createRunDirectory, runDirectory } from "../../src/runner/paths.ts"
@@ -708,3 +708,50 @@ describe("a focused view that cannot fit the cap", () => {
     )
   })
 })
+
+describe("the room a response reserves for everything but its data", () => {
+  test("is enough for the largest envelope this contract can produce", () => {
+    // `fits` measures the view and subtracts a flat RESPONSE_ENVELOPE_BYTES
+    // for the rest — the status, the facet, the truncation state, the cursor
+    // and the annotation. That makes the cap a guarantee only while the rest
+    // really does fit in that allowance, and nothing else checks it: the
+    // annotation is assembled after the view has been fitted, so a long one
+    // would push an already-fitted response over the bound it was fitted to.
+    const largest = {
+      status: "incomplete",
+      completeness: "partial",
+      truncation: {
+        fieldTruncated: true,
+        collectionTruncated: true,
+        responseTruncated: true,
+        hasMore: true,
+        recordsOmitted: 1,
+        // A cursor is the longest variable-length thing in an envelope, and
+        // this is comfortably longer than one the tool issues.
+        nextCursor: "x".repeat(256),
+      },
+      data: { view: "omitted", facet: "buildErrors", reason: OMITTED_REASON },
+      annotation: LONGEST_ANNOTATION,
+    }
+
+    expect(Buffer.byteLength(JSON.stringify(largest), "utf8")).toBeLessThanOrEqual(
+      RESPONSE_ENVELOPE_BYTES,
+    )
+  })
+})
+
+/** The wording a withheld focused view carries, as `paging.ts` writes it. */
+const OMITTED_REASON =
+  "this record cannot be returned within the response cap without altering an identifier"
+
+/**
+ * The longest annotation any inspection response can carry.
+ *
+ * Every one is a fixed literal chosen by this repository — no caller text and
+ * no message from a tool reaches an annotation — so the longest of them is a
+ * fact that can be written down and checked.
+ */
+const LONGEST_ANNOTATION =
+  "the retained evidence for this Test Run is not trustworthy; " +
+  "detail could not be associated to exactly one occurrence; " +
+  "1 record(s) could not be returned within the response cap"

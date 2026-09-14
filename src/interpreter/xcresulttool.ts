@@ -39,10 +39,10 @@ import { createWriteStream, existsSync, openSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 import type { XcresultCommand } from "./anomalies.ts"
-import type { ToolchainIdentity, XcresultResponse, XcresultTool } from "./ports.ts"
+import { TIMED_OUT, type ToolchainIdentity, type XcresultResponse, type XcresultTool } from "./ports.ts"
 import { monotonicNow } from "../domain/clock.ts"
 import { MAX_STAGED_PAYLOAD_BYTES } from "../domain/limits.ts"
-import { decodeStaged, TIMED_OUT } from "./staged-decode.ts"
+import { decodeStaged } from "./staged-decode.ts"
 import { REQUESTED_SCHEMA_VERSION } from "./schema.ts"
 
 /**

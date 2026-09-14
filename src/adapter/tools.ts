@@ -314,7 +314,12 @@ function recordLines(data: unknown): string[] {
       // Said in words rather than left as an empty body. "There is no detail"
       // and "the detail will not fit" are different answers, and only one of
       // them means stop asking.
-      return [field("omitted", page.reason)]
+      //
+      // `withheld`, not `omitted`: the truncation block below already emits an
+      // `omitted` line counting records, and two adjacent lines under one key
+      // read as a restatement of each other rather than as two facts. This one
+      // names the facet, so a reader knows which record it is about.
+      return [field("withheld", `${page.facet} — ${page.reason}`)]
     case "records":
       return [
         `records (${page.records.length}):`,
