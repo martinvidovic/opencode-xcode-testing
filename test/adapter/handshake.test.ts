@@ -15,32 +15,25 @@ import { join } from "node:path"
 
 import { createTestToolService, type ServiceEnvironment } from "../../src/adapter/service.ts"
 import { isTestRunSummary } from "../../src/domain/result.ts"
-import { readQueue } from "../../src/runner/queue.ts"
+import { QUARANTINE_REASONS, readQueue } from "../../src/runner/queue.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
 
-/** A supervisor that starts, says nothing, and refuses to stop on its own. */
-const SILENT = `
-process.stdin.resume()
-setInterval(() => {}, 1_000)
-`
-
-/** A supervisor that starts, says nothing, and is killable. */
-function silentSupervisor(box: Sandbox): string {
-  const path = join(box.homeDir, "silent-supervisor.ts")
-  writeFileSync(path, SILENT)
-  return path
-}
+const STUB_SUPERVISOR = join(import.meta.dir, "..", "runner", "stub", "stub-supervisor.ts")
 
 /**
- * A trusted root that resolves. Resolution validates the container against the
- * real filesystem, so a run in this file has to reach the supervisor before it
- * can be about the supervisor at all.
+ * A trusted root that resolves, with the committed stub scripted to hang.
+ *
+ * Resolution validates the container against the real filesystem, so a run in
+ * this file has to reach the supervisor before it can be about the supervisor
+ * at all. The stub is the committed one ADR 0001 names for these transitions,
+ * not a fixture written on the fly.
  */
 function project(box: Sandbox): string {
   const root = join(box.homeDir, "project")
   mkdirSync(join(root, "App.xcodeproj"), { recursive: true })
+  writeFileSync(join(root, ".stub-mode"), "hang\n")
   return root
 }
 
@@ -51,7 +44,7 @@ function environmentFor(box: Sandbox, overrides: Partial<ServiceEnvironment> = {
     homeDir: box.homeDir,
     toolchain: identityFor(loadFixture("passed")),
     runtime: { path: process.execPath },
-    supervisorEntrypoint: silentSupervisor(box),
+    supervisorEntrypoint: STUB_SUPERVISOR,
     now: () => Date.now(),
     timestamp: () => new Date().toISOString(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -115,7 +108,7 @@ describe("a supervisor that never completes its handshake", () => {
 
       const state = readQueue(box.storage)
       expect(state.quarantine).toBeDefined()
-      expect(state.quarantine?.reason).toContain("did not exit")
+      expect(state.quarantine?.reason).toBe(QUARANTINE_REASONS.supervisorStillRunning)
       expect(state.activeRunId).toBeUndefined()
     })
   })
@@ -143,6 +136,44 @@ describe("a supervisor that never completes its handshake", () => {
       // process is still there.
       const runId = readQueue(box.storage).quarantine?.runId
       expect(readRunRecord(box.storage, runId as string)?.supervisor?.pid).toBeGreaterThan(0)
+    })
+  })
+
+  test("holds the root when the supervisor cannot be signalled at all", async () => {
+    await withSandbox(async (box) => {
+      // The signal is refused and the process answers when asked. Nothing has
+      // been established about what it is doing, and "we tried" is not
+      // grounds to hand the root to the next Test Run.
+      await run(box, {
+        killProcess: () => false,
+        identifyProcess: (pid) => ({ pid, startedAt: "still-here" }),
+      })
+
+      const state = readQueue(box.storage)
+      expect(state.quarantine?.reason).toBe(QUARANTINE_REASONS.supervisorUnsignalled)
+      expect(readRunRecord(box.storage, state.quarantine?.runId as string)?.supervisor?.startedAt)
+        .toBe("still-here")
+    })
+  })
+
+  test("releases when signalling fails because the process had already gone", async () => {
+    await withSandbox(async (box) => {
+      // The same refusal, and nothing answers. That is the outcome the signal
+      // was trying to bring about, reached without it.
+      await run(box, { killProcess: () => false, identifyProcess: () => undefined })
+
+      expect(readQueue(box.storage).quarantine).toBeUndefined()
+      expect(readQueue(box.storage).activeRunId).toBeUndefined()
+    })
+  })
+
+  test("releases when the exit deadline finds nothing there", async () => {
+    await withSandbox(async (box) => {
+      // The event never arrived, and the operating system says it is gone. A
+      // confirmed exit is certainty however it was confirmed.
+      await run(box, { exitDeadlineMs: 0, identifyProcess: () => undefined })
+
+      expect(readQueue(box.storage).quarantine).toBeUndefined()
     })
   })
 })

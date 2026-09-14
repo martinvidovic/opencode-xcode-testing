@@ -137,7 +137,11 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
       // publishing it is exactly the window the quarantine exists to cover —
       // but only while something is still attributable to it. The flag records
       // why the root was held, not whether it must go on being held.
-      if (record.quarantined === true && stillAttributable(environment, record)) {
+      if (
+        record.quarantined === true &&
+        state.quarantine === undefined &&
+        stillAttributable(environment, record)
+      ) {
         report.quarantined.push(runId)
       }
       if (reclaimIsolatedDerivedData(storage, record)) report.derivedDataCleaned.push(runId)
@@ -274,21 +278,56 @@ function canClearQuarantine(environment: RecoveryEnvironment, runId: string): bo
 }
 
 /**
- * Whether any process this run recorded is still live and still itself.
+ * Whether anything belonging to this run may still be running.
  *
- * Both halves are identity-safe. A group member counts only if it validates
- * against the identity that was recorded for it, and a supervisor counts only
- * if its start time still matches — so a reused PID number, which is ordinary
- * on a busy machine, never keeps a root held on its own.
+ * Three questions, because the run records three different kinds of thing and
+ * only the first two can be answered by identity.
+ *
+ * A recorded process — the owner, the supervisor, the gated child — is
+ * checked by start identity, so a reused PID number, which is ordinary on a
+ * busy machine, never holds a root on its own.
+ *
+ * **Descendants are the hard case.** `xcodebuild` spawns processes this tool
+ * never sees, and they are not recorded individually, so there are no
+ * identities to ask about. When the run could not confirm they exited, the
+ * absence of a recorded identity is *not* evidence of absence — reading it as
+ * such would clear exactly the quarantine that condition exists to raise. What
+ * can be asked is the process group: descendants inherit the gated child's
+ * group, so an empty group is the one sound negative answer available, and it
+ * is an answer that eventually arrives.
  */
 function stillAttributable(environment: RecoveryEnvironment, record: RunRecord): boolean {
+  const { probe } = environment
+
+  // A live owner is still driving this run, including through the window
+  // between the supervisor exiting and the summary being published.
+  if (record.owner !== undefined && !allIdentitiesGone(probe, [record.owner])) return true
+
   if (
     record.child !== undefined &&
-    signallingIsSafe(environment.probe, { pgid: record.child.pgid, processes: [record.child] })
+    signallingIsSafe(probe, { pgid: record.child.pgid, processes: [record.child] })
   ) {
     return true
   }
-  return !allIdentitiesGone(environment.probe, recordedIdentities(record))
+  if (!allIdentitiesGone(probe, recordedIdentities(record))) return true
+
+  // Nothing recorded survives. If the run also never established that its
+  // descendants had gone, the group is what is left to ask — but only while
+  // the group is still ours to ask about.
+  //
+  // The gated child leads its own group, so the group's number is the child's
+  // PID. A number now held by a process that is not the one recorded means it
+  // was recycled, and its members are strangers: holding the root on their
+  // account would keep it held for as long as an unrelated program happened to
+  // own that number. A number that is simply free is different — a group
+  // number cannot be reassigned while the group still has members, so anything
+  // answering there is one of ours, still running, unrecorded.
+  if (record.child !== undefined && record.descendantsConfirmedExited !== "yes") {
+    if (probe.identify(record.child.pgid) !== undefined) return false
+    return probe.membersOf(record.child.pgid).length > 0
+  }
+
+  return false
 }
 
 function recordedIdentities(record: RunRecord): ProcessIdentity[] {

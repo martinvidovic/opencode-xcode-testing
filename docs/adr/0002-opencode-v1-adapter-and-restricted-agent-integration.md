@@ -431,6 +431,11 @@ they are deliberate rather than accidental:
 - `AdmissionOptions.newRunId` — how a run id is allocated. A collision is
   otherwise astronomically rare, and the property under test is precisely what
   happens when one occurs.
+- `ServiceEnvironment.killProcess` / `identifyProcess` (issue #35) — how an
+  unhandshaken supervisor is signalled, and how the machine is asked whether it
+  is still there. "The signal could not be delivered" is not a state a real
+  machine can be asked to produce on demand, and it is the one that decides
+  whether a trusted root is held or released.
 
 Both default to the real implementation and are overridden only by tests. Where
 a real mechanism *is* reachable — locks, atomic renames, apparent file size —

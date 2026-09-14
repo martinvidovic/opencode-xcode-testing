@@ -180,6 +180,97 @@ describe("a root quarantined by a run something still belongs to", () => {
     })
   })
 
+  test("stays held over descendants that were never confirmed gone", async () => {
+    await withSandbox((box) => {
+      // `xcodebuild` spawns processes this tool never sees, so there is no
+      // identity to ask about. Reading "nothing recorded survives" as "nothing
+      // is running" would clear exactly the quarantine this condition raises.
+      seedQuarantined(box, {
+        runId: RUN,
+        child: { pid: 200, startedAt: "child-start", pgid: 200 },
+        descendantsConfirmedExited: "no",
+      })
+      holdRoot(box)
+
+      // The child itself is gone and its group is not: a group number cannot
+      // be reassigned while the group still has members, so 201 is ours.
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({ groups: { 200: [201] } }),
+        timestamp: () => TIMESTAMP,
+      })
+
+      expect(report.quarantineCleared).toBe(false)
+      expect(published(box)).toBe(true)
+    })
+  })
+
+  test("releases once that group has finally emptied", async () => {
+    await withSandbox((box) => {
+      seedQuarantined(box, {
+        runId: RUN,
+        child: { pid: 200, startedAt: "child-start", pgid: 200 },
+        descendantsConfirmedExited: "no",
+      })
+      holdRoot(box)
+
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({}),
+        timestamp: () => TIMESTAMP,
+      })
+
+      expect(report.quarantineCleared).toBe(true)
+      expect(published(box)).toBe(false)
+    })
+  })
+
+  test("releases when the group's number has been recycled by a stranger", async () => {
+    await withSandbox((box) => {
+      seedQuarantined(box, {
+        runId: RUN,
+        child: { pid: 200, startedAt: "child-start", pgid: 200 },
+        descendantsConfirmedExited: "no",
+      })
+      holdRoot(box)
+
+      // The number is in use by a process that is not the one recorded, so it
+      // was recycled and its members are strangers. Holding on their account
+      // would keep the root held for as long as they happened to own it.
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({
+          processes: { 200: "a-completely-different-program" },
+          groups: { 200: [200, 201] },
+        }),
+        timestamp: () => TIMESTAMP,
+      })
+
+      expect(report.quarantineCleared).toBe(true)
+    })
+  })
+
+  test("stays held while the run's owner is still driving it", async () => {
+    await withSandbox((box) => {
+      // The window between the supervisor exiting and the summary being
+      // published: no child, no supervisor, and the run is not finished.
+      seedQuarantined(box, {
+        runId: RUN,
+        owner: { pid: 900, startedAt: "owner-start" },
+      })
+      holdRoot(box)
+
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({ processes: { 900: "owner-start" } }),
+        timestamp: () => TIMESTAMP,
+      })
+
+      expect(report.quarantineCleared).toBe(false)
+      expect(published(box)).toBe(true)
+    })
+  })
+
   test("stays held while a run's durable state cannot be read at all", async () => {
     await withSandbox((box) => {
       // The directory is there and the record is not. That is corruption, not
@@ -257,6 +348,21 @@ describe("publishing a quarantine", () => {
       // busy, or admission waits out its deadline instead of failing fast.
       expect(state.activeRunId).toBeUndefined()
       expect(state.quarantine?.runId).toBe(RUN)
+    })
+  })
+
+  test("never displaces another run's live quarantine", async () => {
+    await withSandbox((box) => {
+      // Somebody else's held root, with its own reason and its own moment.
+      // Replacing it would leave the root just as held and no longer explain
+      // why, which is the part anyone reading it needs.
+      holdRoot(box, "run-someone-else")
+
+      releaseSlot(box.storage, RUN, { reason: "a different reason", since: TIMESTAMP })
+
+      const state = readQueue(box.storage)
+      expect(state.quarantine?.runId).toBe("run-someone-else")
+      expect(state.quarantine?.reason).toBe(QUARANTINE_REASON)
     })
   })
 

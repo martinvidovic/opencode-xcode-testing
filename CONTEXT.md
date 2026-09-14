@@ -39,3 +39,15 @@ _Avoid_: Log page, output slice
 **Bundle-Backed Detail**:
 Focused detail that can only be obtained by reopening the Result Bundle, as opposed to detail served from the immutable index. It degrades on its own — a mismatched digest or toolchain takes it away without affecting ordinary paging.
 _Avoid_: Lazy data, deep read
+
+**Execution Slot**:
+The single permission to run `xcodebuild` under one trusted root. V1 serializes Test Runs per root, so holding the slot is what makes a run the active one; releasing it is what lets the next be admitted.
+_Avoid_: Lock, mutex, semaphore
+
+**Quarantine**:
+A hold on a trusted root's Execution Slot, raised when a Test Run's lifecycle could not be confirmed and cleared only on identity-safe evidence that nothing attributable to it is still running. It refuses new Test Runs with a reason rather than making them wait.
+_Avoid_: Lockout, freeze, block
+
+**Run Record**:
+The durable per-run metadata the runner writes as a Test Run progresses — its monotonic state, the process identities it recorded, and what it was asked to do. It is what recovery reads after a crash, and the only account of a run whose processes are gone.
+_Avoid_: Run state file, metadata blob

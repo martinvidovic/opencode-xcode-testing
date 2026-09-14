@@ -170,4 +170,61 @@ describe("a run that never reached launch authorization", () => {
       expect(readRunRecord(box.storage, RUN)?.state).toBe("completed")
     })
   })
+
+  test("covers every state before launch, not only the earliest", async () => {
+    // `supervisorReady` and `childRecorded` are also before the gate. A run
+    // that got that far still never became `xcodebuild`.
+    for (const state of ["supervisorReady", "childRecorded"] as const) {
+      await withSandbox(async (box) => {
+        seedPreLaunch(box, {
+          state,
+          ...(state === "childRecorded"
+            ? { child: { pid: 999_999, startedAt: "gone", pgid: 999_999 } }
+            : {}),
+        })
+        await finalizeRecovered(environmentFor(box), RUN)
+
+        const summary = summaryOf(box)
+        if (!isTestRunSummary(summary)) throw new Error(`expected a summary for ${state}`)
+        expect(summary.outcome).toBe("infrastructureFailed")
+        expect(summary.reason).toBe("runnerFailure")
+        expect(summary.execution.execObserved).toBe("no")
+      })
+    }
+  })
+
+  test("says which of the two happened, rather than one sentence for both", async () => {
+    await withSandbox(async (box) => {
+      seedPreLaunch(box)
+      await finalizeRecovered(environmentFor(box), RUN)
+      const never = summaryOf(box) as { message?: string }
+
+      await withSandbox(async (other) => {
+        seedPreLaunch(other, {
+          state: "childRecorded",
+          child: { pid: 999_999, startedAt: "gone", pgid: 999_999 },
+        })
+        await finalizeRecovered(environmentFor(other), RUN)
+        const gated = summaryOf(other) as { message?: string }
+
+        // One never started a process; the other started one and never let it
+        // become the tests. "No test process ran" is true of neither in the
+        // way a reader needs.
+        expect(never.message).not.toBe(gated.message)
+      })
+    })
+  })
+
+  test("measures from the admission it recorded, not from when recovery ran", async () => {
+    await withSandbox(async (box) => {
+      seedPreLaunch(box)
+      await finalizeRecovered(environmentFor(box), RUN)
+
+      const summary = summaryOf(box)
+      if (!isTestRunSummary(summary)) throw new Error("expected a Test Run summary")
+      // #7: the total measures admission through classification. Reporting
+      // zero would claim a run that took no time at all.
+      expect(summary.timing.totalDurationMs).toBeGreaterThan(0)
+    })
+  })
 })
