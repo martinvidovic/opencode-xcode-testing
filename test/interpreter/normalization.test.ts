@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test"
 
 import { AnomalyLog } from "../../src/interpreter/anomalies.ts"
 import { decodeTestSummary } from "../../src/interpreter/decode.ts"
-import { aggregateAttempts } from "../../src/interpreter/occurrences.ts"
+import { aggregateAttempts, normalizeTestNodes } from "../../src/interpreter/occurrences.ts"
 import { FAILED_EXIT, interpretFixture } from "./harness.ts"
 
 describe("attempt aggregation", () => {
@@ -246,5 +246,59 @@ describe("a failure message from a real Result Bundle", () => {
       request: { execution: FAILED_EXIT },
     })
     expect(summary.outcome).toBe("testFailed")
+  })
+})
+
+describe("a bundle node Xcode gave no name", () => {
+  test("does not produce an identity that claims to be complete", () => {
+    // The producer and the decoder have to agree, and this is where they can
+    // stop agreeing: a blank bundle name yields an identity naming nothing
+    // while flagged complete, which the decoder then refuses — taking the
+    // whole index, and so every facet of a real run, down with it.
+    const { occurrences } = normalizeTestNodes(
+      [
+        {
+          nodeType: "Unit test bundle",
+          name: "",
+          children: [
+            {
+              nodeType: "Test Case",
+              name: "testSignsIn()",
+              nodeIdentifier: "LoginTests/testSignsIn()",
+              result: "Passed",
+              children: [],
+            },
+          ],
+        },
+      ],
+      { trustedRoot: "/repo" },
+    )
+
+    expect(occurrences).toHaveLength(1)
+    expect(occurrences[0]?.identityComplete).toBe(false)
+  })
+
+  test("still produces a complete identity when the bundle is named", () => {
+    const { occurrences } = normalizeTestNodes(
+      [
+        {
+          nodeType: "Unit test bundle",
+          name: "AppTests",
+          children: [
+            {
+              nodeType: "Test Case",
+              name: "testSignsIn()",
+              nodeIdentifier: "LoginTests/testSignsIn()",
+              result: "Passed",
+              children: [],
+            },
+          ],
+        },
+      ],
+      { trustedRoot: "/repo" },
+    )
+
+    expect(occurrences[0]?.identityComplete).toBe(true)
+    expect(occurrences[0]?.identity.canonical).toBe("AppTests/LoginTests/testSignsIn()")
   })
 })

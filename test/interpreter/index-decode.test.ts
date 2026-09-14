@@ -260,7 +260,12 @@ describe("numbers that are not numbers", () => {
     expect(isNormalizedIndex(index({ occurrences: [occurrence] }))).toBe(false)
   })
 
-  test("an attempt numbered from zero is not an attempt", () => {
+  test("an attempt numbered from zero is an attempt, because that is how they are numbered", () => {
+    // The tempting mistake, recorded so it is not made twice: an ordinal
+    // reads like a position, positions start at one, and these start at zero.
+    // A rule requiring one is stricter and wrong — it rejects the ordinals the
+    // interpreter writes, and with them the entire index of any run that
+    // retried a test.
     const occurrence = {
       id: "occ-1",
       identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
@@ -270,7 +275,11 @@ describe("numbers that are not numbers", () => {
       failures: [],
       attempts: [{ ordinal: 0, status: "passed" }],
     }
-    expect(isNormalizedIndex(index({ occurrences: [occurrence] }))).toBe(false)
+    expect(isNormalizedIndex(index({ occurrences: [occurrence] }))).toBe(true)
+
+    // A negative or fractional one is still not an ordinal.
+    const wrong = { ...occurrence, attempts: [{ ordinal: -1, status: "passed" }] }
+    expect(isNormalizedIndex(index({ occurrences: [wrong] }))).toBe(false)
   })
 })
 

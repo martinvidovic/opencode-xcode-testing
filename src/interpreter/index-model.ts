@@ -209,18 +209,23 @@ function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
  * reach a model as one; a `suite` that is `""` would reach it as a name that
  * matches nothing and looks like it should.
  *
- * The bundle is conditional on `complete`, and the condition is the contract
- * rather than a concession. An identity this tool could not fully derive
- * records an empty bundle and says so with that flag, and attestation already
- * refuses to match on it. An identity that claims to be complete has no such
- * excuse: it is matched against what a caller asked to run, and a complete
- * identity naming no bundle would be compared against every selection and
- * agree with none of them, reporting a mismatch for a test that ran.
+ * `attestedComplete` is the occurrence's own claim about this identity, not a
+ * strictness setting a caller chooses. It decides which standard the identity
+ * is held to, because the two cases mean genuinely different things and the
+ * decoder must accept what the interpreter legitimately writes for each.
  */
-function isTestIdentity(value: unknown, complete: boolean): boolean {
+function isTestIdentity(value: unknown, attestedComplete: boolean): boolean {
   if (!isRecord(value)) return false
-  if (!isIdentifier(value.canonical)) return false
-  if (complete ? !isIdentifier(value.bundle) : typeof value.bundle !== "string") return false
+
+  // The bundle and the canonical form are held to the standard the occurrence
+  // claims for itself. An identity that admits it is incomplete may name
+  // nothing at all — that is what the flag says, and attestation already
+  // refuses to match on it. One that claims completeness has no such excuse.
+  if (attestedComplete) {
+    if (!isIdentifier(value.bundle) || !isIdentifier(value.canonical)) return false
+  } else if (typeof value.bundle !== "string" || typeof value.canonical !== "string") {
+    return false
+  }
 
   return ["suite", "test", "sourceIdentifier"].every(
     // `sourceIdentifier` is the Result Bundle's own spelling of this test,
@@ -243,9 +248,12 @@ function isNormalizedFailure(value: unknown): boolean {
 function isAttempt(value: unknown): boolean {
   if (!isRecord(value)) return false
   return (
-    // Attempts are ordered and shown by ordinal, so a zeroth or a `NaN`th
-    // attempt is one a caller cannot ask about again.
-    isPosition(value.ordinal) &&
+    // A count, because attempts are numbered from zero here — the first
+    // attempt is the zeroth. Requiring one instead reads as the stricter
+    // choice and is simply the wrong one: it rejects the ordinals the
+    // interpreter writes, and with them the whole index of any run that
+    // retried a test.
+    isCount(value.ordinal) &&
     oneOf(value.status, TEST_STATUSES) &&
     (value.durationMs === undefined || isDuration(value.durationMs))
   )

@@ -347,6 +347,41 @@ describe("the response cap", () => {
     )
   })
 
+  test("never shortens a source identifier, which is how a reader finds the test in Xcode", async () => {
+    // Retained only when the Result Bundle spells the test differently from
+    // the canonical form, which makes it the one string that gets a reader
+    // from this tool's output back to Xcode's. Half of it gets them nowhere.
+    const occurrence = {
+      id: "occ-1",
+      identity: {
+        bundle: "AppTests",
+        suite: "LoginTests",
+        test: "testSignsIn()",
+        canonical: "AppTests/LoginTests/testSignsIn()",
+        sourceIdentifier: `AppTests/LoginTests/testSignsIn${"x".repeat(200_000)}`,
+      },
+      identityComplete: true,
+      status: "passed" as const,
+      position: "0",
+      attempts: [],
+      failures: [],
+    }
+
+    await retained(
+      indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests" })
+        if (response.status !== "incomplete") throw new Error("expected an incomplete page")
+
+        expect((response.data as { records: unknown[] }).records).toHaveLength(0)
+        expect(response.truncation.recordsOmitted).toBe(1)
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+      },
+    )
+  })
+
   test("omits an attestation whose selection is what makes it oversized", async () => {
     // The same rule for the other record shape. A bundle name is what a
     // verdict is *about*; halving it would attribute a verdict to a selection

@@ -142,6 +142,12 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
  * which is precisely backwards. A test name is what `-only-testing` takes and
  * what a reader types into Xcode; half of one is a filter that runs nothing.
  * The rule is about what a field *is*, not where it sits.
+ *
+ * One consequence, said out loud because it is easy to miss: a scope
+ * attestation and a test record are now *entirely* identifiers, so neither has
+ * a string left that may be shortened. For those two facets an oversized first
+ * record is always omitted and `fieldTruncated` is unreachable. That is the
+ * intended reading of "preserve identifiers" for records that are nothing else.
  */
 const STRUCTURAL_FIELDS = new Set([
   "id",
