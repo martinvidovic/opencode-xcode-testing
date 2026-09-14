@@ -30,7 +30,7 @@ _Avoid_: Section, category, channel
 
 **Focused Detail**:
 The expanded view of a single diagnostic or a single test, reached by identifier rather than by paging. A different shape from a page, not a larger one: it carries the full message, identity, safe location, stack frames, activities and attachment metadata.
-_Avoid_: Detail page, expanded record, drill-down
+_Avoid_: Detail page, expanded record, drill-down, focused view, focused read
 
 **Log Chunk**:
 One bounded, UTF-8-aligned window of a Test Run's retained raw log, with byte-range metadata and a continuation cursor. Its content is untrusted output from the project's own build and tests, and is never classified on.

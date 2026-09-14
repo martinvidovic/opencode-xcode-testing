@@ -224,7 +224,7 @@ async function inspectionScenario(
   // this gate's fixture only if the fixture has become enormous — so it is a
   // failure, and it says the right thing about why.
   if (page.view === "omitted") {
-    return fail(SCENARIO["inspection without rerun"], `the focused view was withheld: ${page.reason ?? ""}`)
+    return fail(SCENARIO["inspection without rerun"], `the Focused Detail was withheld: ${page.reason ?? ""}`)
   }
   if (page.focused?.id !== first.id) {
     return fail(SCENARIO["inspection without rerun"], "focusing a diagnostic did not return that diagnostic")

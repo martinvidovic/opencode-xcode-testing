@@ -397,7 +397,7 @@ describe("a retained test identity", () => {
   })
 
   test("is refused without a canonical form in either completeness state", () => {
-    // The canonical form is what a focused view shows and what a caller reads
+    // The canonical form is what a Focused Detail shows and what a caller reads
     // back. Blank, it is a test with no name in front of a model.
     expect(isNormalizedIndex(withIdentity({ ...WHOLE, canonical: "" }, true))).toBe(false)
     expect(isNormalizedIndex(withIdentity({ ...WHOLE, canonical: "" }, false))).toBe(false)
@@ -432,7 +432,7 @@ describe("a retained test identity", () => {
   })
 
   test("refuses an occurrence whose position names nothing", () => {
-    // The position is how a focused view addresses one occurrence among
+    // The position is how a Focused Detail addresses one occurrence among
     // several with the same name.
     expect(
       isNormalizedIndex(

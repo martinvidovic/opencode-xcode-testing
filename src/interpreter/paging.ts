@@ -52,12 +52,18 @@ export type FacetPage =
    * The record was found and cannot be returned within the response cap.
    *
    * A distinct view rather than a focused one with an empty body, because the
-   * two mean opposite things: an empty focused view says the record had
+   * two mean opposite things: an empty Focused Detail says the record had
    * nothing in it, and this says the record had too much and none of what is
    * left may be altered. A caller that cannot tell those apart reads "no
    * detail" from a test that has plenty.
    */
-  | { view: "omitted"; facet: InspectionFacet; reason: string }
+  | {
+      view: "omitted"
+      facet: InspectionFacet
+      reason: string
+      /** The protected fields that prevented it, by path. Never their values. */
+      blockedBy: string[]
+    }
 
 export function inspectIndex(
   index: NormalizedIndex,
@@ -382,7 +388,9 @@ function focusDiagnostic(
 
   const facet = failure !== undefined ? "failures" : "buildErrors"
   const view = focusedDiagnostic(index, diagnostic, trustedRoot, lazy.detail)
-  if (view.focused === undefined) return omittedResponse(facet, view.truncation)
+  if (view.focused === undefined) {
+    return omittedResponse(facet, view.truncation, view.blockedBy ?? [])
+  }
 
   return focusedResponse({ view: "focused", facet, focused: view.focused }, view.truncation, lazy)
 }
@@ -397,13 +405,15 @@ function focusTest(
   if (lazy.status === "unsupported") return { status: "unsupported", facet: "tests" }
 
   const view = focusedTest(index, occurrence, lazy.detail)
-  if (view.focused === undefined) return omittedResponse("tests", view.truncation)
+  if (view.focused === undefined) {
+    return omittedResponse("tests", view.truncation, view.blockedBy ?? [])
+  }
 
   return focusedResponse({ view: "focused", facet: "tests", focused: view.focused }, view.truncation, lazy)
 }
 
 /**
- * A focused view, marked `incomplete` when bundle-backed detail was not read.
+ * A Focused Detail, marked `incomplete` when bundle-backed detail was not read.
  *
  * The distinction matters to a caller in exactly one way, and it is the way
  * that counts: on an `available` response an empty `activities` list means the
@@ -435,19 +445,49 @@ function focusedResponse(
  * from a response was absent from the run, and here it is absent from the
  * response only. The annotation says which, because "no detail" and "detail
  * too large to send" ask completely different things of a caller.
+ *
+ * It also says *what* would have had to change, which is the difference
+ * between a diagnostic and a shrug. Every field named here is protected for
+ * the same reason and in two flavours: shorten an identifier and it addresses
+ * nothing, shorten a safe location and it names a file that does not exist.
+ * Both look like answers afterwards, which is what makes them worse than
+ * absence — and a caller told only "it did not fit" has no way to tell an
+ * enormous test name from a pathological path.
  */
 function omittedResponse(
   facet: InspectionFacet,
   truncation: TruncationState,
+  blockedBy: readonly string[],
 ): InspectionResponse<FacetPage> {
-  const reason = "this record cannot be returned within the response cap without altering an identifier"
+  // Bounded, because this is the one part of a response assembled *after* the
+  // data was fitted to the cap. Everything else in an envelope is a fixed
+  // literal; these are field paths derived from the record, so an unbounded
+  // list would push an already-fitted response over the bound it was fitted
+  // to — the cap broken by the message explaining the cap.
+  const named = blockedBy.slice(0, BLOCKED_FIELD_CAP)
+  const rest = blockedBy.length - named.length
+  const fields = rest > 0 ? `${named.join(", ")} and ${rest} more` : named.join(", ")
+
+  const reason =
+    named.length === 0
+      ? OMITTED_REASON
+      : `${OMITTED_REASON}: ${fields} would have to be shortened, and a shortened identifier or safe location names something that does not exist`
+
   return {
     status: "incomplete",
-    data: { view: "omitted", facet, reason },
+    // A fixed literal, unlike `reason`. The annotation is what every other
+    // `incomplete` response carries, and keeping it constant is what keeps the
+    // envelope a known size.
+    annotation: OMITTED_REASON,
+    data: { view: "omitted", facet, reason, blockedBy: [...named] },
     truncation,
-    annotation: reason,
   }
 }
+
+/** How many blocking fields a reason names before it summarises the rest. */
+export const BLOCKED_FIELD_CAP = 4
+
+export const OMITTED_REASON = "this record cannot be returned within the response cap"
 
 function single(data: FacetPage): InspectionResponse<FacetPage> {
   return {

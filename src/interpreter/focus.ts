@@ -39,7 +39,7 @@ import {
   STACK_FRAME_TEXT_CHAR_CAP,
   SUMMARY_TEST_FAILURE_CAP,
 } from "../domain/limits.ts"
-import { halve, responseBytes } from "./cap.ts"
+import { blockingFields, halve, responseBytes } from "./cap.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
 import { extractFrames } from "./frames.ts"
 import type { NormalizedIndex } from "./index-model.ts"
@@ -66,9 +66,8 @@ export type LazyOutcome =
   | { status: "incomplete"; detail?: undefined; annotation?: string }
   | { status: "unsupported"; detail?: undefined }
 
-/** A focused view and the truncation it had to apply to fit. */
 /**
- * A focused view, or the absence of one it could not honestly produce.
+ * A Focused Detail, or the absence of one it could not honestly produce.
  *
  * `focused` is optional because the cap is absolute and a focused record can
  * be oversized on its own. Everything sheddable goes first, and what is left
@@ -76,7 +75,18 @@ export type LazyOutcome =
  * never shortened. When that alone does not fit there is nothing honest left
  * to return, so nothing is.
  */
-export type Focused<T> = { focused?: T; truncation: TruncationState }
+export type Focused<T> = {
+  focused?: T
+  truncation: TruncationState
+  /**
+   * Which protected fields prevented this Focused Detail from being returned.
+   *
+   * Present only when it was not. Field paths rather than values: the value is
+   * the thing that would not fit, and echoing it back would be the response
+   * that could not be sent, sent.
+   */
+  blockedBy?: string[]
+}
 
 const UNTRUNCATED: TruncationState = {
   fieldTruncated: false,
@@ -209,12 +219,18 @@ function fit<T extends { message?: string }>(view: T, truncation: TruncationStat
   }
 
   // Everything sheddable is gone. If it still does not fit, what remains is
-  // the identity and the location — the parts a caller acts on, and the parts
-  // that cannot be shortened without becoming a different answer. Returning
-  // them over the cap would break the one bound the contract fixes; returning
-  // them halved would hand back an identifier that addresses nothing. So the
-  // view is not returned at all, and the response says so.
+  // the identity and the safe location — the parts a caller acts on, and the
+  // parts that cannot be shortened without becoming a different answer.
+  // Returning them over the cap would break the one bound the contract fixes;
+  // returning them halved would hand back an identifier that addresses
+  // nothing, or a path naming a file that does not exist. So the Focused
+  // Detail is not returned at all, and the response says which field is why —
+  // an oversized test name and an oversized path are different things to go
+  // and look at.
   const overCap = !fits(current)
+  const blockedBy = overCap
+    ? blockingFields(current, RESPONSE_BYTE_CAP - RESPONSE_ENVELOPE_BYTES)
+    : []
 
   const state: TruncationState = {
     ...truncation,
@@ -226,7 +242,7 @@ function fit<T extends { message?: string }>(view: T, truncation: TruncationStat
     ...(overCap ? { recordsOmitted: 1 } : {}),
   }
 
-  return overCap ? { truncation: state } : { focused: current as T, truncation: state }
+  return overCap ? { truncation: state, blockedBy } : { focused: current as T, truncation: state }
 }
 
 function fits(view: unknown): boolean {

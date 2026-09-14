@@ -13,6 +13,7 @@ import { join } from "node:path"
 
 import { createTestToolService, INDEX_ARTIFACT, type ServiceEnvironment } from "../../src/adapter/service.ts"
 import { RESPONSE_BYTE_CAP, RESPONSE_ENVELOPE_BYTES } from "../../src/domain/limits.ts"
+import { BLOCKED_FIELD_CAP, OMITTED_REASON } from "../../src/interpreter/paging.ts"
 import type { InspectRunRequest, InspectionResponse } from "../../src/domain/inspection.ts"
 import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { RUN_ARTIFACTS, createRunDirectory, runDirectory } from "../../src/runner/paths.ts"
@@ -473,7 +474,7 @@ describe("bundle-backed detail", () => {
       bundleDigestVerified: digest,
       testFailures: [diagnostic],
       occurrences: [occurrence] as NormalizedIndex["occurrences"],
-      // Retained when the evidence was fresh, which is what a focused view
+      // Retained when the evidence was fresh, which is what a Focused Detail
       // exists to show past the summary's cap.
       fullMessages: { "diag-1": occurrence.failures[0]?.message ?? "" },
     })
@@ -506,7 +507,7 @@ describe("bundle-backed detail", () => {
   test("carries the identity and the safe location the diagnostic belongs to", async () => {
     await retained(focusedIndex("unknown"), async (inspect) => {
       const response = await inspect({ facet: "failures", diagnosticId: "diag-1" })
-      if (response.status !== "incomplete") throw new Error("expected a focused view")
+      if (response.status !== "incomplete") throw new Error("expected a Focused Detail")
 
       const focused = (response.data as {
         focused: { identity?: { canonical: string }; location?: { path: string } }
@@ -530,7 +531,7 @@ describe("bundle-backed detail", () => {
   test("says why it is incomplete, rather than leaving a caller to guess", async () => {
     await retained(focusedIndex("yes"), async (inspect) => {
       const response = await inspect({ facet: "failures", diagnosticId: "diag-1" })
-      if (response.status !== "incomplete") throw new Error("expected a focused view")
+      if (response.status !== "incomplete") throw new Error("expected a Focused Detail")
 
       // The bundle is gone. "Ran out of time" and "the evidence is no longer
       // there" ask different things of a caller, so the response says which.
@@ -580,13 +581,13 @@ describe("bundle-backed detail", () => {
       const service = createTestToolService(environmentFor(box))
       const response = await service.inspect({ runId: RUN, facet: "failures", diagnosticId: "diag-1" })
 
-      if (response.status !== "incomplete") throw new Error("expected a focused view")
+      if (response.status !== "incomplete") throw new Error("expected a Focused Detail")
       expect(response.annotation).toContain("more than one retained occurrence")
     })
   })
 })
 
-describe("a focused view that cannot fit the cap", () => {
+describe("a Focused Detail that cannot fit the cap", () => {
   /** An occurrence whose identity alone is larger than any response may be. */
   const enormousIdentity = {
     id: "occ-1",
@@ -629,6 +630,15 @@ describe("a focused view that cannot fit the cap", () => {
         if (response.status !== "incomplete") return
         expect((response.data as { view: string }).view).toBe("omitted")
         expect(response.truncation.recordsOmitted).toBe(1)
+
+        // And it says which field, because "it did not fit" is equally true
+        // of an enormous test name and a pathological path, and those send a
+        // reader to different places.
+        expect((response.data as { blockedBy: string[] }).blockedBy.sort()).toEqual([
+          "identity.canonical",
+          "identity.test",
+        ])
+        expect((response.data as { reason: string }).reason).toContain("identity.canonical")
       },
     )
   })
@@ -660,6 +670,11 @@ describe("a focused view that cannot fit the cap", () => {
         expect(response.status).toBe("incomplete")
         if (response.status !== "incomplete") return
         expect((response.data as { view: string }).view).toBe("omitted")
+
+        // The location, and only the location. Naming the identity here would
+        // send a reader to inspect a test name that is perfectly ordinary.
+        expect((response.data as { blockedBy: string[] }).blockedBy).toEqual(["location.path"])
+        expect((response.data as { reason: string }).reason).toContain("safe location")
       },
     )
   })
@@ -675,12 +690,21 @@ describe("a focused view that cannot fit the cap", () => {
         if (response.status !== "incomplete") throw new Error("expected an incomplete response")
 
         expect(response.annotation).toContain("cannot be returned within the response cap")
-        expect((response.data as { reason: string }).reason).toContain("identifier")
+
+        // Field paths, never their values: the value is the thing that would
+        // not fit, so echoing it back would be the response that could not be
+        // sent, sent.
+        const data = response.data as { reason: string; blockedBy: string[] }
+        expect(data.reason).toContain("identifier")
+        expect(data.blockedBy.join(" ")).not.toContain("xxxx")
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
       },
     )
   })
 
-  test("still returns a focused view that does fit", async () => {
+  test("still returns a Focused Detail that does fit", async () => {
     // The other direction, so the tests above cannot pass by refusing
     // everything: an ordinary record comes back focused.
     await retained(
@@ -711,12 +735,17 @@ describe("a focused view that cannot fit the cap", () => {
 
 describe("the room a response reserves for everything but its data", () => {
   test("is enough for the largest envelope this contract can produce", () => {
-    // `fits` measures the view and subtracts a flat RESPONSE_ENVELOPE_BYTES
-    // for the rest — the status, the facet, the truncation state, the cursor
-    // and the annotation. That makes the cap a guarantee only while the rest
-    // really does fit in that allowance, and nothing else checks it: the
-    // annotation is assembled after the view has been fitted, so a long one
-    // would push an already-fitted response over the bound it was fitted to.
+    // `fits` measures the data and subtracts a flat RESPONSE_ENVELOPE_BYTES
+    // for the rest — the status, the facet, the truncation state, the cursor,
+    // the annotation and the omission reason. That makes the cap a guarantee
+    // only while the rest really does fit in that allowance.
+    //
+    // It is worth being exact about which parts are variable, because that is
+    // where this went wrong once already: every annotation is a fixed literal
+    // this repository chose, and the *reason* is not — it names field paths
+    // taken from the record. `BLOCKED_FIELD_CAP` is what keeps it bounded, and
+    // this is the assertion that the bound is low enough.
+    const paths = Array.from({ length: BLOCKED_FIELD_CAP }, () => "identity.sourceIdentifier")
     const largest = {
       status: "incomplete",
       completeness: "partial",
@@ -730,28 +759,49 @@ describe("the room a response reserves for everything but its data", () => {
         // this is comfortably longer than one the tool issues.
         nextCursor: "x".repeat(256),
       },
-      data: { view: "omitted", facet: "buildErrors", reason: OMITTED_REASON },
-      annotation: LONGEST_ANNOTATION,
+      data: {
+        view: "omitted",
+        facet: "buildErrors",
+        blockedBy: paths,
+        reason: `${OMITTED_REASON}: ${paths.join(", ")} and 99 more would have to be shortened, and a shortened identifier or safe location names something that does not exist`,
+      },
+      annotation: OMITTED_REASON,
     }
 
     expect(Buffer.byteLength(JSON.stringify(largest), "utf8")).toBeLessThanOrEqual(
       RESPONSE_ENVELOPE_BYTES,
     )
   })
+
+  test("holds for a real omitted response, not only for a hand-built one", async () => {
+    // The hand-built envelope above is an argument; this is the thing itself.
+    // A response assembled by the code under test has to be inside the cap,
+    // and its envelope inside the allowance the fitting relied on.
+    const occurrence = {
+      id: "occ-1",
+      identity: {
+        bundle: "AppTests",
+        suite: "LoginTests",
+        test: `testSignsIn${"x".repeat(200_000)}()`,
+        canonical: `AppTests/LoginTests/testSignsIn${"x".repeat(200_000)}()`,
+        sourceIdentifier: `AppTests/LoginTests/testSignsIn${"x".repeat(200_000)}`,
+      },
+      identityComplete: true,
+      status: "failed" as const,
+      position: "0",
+      attempts: [],
+      failures: [],
+    }
+
+    await retained(
+      indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests", testId: "occ-1" })
+
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_ENVELOPE_BYTES,
+        )
+      },
+    )
+  })
 })
-
-/** The wording a withheld focused view carries, as `paging.ts` writes it. */
-const OMITTED_REASON =
-  "this record cannot be returned within the response cap without altering an identifier"
-
-/**
- * The longest annotation any inspection response can carry.
- *
- * Every one is a fixed literal chosen by this repository — no caller text and
- * no message from a tool reaches an annotation — so the longest of them is a
- * fact that can be written down and checked.
- */
-const LONGEST_ANNOTATION =
-  "the retained evidence for this Test Run is not trustworthy; " +
-  "detail could not be associated to exactly one occurrence; " +
-  "1 record(s) could not be returned within the response cap"

@@ -244,3 +244,79 @@ function halveLongestString(value: unknown): boolean {
   longest.holder[longest.key] = halve(longest.holder[longest.key] as string)
   return true
 }
+
+/**
+ * Which protected fields are the reason a record will not fit.
+ *
+ * A record that has shed everything sheddable and is still oversized is being
+ * held up by something, and a caller deserves to be told which. "It does not
+ * fit" is equally true of a two-hundred-kilobyte test name and a path with
+ * twenty thousand directories in it, and those are different things to go and
+ * look at.
+ *
+ * The answer is *what would have to give*: the largest protected fields, taken
+ * in turn until the rest would fit. That is the question a reader is actually
+ * asking, and it is why this is not "every protected field that is implicated"
+ * — an identity and a canonical form that are each oversized implicate each
+ * other, so a strict test of individual responsibility names neither, and a
+ * joint one names the record's `id` and `status` alongside them as though a
+ * four-character status were the problem.
+ */
+export function blockingFields(record: unknown, budget: number): string[] {
+  const paths = protectedPaths(record).sort((a, b) => b.bytes - a.bytes)
+
+  const blocking: string[] = []
+  let remaining: unknown = record
+
+  for (const { path } of paths) {
+    if (responseBytes(remaining) <= budget) break
+    remaining = without(remaining, path)
+    blocking.push(path.join("."))
+  }
+
+  // Everything protected is gone and it still does not fit. Nothing here is
+  // then the answer, so the caller is given none rather than a list that
+  // would be wrong about what shortening would have achieved. `fit` sheds
+  // first, so reaching this means a record whose unprotected remainder is
+  // itself over the cap.
+  return responseBytes(remaining) <= budget ? blocking : []
+}
+
+/** Every protected leaf in the record, as a path from its root and its cost. */
+function protectedPaths(record: unknown): Array<{ path: string[]; bytes: number }> {
+  const found: Array<{ path: string[]; bytes: number }> = []
+
+  const visit = (node: unknown, trail: string[]) => {
+    if (Array.isArray(node)) {
+      node.forEach((entry, index) => visit(entry, [...trail, String(index)]))
+      return
+    }
+    if (typeof node !== "object" || node === null) return
+
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (typeof value === "string" && STRUCTURAL_FIELDS.has(key)) {
+        found.push({ path: [...trail, key], bytes: Buffer.byteLength(value, "utf8") })
+        continue
+      }
+      visit(value, [...trail, key])
+    }
+  }
+
+  visit(record, [])
+  return found
+}
+
+/** The record without one field, for asking whether that field was the problem. */
+function without(record: unknown, path: string[]): unknown {
+  const copy = structuredClone(record) as Record<string, unknown>
+  let holder: Record<string, unknown> | undefined = copy
+
+  for (const step of path.slice(0, -1)) {
+    const next: unknown = holder?.[step]
+    holder = typeof next === "object" && next !== null ? (next as Record<string, unknown>) : undefined
+  }
+
+  const leaf = path[path.length - 1]
+  if (holder !== undefined && leaf !== undefined) delete holder[leaf]
+  return copy
+}
