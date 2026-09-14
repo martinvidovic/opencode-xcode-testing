@@ -17,7 +17,7 @@ import {
   CONDITIONAL_NAMES,
   registryProblems,
   SCENARIO,
-  STANDING,
+  standingOf,
   standingFor,
 } from "../../scripts/gate/scenarios.ts"
 import { SUITES } from "../../scripts/gate/options.ts"
@@ -41,7 +41,7 @@ describe("the registry itself", () => {
   })
 
   test("covers every suite", () => {
-    for (const suite of SUITES) expect(STANDING[suite].length).toBeGreaterThan(0)
+    for (const suite of SUITES) expect(standingOf(suite).length).toBeGreaterThan(0)
   })
 
   test("keeps standing and conditional apart", () => {
@@ -104,7 +104,7 @@ describe("a suite that finished without running one of its standing checks", () 
     const record = scenarioSink(observed)
 
     await asSuite(observed, "b1", async () => {
-      for (const name of STANDING.b1.slice(0, -1)) {
+      for (const name of standingOf("b1").slice(0, -1)) {
         record({ name, kind: "gating", status: "failed", detail: "it failed" })
       }
     })
@@ -136,7 +136,7 @@ describe("a suite that finished without running one of its standing checks", () 
     const record = scenarioSink(observed)
 
     await asSuite(observed, "b1", async () => {
-      for (const name of STANDING.b1) {
+      for (const name of standingOf("b1")) {
         record({ name, kind: "gating", status: "passed", detail: "" })
       }
     })
@@ -175,7 +175,7 @@ describe("a conditional scenario", () => {
       "b1 host registration",
       "b1 documented installation path",
     ])
-    expect(report.unreached).toEqual([...STANDING.b1.slice(0, -1)])
+    expect(report.unreached).toEqual([...standingOf("b1").slice(0, -1)])
     expect(report.unreached).not.toContain("b1 host registration")
 
     // And those are not *also* reported as registry disagreements. The
@@ -202,7 +202,64 @@ describe("a conditional scenario", () => {
       })
     })
 
-    expect(registryDisagreements(observed).length).toBe(STANDING.b1.length)
+    expect(registryDisagreements(observed).length).toBe(standingOf("b1").length)
+  })
+})
+
+describe("a standing scenario that ran and failed", () => {
+  test("excuses nothing, because a result is not a gap", async () => {
+    // `preventedBy` returns nothing for a standing name, so an ordinary
+    // failure cannot excuse anything — but that is a property worth asserting
+    // rather than reasoning about. A check that failed was reached; the one
+    // beside it that never reported was not, and is still owed.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      for (const name of standingOf("b1").slice(0, -1)) {
+        record({ name, kind: "gating", status: "failed", detail: "it failed" })
+      }
+    })
+
+    expect(registryDisagreements(observed)).toEqual([
+      "`b1 documented installation path` is a standing b1 check and was not reported",
+    ])
+  })
+})
+
+describe("a gate that keeps going after reporting a bootstrap failure", () => {
+  test("is excused for nothing it went on to run past", async () => {
+    // The 'after' half of the rule. A failure recorded first, with the gate's
+    // own checks reported afterwards, did not prevent them — so a check
+    // dropped later in that same gate is drift, not fallout, and must not be
+    // covered by a failure that demonstrably stopped nothing.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      record({
+        name: SCENARIO["b1 host registration"],
+        kind: "gating",
+        status: "failed",
+        detail: "a transient hiccup",
+      })
+      // Everything the registration gate owns except the last one.
+      for (const name of standingOf("b1").slice(0, 4)) {
+        record({ name, kind: "gating", status: "passed", detail: "" })
+      }
+      record({
+        name: SCENARIO["b1 documented installation path"],
+        kind: "gating",
+        status: "passed",
+        detail: "",
+      })
+    })
+
+    expect(registryDisagreements(observed)).toEqual([
+      "`b1 restricted agents` is a standing b1 check and was not reported",
+    ])
   })
 })
 
@@ -218,7 +275,7 @@ describe("a suite that ran everything and failed one of them", () => {
     const record = scenarioSink(observed)
 
     await asSuite(observed, "b1", async () => {
-      for (const [index, name] of STANDING.b1.entries()) {
+      for (const [index, name] of standingOf("b1").entries()) {
         record({
           name,
           kind: "gating",
@@ -258,7 +315,7 @@ describe("a clean run", () => {
     const record = scenarioSink(observed)
 
     await asSuite(observed, "b1", async () => {
-      for (const name of STANDING.b1) {
+      for (const name of standingOf("b1")) {
         record({ name, kind: "gating", status: "passed", detail: "" })
       }
     })
@@ -267,7 +324,7 @@ describe("a clean run", () => {
 
     expect(report.unreached).toBeUndefined()
     expect(registryDisagreements(observed)).toEqual([])
-    expect(report.scenarios).toHaveLength(STANDING.b1.length)
+    expect(report.scenarios).toHaveLength(standingOf("b1").length)
   })
 })
 
@@ -283,7 +340,7 @@ describe("a conditional failure after the standing checks have run", () => {
     const record = scenarioSink(observed)
 
     await asSuite(observed, "layer4", async () => {
-      for (const name of STANDING.layer4.slice(0, -1)) {
+      for (const name of standingOf("layer4").slice(0, -1)) {
         record({ name, kind: "gating", status: "passed", detail: "" })
       }
       record({
@@ -308,7 +365,7 @@ describe("a conditional failure after the standing checks have run", () => {
     const record = scenarioSink(observed)
 
     await asSuite(observed, "layer4", async () => {
-      for (const name of STANDING.layer4) {
+      for (const name of standingOf("layer4")) {
         record({ name, kind: "gating", status: "passed", detail: "" })
       }
       record({ name: "an unregistered check", kind: "gating", status: "passed", detail: "" })
@@ -389,7 +446,7 @@ describe("a suite that never started", () => {
     const record = scenarioSink(observed)
 
     await asSuite(observed, "b1", async () => {
-      for (const name of STANDING.b1.slice(0, 3)) {
+      for (const name of standingOf("b1").slice(0, 3)) {
         record({ name, kind: "gating", status: "passed", detail: "" })
       }
       record({
@@ -420,8 +477,8 @@ describe("a suite that never started", () => {
 
     await asSuite(observed, "b1", async () => {
       // The second standing check never reports; the third does.
-      record({ name: STANDING.b1[0] as string, kind: "gating", status: "passed", detail: "" })
-      record({ name: STANDING.b1[2] as string, kind: "gating", status: "passed", detail: "" })
+      record({ name: standingOf("b1")[0] as string, kind: "gating", status: "passed", detail: "" })
+      record({ name: standingOf("b1")[2] as string, kind: "gating", status: "passed", detail: "" })
       record({
         name: SCENARIO["b1 host registration"],
         kind: "gating",
@@ -458,7 +515,7 @@ describe("a suite that never started", () => {
       })
     })
 
-    expect(registryDisagreements(observed).length).toBe(STANDING.b2.length)
+    expect(registryDisagreements(observed).length).toBe(standingOf("b2").length)
   })
 
   test("is not excused for a check it went on to skip afterwards", async () => {
@@ -477,7 +534,7 @@ describe("a suite that never started", () => {
         status: "failed",
         detail: "a transient host hiccup",
       })
-      for (const name of STANDING.b1.slice(0, -1)) {
+      for (const name of standingOf("b1").slice(0, -1)) {
         record({ name, kind: "gating", status: "passed", detail: "" })
       }
     })
@@ -498,7 +555,7 @@ describe("an ordinary standing-scenario failure", () => {
     const record = scenarioSink(observed)
 
     await asSuite(observed, "b1", async () => {
-      for (const name of STANDING.b1.slice(0, -1)) {
+      for (const name of standingOf("b1").slice(0, -1)) {
         record({ name, kind: "gating", status: "failed", detail: "it failed" })
       }
     })

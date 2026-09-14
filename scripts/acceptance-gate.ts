@@ -27,7 +27,7 @@ import { discoverDestination, type DestinationDiscovery } from "./gate/destinati
 import { safeDiagnostic } from "./gate/diagnostic.ts"
 import { parseOptions, usage } from "./gate/options.ts"
 import { runLayer4 } from "./gate/layer4.ts"
-import { runB1Suite } from "./gate/registration.ts"
+import { runB1Suite } from "./gate/b1.ts"
 import { runExecutionGate } from "./gate/execution.ts"
 import {
   asSuite,

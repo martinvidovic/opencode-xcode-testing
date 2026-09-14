@@ -22,7 +22,6 @@ import { defaultConfigDirectory } from "../link-host-package.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
 import { bounded, SERVER_BOOT_MS } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
-import { runInstallationGate } from "./installation.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
@@ -287,22 +286,4 @@ function pass(name: string, detail: string): ScenarioResult {
 
 function fail(name: string, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "failed", detail }
-}
-
-/**
- * The (b1) suite: registration, then installation.
- *
- * Two gates, run back to back, and independent of each other — a host that
- * will not start says nothing about whether a documented symlink registers the
- * tool family. They live behind one name here so the composite is a thing a
- * caller can invoke and a test can drive, rather than a shape that exists only
- * as two lines inside the gate's `main`.
- *
- * `runInstallationGate` runs whatever happened to registration, on purpose:
- * its check is the one that proves the README's instructions work, and a host
- * failure is no reason to stop asking.
- */
-export async function runB1Suite(record: ScenarioSink): Promise<void> {
-  await runRegistrationGate(record)
-  await runInstallationGate(record)
 }

@@ -24,84 +24,52 @@
  * that were never going to run.
  */
 
-import type { Suite } from "./options.ts"
+import { SUITES, type Suite } from "./options.ts"
 
 /**
- * The scenarios each suite runs every time. Order is the order they run in,
+ * The scenarios each suite runs every time, grouped by the gate that runs them.
+ *
+ * A suite is not always one thing. `b1` is a registration gate and an
+ * installation gate run back to back, and they fail independently: a host that
+ * will not start says nothing about whether a documented symlink registers the
+ * tool family. Grouping is how that shows up in data rather than in a comment.
+ *
+ * It is also what lets a bootstrap failure say what it prevented without
+ * naming anything twice. A failure belongs to a gate, and a gate already knows
+ * its checks — so adding a check to a gate adds it to what that gate's failure
+ * prevents, with nothing to remember. A second list of names would be a second
+ * list that drifts, and a `prevents` list that fell behind would reintroduce
+ * exactly the false drift this grouping exists to remove: silently, and only
+ * on the machines that cannot run the gate at all.
+ *
+ * Order within a gate, and gate order within a suite, is the order they run —
  * which is the order a reader expects to see them accounted for.
  */
 export const STANDING = {
-  layer4: [
-    "passing run",
-    "failing run",
-    "zero-match detection",
-    "buildFailed",
-    "inspection without rerun",
-    "capped and cursor inspection",
-    "real cancellation",
-    "timeout escalation",
-  ],
-  b1: [
-    "b1 tool ids register",
-    "b1 tool descriptions",
-    "b1 parameter schemas",
-    "b1 enablement marker gates registration",
-    "b1 restricted agents",
-    "b1 documented installation path",
-  ],
-  b2: [
-    "b2 passing",
-    "b2 driven by a model turn",
-    "b2 testFailed",
-    "b2 rendered diagnostics",
-    "b2 budget invariant",
-    "b2 zero-match",
-    "b2 buildFailed",
-    "b2 inspection without rerun",
-    "b2 log facet",
-  ],
-} as const satisfies Record<Suite, readonly string[]>
-
-/**
- * Scenarios reported when they happen, and not expected otherwise.
- *
- * Each carries what a *failure* of it prevents, rather than a flag saying
- * whether it stops something. A suite is not always one thing: `b1` is a
- * registration gate and an installation gate run back to back, and they fail
- * independently. A host that will not start prevents the five registration
- * checks and has nothing to do with whether a documented symlink registers the
- * tool family — so "this failure stops this suite" was too coarse a claim, and
- * it made an honest bootstrap failure look like registry drift the moment the
- * installation check ran afterwards.
- *
- * Naming what is prevented also says where the boundary is, which a boolean
- * cannot. The list lives beside the scenario because that is where the fact
- * belongs, and because a second list of names is a second list that drifts —
- * the mistake this whole file exists to remove.
- *
- * - `b1 host registration` is the registration gate failing to start or be
- *   driven: no host, no SDK, no resolvable plugin. It prevents that gate's
- *   checks and only those.
- * - `b2 execution` is the same for the execution gate, which is the whole of
- *   b2, so it prevents all of them.
- * - `supplied project run` is what `--project` adds, and it runs *after* the
- *   standing scenarios. It prevents nothing: failing says nothing about
- *   whether they ran, which is why it must never excuse them.
- */
-export const CONDITIONAL = {
-  "b1 host registration": {
-    suite: "b1",
-    prevents: [
+  layer4: {
+    layer4: [
+      "passing run",
+      "failing run",
+      "zero-match detection",
+      "buildFailed",
+      "inspection without rerun",
+      "capped and cursor inspection",
+      "real cancellation",
+      "timeout escalation",
+    ],
+  },
+  b1: {
+    registration: [
       "b1 tool ids register",
       "b1 tool descriptions",
       "b1 parameter schemas",
       "b1 enablement marker gates registration",
       "b1 restricted agents",
     ],
+    installation: ["b1 documented installation path"],
   },
-  "b2 execution": {
-    suite: "b2",
-    prevents: [
+  b2: {
+    execution: [
       "b2 passing",
       "b2 driven by a model turn",
       "b2 testFailed",
@@ -113,21 +81,52 @@ export const CONDITIONAL = {
       "b2 log facet",
     ],
   },
-  "supplied project run": { suite: "layer4", prevents: [] },
-} as const satisfies Record<string, { suite: Suite; prevents: readonly string[] }>
+} as const satisfies Record<Suite, Record<string, readonly string[]>>
+
+/** Every standing check of a suite, in the order its gates run them. */
+export function standingOf(suite: Suite): readonly string[] {
+  return Object.values(STANDING[suite]).flat() as readonly string[]
+}
+
+/**
+ * Scenarios reported when they happen, and not expected otherwise.
+ *
+ * A bootstrap failure names the **gate** it belongs to rather than the checks
+ * it prevented. The gate knows its own checks, so there is nothing here to
+ * fall out of step with, and nothing to remember when a check is added.
+ *
+ * - `b1 host registration` is the registration gate failing to start or be
+ *   driven: no host, no SDK, no resolvable plugin. It prevents that gate's
+ *   checks, and the installation gate runs regardless.
+ * - `b2 execution` is the same for the execution gate, which is the whole of
+ *   b2.
+ * - `supplied project run` is what `--project` adds, and it runs *after* the
+ *   standing scenarios. It belongs to no gate and prevents nothing: failing
+ *   says nothing about whether they ran, which is why it must never excuse
+ *   them.
+ */
+export const CONDITIONAL = {
+  "b1 host registration": { suite: "b1", gate: "registration" },
+  "b2 execution": { suite: "b2", gate: "execution" },
+  "supplied project run": { suite: "layer4", gate: undefined },
+} as const satisfies Record<string, { suite: Suite; gate: string | undefined }>
 
 export const CONDITIONAL_NAMES = Object.keys(CONDITIONAL) as Array<keyof typeof CONDITIONAL>
 
 /**
  * What a failure of this name, in this suite, prevented from running.
  *
- * Empty for anything that prevents nothing, and for a name recorded in a suite
- * it does not belong to: `b1 host registration` inside b2 is not b2 saying it
- * could not start, and should excuse b2 from nothing.
+ * Derived from the gate it belongs to, so it cannot disagree with the
+ * registry. Empty for anything that belongs to no gate, and for a name
+ * recorded in a suite it does not belong to: `b1 host registration` inside b2
+ * is not b2 saying it could not start, and should excuse b2 from nothing.
  */
 export function preventedBy(suite: Suite, name: string): readonly string[] {
   const entry = CONDITIONAL[name as keyof typeof CONDITIONAL]
-  return entry !== undefined && entry.suite === suite ? entry.prevents : []
+  if (entry === undefined || entry.suite !== suite || entry.gate === undefined) return []
+
+  const gates = STANDING[suite] as Record<string, readonly string[]>
+  return gates[entry.gate] ?? []
 }
 
 /**
@@ -138,9 +137,11 @@ export function preventedBy(suite: Suite, name: string): readonly string[] {
  * this repository, so that is a guarantee for a reader and an editor rather
  * than for CI — which is why `isRegistered` checks the same thing at runtime.
  */
-export type ScenarioName = (typeof STANDING)[Suite][number] | keyof typeof CONDITIONAL
+export type ScenarioName =
+  | (typeof STANDING)[Suite][keyof (typeof STANDING)[Suite]][number]
+  | keyof typeof CONDITIONAL
 
-const STANDING_NAMES: readonly string[] = Object.values(STANDING).flat()
+const STANDING_NAMES: readonly string[] = SUITES.flatMap((suite) => standingOf(suite))
 
 export const ALL_SCENARIOS: readonly string[] = [...STANDING_NAMES, ...CONDITIONAL_NAMES]
 
@@ -151,12 +152,12 @@ export function isRegistered(name: string): boolean {
 
 /** Whether this name is one of the suite's standing checks. */
 export function isStanding(suite: Suite, name: string): boolean {
-  return (STANDING[suite] as readonly string[]).includes(name)
+  return standingOf(suite).includes(name)
 }
 
 /** Every standing scenario the selected suites set out to run, in suite order. */
 export function standingFor(selected: readonly Suite[]): string[] {
-  return selected.flatMap((suite) => [...STANDING[suite]])
+  return selected.flatMap((suite) => [...standingOf(suite)])
 }
 
 /**
@@ -182,14 +183,11 @@ export function registryProblems(): string[] {
       problems.push(`\`${name}\` is both standing and conditional`)
     }
 
-    // A conditional that claims to prevent something the registry does not
-    // list for its suite would excuse a check nobody expects — silently, and
-    // only on the runs where it failed.
-    const { suite, prevents } = CONDITIONAL[name]
-    for (const prevented of prevents) {
-      if (!isStanding(suite, prevented)) {
-        problems.push(`\`${name}\` claims to prevent \`${prevented}\`, which is not standing for ${suite}`)
-      }
+    // A conditional naming a gate its suite does not have would prevent
+    // nothing while looking as though it prevented something.
+    const { suite, gate } = CONDITIONAL[name]
+    if (gate !== undefined && !(gate in STANDING[suite])) {
+      problems.push(`\`${name}\` names gate \`${gate}\`, which ${suite} does not have`)
     }
   }
 

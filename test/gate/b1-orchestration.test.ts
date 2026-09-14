@@ -29,6 +29,9 @@ import { join } from "node:path"
 
 const REPO = join(import.meta.dir, "..", "..")
 
+/** Marks where the payload starts, past whatever the gates printed. */
+const SENTINEL = "---b1-orchestration---"
+
 /**
  * What `runB1Suite` reported, with no host SDK to be found.
  *
@@ -42,7 +45,7 @@ function b1WithoutAnSdk(home: string): {
   disagreements: string[]
 } {
   const script = `
-    import { runB1Suite } from ${JSON.stringify(join(REPO, "scripts", "gate", "registration.ts"))}
+    import { runB1Suite } from ${JSON.stringify(join(REPO, "scripts", "gate", "b1.ts"))}
     import {
       asSuite,
       newObservations,
@@ -54,7 +57,7 @@ function b1WithoutAnSdk(home: string): {
     observed.selected = ["b1"]
     await asSuite(observed, "b1", () => runB1Suite(scenarioSink(observed)))
 
-    process.stdout.write(JSON.stringify({
+    process.stdout.write(${JSON.stringify(SENTINEL)} + JSON.stringify({
       scenarios: observed.scenarios.map((s) => [s.name, s.status]),
       disagreements: registryDisagreements(observed),
     }))
@@ -66,7 +69,21 @@ function b1WithoutAnSdk(home: string): {
     env: { ...process.env, HOME: home },
   })
 
-  const payload = (result.stdout ?? "").slice((result.stdout ?? "").indexOf("{"))
+  // Said plainly rather than left to a JSON parse error. A missing `bun`, or a
+  // subprocess that died, otherwise surfaces as "Unexpected end of JSON input"
+  // after two minutes — a message about this function rather than about what
+  // went wrong.
+  if (result.status !== 0) {
+    throw new Error(`the b1 subprocess exited ${result.status}: ${result.stderr ?? ""}`)
+  }
+
+  // A sentinel, because the gates print their own diagnostics and anything
+  // brace-shaped among them would otherwise be read as the payload.
+  const [, payload] = (result.stdout ?? "").split(SENTINEL)
+  if (payload === undefined) {
+    throw new Error(`the b1 subprocess produced no result: ${result.stdout ?? ""}`)
+  }
+
   return JSON.parse(payload) as { scenarios: Array<[string, string]>; disagreements: string[] }
 }
 

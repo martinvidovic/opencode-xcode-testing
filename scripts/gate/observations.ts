@@ -22,10 +22,9 @@
 import type { Suite } from "./options.ts"
 import {
   isRegistered,
-  isStanding,
   preventedBy,
+  standingOf,
   registryProblems,
-  STANDING,
   standingFor,
 } from "./scenarios.ts"
 import type { RunReport, ScenarioResult } from "./report.ts"
@@ -267,7 +266,7 @@ export function registryDisagreements(observed: Observations): string[] {
     const excused = excusedBy(entry.suite, results)
 
     const produced = new Set(results.map((scenario) => scenario.name))
-    for (const name of STANDING[entry.suite]) {
+    for (const name of standingOf(entry.suite)) {
       if (!produced.has(name) && !excused.has(name)) {
         problems.push(`\`${name}\` is a standing ${entry.suite} check and was not reported`)
       }
@@ -285,20 +284,23 @@ export function registryDisagreements(observed: Observations): string[] {
  * `unreached`'s to report, not this. Naming the same scenarios here would say
  * it twice, and call a crash registry drift while doing so.
  *
- * Position is the other half, and it is what keeps the excuse honest. A check
- * missing from *before* the failure was not prevented by it: the suite got
- * past that point and simply did not report it, which is exactly the drift
- * this exists to catch. So only what lies after the last standing check the
- * suite managed before the failure is excused.
+ * Two things bound the excuse, and each closes a hole the other leaves open.
  *
- * Both halves are needed. Without the first, an independent check running
- * afterwards — `b1` is a registration gate and an installation gate back to
- * back — makes the failure look non-terminal and excuses nothing. Without the
- * second, a check silently dropped early is covered by a crash that happened
- * long after it.
+ * **What came before.** A prevented check missing from before the failure was
+ * not prevented by it: the suite got past that point and simply did not report
+ * it, which is exactly the drift this exists to catch.
+ *
+ * **What came after.** If the suite went on to report prevented checks anyway,
+ * the failure did not stop that gate, and nothing it names is excused. Without
+ * this, a failure recorded first would cover a check dropped much later, while
+ * everything around it ran perfectly well.
+ *
+ * Only *prevented* checks count towards either. `b1` is a registration gate
+ * and an installation gate back to back, and the installation check running
+ * afterwards is not the suite carrying on past a host failure — it is a
+ * different gate, which never depended on the host at all.
  */
 function excusedBy(suite: Suite, results: readonly ScenarioResult[]): Set<string> {
-  const order = STANDING[suite]
   const excused = new Set<string>()
 
   results.forEach((result, index) => {
@@ -307,14 +309,24 @@ function excusedBy(suite: Suite, results: readonly ScenarioResult[]): Set<string
     const prevents = preventedBy(suite, result.name)
     if (prevents.length === 0) return
 
-    // How far the suite demonstrably got before this failure.
-    const reached = results
-      .slice(0, index)
-      .reduce((furthest, earlier) => Math.max(furthest, order.indexOf(earlier.name as never)), -1)
+    const positionOf = (name: string): number => prevents.indexOf(name)
+    const before = results.slice(0, index)
+    const after = results.slice(index + 1)
 
-    for (const name of prevents) {
-      if (order.indexOf(name as never) > reached) excused.add(name)
-    }
+    // The gate kept going, so the failure did not stop it.
+    if (after.some((later) => positionOf(later.name) !== -1)) return
+
+    // How far into the prevented checks the suite demonstrably got. A result
+    // that is not one of them leaves this untouched, which is why an
+    // independent gate's check cannot raise it.
+    const reached = before.reduce(
+      (furthest, earlier) => Math.max(furthest, positionOf(earlier.name)),
+      -1,
+    )
+
+    prevents.forEach((name, position) => {
+      if (position > reached) excused.add(name)
+    })
   })
 
   return excused

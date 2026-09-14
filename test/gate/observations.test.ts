@@ -32,7 +32,7 @@ import {
 } from "../../scripts/gate/observations.ts"
 import { compare, render, runFreshnessCheck } from "../../scripts/freshness-check.ts"
 import { reportPathFor, writeReport, type RunReport } from "../../scripts/gate/report.ts"
-import { STANDING } from "../../scripts/gate/scenarios.ts"
+import { standingOf } from "../../scripts/gate/scenarios.ts"
 
 const STARTED_AT = "2026-09-14T01:00:00.000Z"
 
@@ -385,8 +385,8 @@ describe("scenarios a failed gate never reached", () => {
     observed.selected = ["b1", "b2"]
 
     expect(reportFrom(observed, "failed", "boom").unreached).toEqual([
-      ...STANDING.b1,
-      ...STANDING.b2,
+      ...standingOf("b1"),
+      ...standingOf("b2"),
     ])
   })
 
@@ -396,7 +396,7 @@ describe("scenarios a failed gate never reached", () => {
     const observed = newObservations(STARTED_AT)
     observed.selected = ["b1"]
     const record = scenarioSink(observed)
-    for (const name of STANDING.b1) {
+    for (const name of standingOf("b1")) {
       record({ name, kind: "gating", status: "passed", detail: "" })
     }
 
