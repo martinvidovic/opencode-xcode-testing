@@ -343,9 +343,10 @@ describe("a run whose owner is still alive", () => {
 })
 
 describe("a quarantine recorded but never published", () => {
-  test("is published by recovery, because the crash window is exactly what it covers", async () => {
+  test("still gives the slot back, because the crash left the root merely busy", async () => {
     // The supervisor stamps `quarantined` on the record; the owner publishes it
-    // to the queue. A crash in between left the root looking merely busy.
+    // to the queue. A crash in between left the slot held by a run that had
+    // already finished, which is the window recovery exists to close.
     await withSandbox((box) => {
       createRunDirectory(box.storage, "run-q")
       seedRun(box.storage, {
@@ -357,6 +358,24 @@ describe("a quarantine recorded but never published", () => {
       writeQueue(box.storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: "run-q" })
 
       const report = recover(box)
+      expect(report.slotsReleased).toEqual(["run-q"])
+      expect(readQueue(box.storage).activeRunId).toBeUndefined()
+    })
+  })
+
+  test("holds the root only while something is still attributable to it", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-q")
+      seedRun(box.storage, {
+        runId: "run-q",
+        state: "completed",
+        completedAt: TIMESTAMP,
+        quarantined: true,
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+      })
+      writeQueue(box.storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: "run-q" })
+
+      const report = recover(box, { processes: { 4242: "supervisor-start" } })
       expect(report.quarantined).toEqual(["run-q"])
       const state = readQueue(box.storage)
       expect(state.quarantine?.runId).toBe("run-q")
@@ -364,15 +383,22 @@ describe("a quarantine recorded but never published", () => {
     })
   })
 
-  test("is not cleared again by the same pass", async () => {
+  test("goes on holding across passes while that process is still alive", async () => {
     await withSandbox((box) => {
       createRunDirectory(box.storage, "run-q")
-      seedRun(box.storage, { runId: "run-q", state: "completed", completedAt: TIMESTAMP, quarantined: true })
+      seedRun(box.storage, {
+        runId: "run-q",
+        state: "completed",
+        completedAt: TIMESTAMP,
+        quarantined: true,
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+      })
 
-      recover(box)
+      // Recovery is not a one-shot amnesty: a second pass that saw the same
+      // live process must reach the same answer as the first.
+      recover(box, { processes: { 4242: "supervisor-start" } })
       expect(readQueue(box.storage).quarantine).toBeDefined()
-      // A second pass sees the same recorded quarantine and holds it.
-      recover(box)
+      recover(box, { processes: { 4242: "supervisor-start" } })
       expect(readQueue(box.storage).quarantine).toBeDefined()
     })
   })

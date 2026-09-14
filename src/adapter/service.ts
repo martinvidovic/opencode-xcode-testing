@@ -17,7 +17,7 @@ import { createHash } from "node:crypto"
 import { closeSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs"
 import { join } from "node:path"
 
-import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
+import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
 import type { ResultProvenance, TestRunSummary, TestToolResult } from "../domain/result.ts"
 import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
 import { normalizeRequestedScope, requestedScopeDigest } from "../domain/scope.ts"
@@ -46,8 +46,14 @@ import {
   newChannelSecret,
   type ControlMessage,
 } from "../runner/control.ts"
-import { systemProbe } from "../runner/identity.ts"
-import { admit, QUARANTINE_REASON, releaseSlot, type AdmissionEnvironment } from "../runner/queue.ts"
+import { signallingIsSafe, systemProbe, type ProcessIdentity } from "../runner/identity.ts"
+import {
+  admit,
+  QUARANTINE_REASON,
+  QUARANTINE_REASONS,
+  releaseSlot,
+  type AdmissionEnvironment,
+} from "../runner/queue.ts"
 import {
   createPrivateDirectory,
   createRunDirectory,
@@ -68,6 +74,7 @@ import {
   readRunRecord,
   RUN_STATES,
   writeRunRecord,
+  type ChildRecord,
   type RunRecord,
 } from "../runner/state.ts"
 import { buildArguments, buildEnvironment, XCODEBUILD } from "../runner/xcodebuild.ts"
@@ -105,6 +112,16 @@ export type ServiceEnvironment = {
    * which does not begin until launch is authorized.
    */
   handshakeDeadlineMs?: number
+  /** How long a signalled supervisor has to exit. A test seam, like the above. */
+  exitDeadlineMs?: number
+  /**
+   * How an unhandshaken supervisor is signalled, and how the machine is asked
+   * whether it is still there. Both default to the real thing; both are
+   * overridden only by tests, because "the signal could not be delivered" is
+   * not a state a real machine can be asked to produce on demand.
+   */
+  killProcess?(pid: number): boolean
+  identifyProcess?(pid: number): ProcessIdentity | undefined
   /** How this run was made possible. */
   runtime: RuntimeFacts
 }
@@ -346,11 +363,30 @@ async function superviseAndInterpret(
   })
 
   if (!supervision.ok) {
+    // Read back rather than reused: the supervisor writes to this record too,
+    // and publishing from the stale copy this call started with would undo
+    // whatever it recorded on the way down.
+    const latest = readRunRecord(storage, input.record.runId) ?? input.record
+    const failed =
+      supervision.quarantine === undefined
+        ? latest
+        : {
+            ...latest,
+            quarantined: true,
+            quarantineReason: supervision.quarantine,
+            ...(supervision.supervisor === undefined ? {} : { supervisor: supervision.supervisor }),
+          }
+
+    // Durable before the summary is published, because `releaseOwnership`
+    // reads it back from disk: a crash between the two must leave the root
+    // held rather than silently released.
+    if (supervision.quarantine !== undefined) writeRunRecord(storage, failed)
+
     const summary = withRuntimeProvenance(
       environment,
       runnerFailureSummary(environment, input, supervision.message, supervision.phase),
     )
-    publishTerminal(environment, input.record, summary, emptyIndex(environment, input.record.runId))
+    publishTerminal(environment, failed, summary, emptyIndex(environment, input.record.runId))
     return summary
   }
 
@@ -565,32 +601,27 @@ export async function finalizeRecovered(
   const directory = runDirectory(environment.storage, runId)
   const resultBundlePath = join(directory, RUN_ARTIFACTS.resultBundle)
 
+  // Nothing was ever authorized to run, so there is nothing to interpret and
+  // no bundle to read. This is the whole of what recovery knows, and saying
+  // less than it would be as wrong as saying more.
+  if (!reachedLaunch(found)) return finalizePreLaunch(environment, found)
+
   // A run that crashed before stabilization never recorded a digest. Recording
   // one now is what lets any later read say whether the bytes changed.
   const stabilized = stabilize(environment.storage, found, resultBundlePath)
   const record = stabilized.record
   const scope = record.requestedScope ?? { kind: "all" as const }
 
-  let current = record
-  for (const state of [
-    "supervisorReady",
-    "childRecorded",
-    "launchAuthorized",
-    "executionCompleted",
-  ] as const) {
-    if (RUN_STATES.indexOf(current.state) < RUN_STATES.indexOf(state)) {
-      current = advance(environment.storage, current, state)
-    }
-  }
+  // The one state this run did reach and never recorded: it launched, so it
+  // ran, and the process is gone. Everything earlier it passed through
+  // already; everything later belongs to publication.
+  const current =
+    RUN_STATES.indexOf(record.state) < RUN_STATES.indexOf("executionCompleted")
+      ? advance(environment.storage, record, "executionCompleted")
+      : record
 
   if (record.resolved === undefined) {
-    // Nothing describes what this run was asked to do, so no honest summary can
-    // be written — fabricating one would look authoritative and be wrong. An
-    // empty index is still published, so inspection answers "nothing retained"
-    // rather than "never known", and the artifacts stay for review.
-    publishIndexOnly(environment, current, emptyIndex(environment, runId))
-    releaseOwnership(environment, runId)
-    return
+    return publishRecovered(environment, current, undefined, emptyIndex(environment, runId))
   }
 
   const { summary, index } = await interpretRun({
@@ -634,11 +665,142 @@ export async function finalizeRecovered(
     clock: { now: environment.now },
   })
 
-  publishTerminal(environment, current, summary, index)
-  releaseOwnership(environment, runId)
+  publishRecovered(environment, current, summary, index)
 }
 
 
+
+/**
+ * Whether this run ever got as far as being allowed to start Xcode.
+ *
+ * `launchAuthorized` is the durable point at which the gated child was told to
+ * `exec`. Before it, no Result Bundle can exist, because nothing was running
+ * to write one.
+ */
+function reachedLaunch(record: RunRecord): boolean {
+  return RUN_STATES.indexOf(record.state) >= RUN_STATES.indexOf("launchAuthorized")
+}
+
+/**
+ * Finish a run that never launched, without inventing what it would have done.
+ *
+ * The temptation is to march the record forward through the states a complete
+ * run passes through and then interpret whatever is on disk. That produces a
+ * summary indistinguishable from a real one — same shape, same fields, a
+ * plausible zero count — describing a test run that never happened. So the
+ * states it did not reach are not written, the bundle that does not exist is
+ * not read, and the summary says exactly what took place: the runner failed
+ * while launching, and nothing executed.
+ */
+async function finalizePreLaunch(
+  environment: ServiceEnvironment,
+  record: RunRecord,
+): Promise<void> {
+  const index = emptyIndex(environment, record.runId)
+
+  // A run that reached `childRecorded` has a gated child that was spawned and
+  // never authorized to `exec`. Recovery normally establishes it is gone
+  // before handing the run here, but this function is reachable on its own,
+  // and releasing a root with a live gated child on it is precisely what
+  // quarantine exists to prevent.
+  const survivor = attributableChild(environment, record)
+  const finished =
+    survivor === undefined
+      ? record
+      : {
+          ...record,
+          quarantined: true,
+          quarantineReason: QUARANTINE_REASONS.gatedChildStillRunning,
+        }
+  if (survivor !== undefined) writeRunRecord(environment.storage, finished)
+
+  if (record.resolved === undefined) {
+    return publishRecovered(environment, finished, undefined, index)
+  }
+
+  const summary = withRuntimeProvenance(
+    environment,
+    runnerFailureSummary(
+      environment,
+      {
+        record: finished,
+        request: { requestedScope: record.requestedScope ?? { kind: "all" } },
+        resolution: { resolved: record.resolved },
+        admission: {
+          admittedAt: record.admittedAt,
+          queueDurationMs: record.queueDurationMs ?? 0,
+        },
+        // Admission through classification, per #7 — measured from the
+        // admission this run actually recorded, because that moment is known.
+        // The original process duration was never observed and is not invented.
+        startedAt: admissionMs(environment, record),
+      },
+      preLaunchMessage(record),
+      "launching",
+    ),
+  )
+
+  publishRecovered(environment, finished, summary, index)
+}
+
+/**
+ * Publish what recovery concluded, then give the root back.
+ *
+ * One function because the order is the guarantee: the artifacts land before
+ * ownership moves, so a crash in between leaves a finished run holding a slot
+ * — which the next reconciliation resolves — rather than a released root with
+ * nothing written to explain it.
+ *
+ * A missing summary is not an omission: when nothing on the record describes
+ * what the run was asked to do, no honest summary can be written, and one that
+ * looked authoritative would be worse than none. The index is still published
+ * so a later inspection answers "nothing was retained" instead of "never
+ * known".
+ */
+function publishRecovered(
+  environment: ServiceEnvironment,
+  record: RunRecord,
+  summary: TestRunSummary | undefined,
+  index: NormalizedIndex,
+): void {
+  if (summary === undefined) publishIndexOnly(environment, record, index)
+  else publishTerminal(environment, record, summary, index)
+  releaseOwnership(environment, record.runId)
+}
+
+/** The gated child, if one was recorded and is still identifiably running. */
+function attributableChild(
+  environment: ServiceEnvironment,
+  record: RunRecord,
+): ChildRecord | undefined {
+  if (record.child === undefined) return undefined
+  return signallingIsSafe(systemProbe, {
+    pgid: record.child.pgid,
+    processes: [record.child],
+  })
+    ? record.child
+    : undefined
+}
+
+/**
+ * What actually happened, by how far the run got.
+ *
+ * A run that was never admitted past `admitted` started no process at all; one
+ * that recorded a child did start one, and it was never allowed to become
+ * `xcodebuild`. Saying "no test process ran" for both would be true of neither
+ * in the way a reader needs.
+ */
+function preLaunchMessage(record: RunRecord): string {
+  return record.child === undefined
+    ? "the Test Run was interrupted before any process was started for it"
+    : "the Test Run was interrupted before its process was authorized to start the tests"
+}
+
+/** When this run was admitted, as a monotonic-comparable millisecond value. */
+function admissionMs(environment: ServiceEnvironment, record: RunRecord): number {
+  const admitted = Date.parse(record.admittedAt)
+  return Number.isNaN(admitted) ? environment.now() : environment.now() - (Date.now() - admitted)
+}
 
 /**
  * Give the execution slot back — or hold the root quarantined when the run's
@@ -687,7 +849,7 @@ function runnerFailureSummary(
   input: {
     record: RunRecord
     request: TestRunRequest
-    resolution: Extract<ReturnType<typeof resolveTestRun>, { status: "resolved" }>
+    resolution: { resolved: ResolvedTestRun }
     admission: { admittedAt: string; queueDurationMs: number }
     startedAt: number
   },
@@ -749,7 +911,51 @@ function runnerFailureSummary(
  */
 type SupervisionOutcome =
   | { ok: true }
-  | { ok: false; message: string; phase: "launching" | "terminating" }
+  | {
+      ok: false
+      message: string
+      phase: "launching" | "terminating"
+      /**
+       * Set when the run's lifecycle could not be confirmed, and why. The root
+       * is held until recovery can establish that nothing attributable to it
+       * is still running.
+       */
+      quarantine?: string
+      /** The process the root is being held over, for recovery to validate. */
+      supervisor?: ProcessIdentity
+    }
+
+const HANDSHAKE_TIMEOUT_MESSAGE =
+  "the supervisor did not complete its handshake within its startup deadline"
+
+/**
+ * How long a signalled supervisor has to actually exit.
+ *
+ * Short on purpose: this is a process that has already failed to reach its own
+ * handshake and has been sent `SIGKILL`, which the kernel does not let it
+ * ignore. Waiting longer would only delay the moment the root is held.
+ */
+export const SUPERVISOR_EXIT_DEADLINE_MS = 5_000
+
+/**
+ * What became of a supervisor that never handshook.
+ *
+ * The operating system is asked directly rather than inferred from an event: a
+ * process that has already gone is a confirmed exit whether or not `exit`
+ * reached us, and that certainty is what lets the root go back. One that
+ * answers is uncertainty, and its identity travels with the quarantine —
+ * because a quarantine backed by no identity is one nothing can ever confirm
+ * safe, and a root held on that basis is held until somebody deletes state by
+ * hand.
+ */
+export function unhandshaken(
+  supervisor: ProcessIdentity | undefined,
+  reason: string,
+): SupervisionOutcome {
+  return supervisor === undefined
+    ? { ok: false, message: HANDSHAKE_TIMEOUT_MESSAGE, phase: "launching" }
+    : { ok: false, message: HANDSHAKE_TIMEOUT_MESSAGE, phase: "launching", quarantine: reason, supervisor }
+}
 
 
 function runSupervisor(
@@ -778,11 +984,14 @@ function runSupervisor(
     let handshook = false
     let spawnFailed = false
     let channelLost = false
+    let timedOut = false
+    let exitTimer: ReturnType<typeof setTimeout> | undefined
 
     const finish = (outcome: SupervisionOutcome) => {
       if (settled) return
       settled = true
       clearTimeout(handshakeTimer)
+      if (exitTimer !== undefined) clearTimeout(exitTimer)
       resolve(outcome)
     }
 
@@ -797,14 +1006,36 @@ function runSupervisor(
 
     const handshakeTimer = setTimeout(() => {
       // It never handshook, so it never authorized a launch and owns no child.
-      // Leaving it running would hand the slot back while a process nobody is
-      // tracking carries on.
-      child.kill("SIGKILL")
-      finish({
-        ok: false,
-        message: "the supervisor did not complete its handshake within its startup deadline",
-        phase: "launching",
-      })
+      // But "we signalled it" is not "it is gone": returning here would hand
+      // the execution slot back while a process nobody is tracking carries on,
+      // which is the exact condition quarantine exists to prevent. So the
+      // signal is attempted, the exit is waited for, and anything short of a
+      // confirmed exit holds the root instead of releasing it.
+      timedOut = true
+      const pid = child.pid ?? -1
+      const identify = environment.identifyProcess ?? systemProbe.identify
+      const kill = environment.killProcess ?? (() => child.kill("SIGKILL"))
+
+      let signalled = true
+      try {
+        signalled = kill(pid) !== false
+      } catch {
+        signalled = false
+      }
+
+      if (!signalled) {
+        // Signalling fails for two very different reasons: the process is
+        // already gone, which is the outcome we were trying to bring about, or
+        // it is there and cannot be reached, which is the worst case there is.
+        finish(unhandshaken(identify(pid), QUARANTINE_REASONS.supervisorUnsignalled))
+        return
+      }
+
+      // `exit` resolves this if it arrives; this is what happens when it does
+      // not, and an unconfirmed exit is uncertainty, not success.
+      exitTimer = setTimeout(() => {
+        finish(unhandshaken(identify(pid), QUARANTINE_REASONS.supervisorStillRunning))
+      }, environment.exitDeadlineMs ?? SUPERVISOR_EXIT_DEADLINE_MS)
     }, environment.handshakeDeadlineMs ?? SUPERVISOR_STARTUP_DEADLINE_MS)
 
     const secret = newChannelSecret()
@@ -858,6 +1089,12 @@ function runSupervisor(
 
     child.on("exit", (code) => {
       if (spawnFailed) return
+      if (timedOut) {
+        // The signal worked and the process is gone. Still a launching-phase
+        // failure, and now a certain one: nothing of this run survives it.
+        finish({ ok: false, message: HANDSHAKE_TIMEOUT_MESSAGE, phase: "launching" })
+        return
+      }
       if (!handshook) {
         finish({
           ok: false,

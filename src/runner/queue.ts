@@ -49,6 +49,20 @@ export type Quarantine = { runId: string; reason: string; since: string }
  */
 export const QUARANTINE_REASON = "the Test Run lifecycle could not be confirmed"
 
+/**
+ * The specific conditions that raise one, in the wording every path uses.
+ *
+ * Named for the same reason `QUARANTINE_REASON` is: a root held for
+ * different-sounding reasons depending on which code path noticed makes one
+ * condition look like several, and these strings are read by whoever has to
+ * work out why their project stopped accepting Test Runs.
+ */
+export const QUARANTINE_REASONS = {
+  supervisorUnsignalled: "the supervisor could not be signalled after its handshake deadline",
+  supervisorStillRunning: "the supervisor did not exit after being signalled",
+  gatedChildStillRunning: "a gated child from this Test Run is still running",
+} as const
+
 export type QueueState = {
   schemaVersion: 1
   nextSequence: number
@@ -259,10 +273,26 @@ export function releaseSlot(
 ): void {
   withLock(storage.rootLock, () => {
     const state = readQueue(storage)
-    if (state.activeRunId !== runId) return
+    const holdsSlot = state.activeRunId === runId
+
+    // A quarantine is published even when the slot has already gone. The two
+    // are separate facts, and they are written by different processes at
+    // different moments: a recovery pass that released a stale slot must not
+    // make the owner's later "this run could not be accounted for" disappear.
+    // Dropping it here would release a root that nobody has established is
+    // safe, which is the one thing quarantine exists to prevent.
+    // Another run's quarantine is somebody else's live claim on this root,
+    // with its own reason and its own moment. Overwriting it would replace a
+    // held root with a differently-held root and lose why — so the existing
+    // one stands, and this run's own release still happens.
+    const claimed = state.quarantine !== undefined && state.quarantine.runId !== runId
+    const publishing = quarantine !== undefined && !claimed
+
+    if (!holdsSlot && !publishing) return
+
     const next: QueueState = { ...state, tickets: state.tickets }
-    delete next.activeRunId
-    if (quarantine !== undefined) next.quarantine = { runId, ...quarantine }
+    if (holdsSlot) delete next.activeRunId
+    if (publishing) next.quarantine = { runId, ...(quarantine as Omit<Quarantine, "runId">) }
     writeQueue(storage, next)
   })
 }

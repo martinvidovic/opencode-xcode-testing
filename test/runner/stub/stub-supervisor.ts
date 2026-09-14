@@ -12,6 +12,8 @@
  *   ready-then-complete  (default) full protocol, exit 0
  *   silent               exit 0 without ever handshaking
  *   crash                exit non-zero after handshaking
+ *   hang                 never handshake and never exit, so the adapter's
+ *                        startup deadline is the only thing that ends it
  */
 
 import { createReadStream, createWriteStream } from "node:fs"
@@ -38,6 +40,13 @@ incoming.on("data", (chunk) => {
 
     const mode = modeFor(spec.trustedRoot)
     if (mode === "silent") process.exit(0)
+    if (mode === "hang") {
+      // Explicitly kept alive rather than relying on an inherited descriptor:
+      // what is under test is the adapter giving up, and a stub that exited on
+      // its own would quietly test nothing.
+      setInterval(() => {}, 1_000)
+      continue
+    }
 
     control.write(encodeMessage({ type: "ready", runId: spec.runId }))
 
