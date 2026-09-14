@@ -265,19 +265,26 @@ export function registryDisagreements(observed: Observations): string[] {
 
     const results = observed.scenarios.slice(entry.from, entry.to)
 
-    // A bootstrap failure is a suite saying it never got started: no host, no
-    // SDK. It has accounted for itself and the rest is `unreached`'s job.
+    // A bootstrap failure is a suite saying it never got started, or got no
+    // further: no host, no SDK. What it could not reach is `unreached`'s to
+    // report, and naming the same scenarios here would say it twice.
     //
-    // Both halves are required, and the second is what makes the first
-    // honest. A declared bootstrap failure that nonetheless ran standing
-    // checks did reach them, so whatever is missing after that is missing for
-    // some other reason — and a suite is only excused by a failure that
-    // genuinely stopped it, not by one that merely has the right name.
-    const reachedStanding = results.some((result) => isStanding(entry.suite, result.name))
-    const neverStarted = results.some(
-      (result) => result.status === "failed" && isBootstrapFailure(result.name),
+    // *Terminal* is the test, not "did it happen". Both suites that can
+    // report one do so from a catch, beside whatever already ran — so a host
+    // that dies after the third of six checks genuinely prevented the other
+    // three, and excusing it only when nothing at all had run would turn a
+    // crash into a page of drift warnings about checks the crash explains.
+    //
+    // A standing check recorded *after* one is the case that must not be
+    // excused: the suite carried on, so the failure did not stop it, and
+    // whatever is missing is missing for some other reason.
+    const lastBootstrapFailure = results.findLastIndex(
+      (result) => result.status === "failed" && isBootstrapFailure(entry.suite, result.name),
     )
-    if (neverStarted && !reachedStanding) continue
+    const carriedOn =
+      lastBootstrapFailure !== -1 &&
+      results.slice(lastBootstrapFailure + 1).some((r) => isStanding(entry.suite, r.name))
+    if (lastBootstrapFailure !== -1 && !carriedOn) continue
 
     const produced = new Set(results.map((scenario) => scenario.name))
     for (const name of STANDING[entry.suite]) {

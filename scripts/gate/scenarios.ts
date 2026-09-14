@@ -63,49 +63,45 @@ export const STANDING = {
 } as const satisfies Record<Suite, readonly string[]>
 
 /**
- * Scenarios that are reported when they happen and are not expected otherwise.
+ * Scenarios reported when they happen, and not expected otherwise.
  *
- * Each is here for a stated reason, because "conditional" is otherwise an
- * invitation to exempt anything inconvenient:
+ * Each carries the reason it is conditional rather than being listed twice in
+ * two places. `stopsSuite` says whether a *failure* of it means the suite got
+ * no further, and that is a property of the scenario, so it lives beside the
+ * scenario. A second list of the ones that stop a suite would be a second copy
+ * of a set of names — the mistake this whole file exists to remove — and it
+ * could fall out of step with this one silently.
  *
- * - `b1 host registration` and `b2 execution` are failure paths. They exist
- *   only when a host could not be started or driven at all, in which case the
- *   suite's standing scenarios are separately reported as unreached.
- * - `supplied project run` is what `--project` adds. The standing gate must
- *   run from committed files, so this can never be a standing check.
+ * Shaped this way, adding a conditional forces the decision where it is
+ * defined. There is nowhere to forget to update.
+ *
+ * - `b1 host registration` and `b2 execution` are bootstrap failures: no host,
+ *   no SDK, the suite says why and gets no further. What it could not reach
+ *   is `unreached`'s to report, and naming it twice helps nobody.
+ * - `supplied project run` is what `--project` adds, and it runs *after* the
+ *   standing scenarios. It can fail for reasons that say nothing about
+ *   whether those ran — which is why it must not excuse them, and why one
+ *   flag for every conditional failure let a failed project run conceal
+ *   exactly the drift this is here to catch.
  */
-export const CONDITIONAL = [
-  "b1 host registration",
-  "b2 execution",
-  "supplied project run",
-] as const
+export const CONDITIONAL = {
+  "b1 host registration": { suite: "b1", stopsSuite: true },
+  "b2 execution": { suite: "b2", stopsSuite: true },
+  "supplied project run": { suite: "layer4", stopsSuite: false },
+} as const satisfies Record<string, { suite: Suite; stopsSuite: boolean }>
+
+export const CONDITIONAL_NAMES = Object.keys(CONDITIONAL) as Array<keyof typeof CONDITIONAL>
 
 /**
- * Conditional failures that mean a suite never got to its standing checks.
+ * Whether a failure of this name, in this suite, means it got no further.
  *
- * A suite that could not start a host, or could not resolve the SDK, reports
- * one of these and returns. Its standing scenarios were never runnable, so
- * asking what it missed would name every one of them — saying twice what
- * `unreached` already said once, on every machine without a host.
- *
- * `supplied project run` is deliberately **not** here, and the distinction is
- * the whole point of the list. It runs *after* the standing scenarios, against
- * a project somebody named on the command line, and it can fail for reasons
- * that have nothing to do with whether the standing checks ran. Treating every
- * conditional failure alike let a failed `--project` run hide a standing
- * scenario that had silently stopped being reported — the drift this check
- * exists to catch, concealed by the one flag that was supposed to reduce noise.
+ * Suite-aware, because a name belongs to one suite. A `b1 host registration`
+ * somehow recorded inside b2 is not b2 saying it could not start, and should
+ * not excuse b2 from anything.
  */
-export const BOOTSTRAP_FAILURES: readonly string[] = ["b1 host registration", "b2 execution"]
-
-/** Whether this name is one of the suite's standing checks. */
-export function isStanding(suite: Suite, name: string): boolean {
-  return (STANDING[suite] as readonly string[]).includes(name)
-}
-
-/** Whether a failure of this name means the suite never reached its checks. */
-export function isBootstrapFailure(name: string): boolean {
-  return BOOTSTRAP_FAILURES.includes(name)
+export function isBootstrapFailure(suite: Suite, name: string): boolean {
+  const entry = CONDITIONAL[name as keyof typeof CONDITIONAL]
+  return entry !== undefined && entry.stopsSuite && entry.suite === suite
 }
 
 /**
@@ -116,17 +112,20 @@ export function isBootstrapFailure(name: string): boolean {
  * this repository, so that is a guarantee for a reader and an editor rather
  * than for CI — which is why `isRegistered` checks the same thing at runtime.
  */
-export type ScenarioName =
-  | (typeof STANDING)[Suite][number]
-  | (typeof CONDITIONAL)[number]
+export type ScenarioName = (typeof STANDING)[Suite][number] | keyof typeof CONDITIONAL
 
 const STANDING_NAMES: readonly string[] = Object.values(STANDING).flat()
 
-export const ALL_SCENARIOS: readonly string[] = [...STANDING_NAMES, ...CONDITIONAL]
+export const ALL_SCENARIOS: readonly string[] = [...STANDING_NAMES, ...CONDITIONAL_NAMES]
 
 /** Whether this name is one the registry knows about at all. */
 export function isRegistered(name: string): boolean {
   return ALL_SCENARIOS.includes(name)
+}
+
+/** Whether this name is one of the suite's standing checks. */
+export function isStanding(suite: Suite, name: string): boolean {
+  return (STANDING[suite] as readonly string[]).includes(name)
 }
 
 /** Every standing scenario the selected suites set out to run, in suite order. */
@@ -152,17 +151,9 @@ export function registryProblems(): string[] {
     seen.add(name)
   }
 
-  for (const name of CONDITIONAL) {
+  for (const name of CONDITIONAL_NAMES) {
     if (STANDING_NAMES.includes(name)) {
       problems.push(`\`${name}\` is both standing and conditional`)
-    }
-  }
-
-  for (const name of BOOTSTRAP_FAILURES) {
-    // A bootstrap failure suppresses a check, so one that is not conditional
-    // would be a standing scenario quietly exempting its own suite.
-    if (!(CONDITIONAL as readonly string[]).includes(name)) {
-      problems.push(`\`${name}\` suppresses reporting but is not conditional`)
     }
   }
 

@@ -14,7 +14,7 @@ import { describe, expect, test } from "bun:test"
 
 import {
   ALL_SCENARIOS,
-  CONDITIONAL,
+  CONDITIONAL_NAMES,
   registryProblems,
   SCENARIO,
   STANDING,
@@ -49,7 +49,7 @@ describe("the registry itself", () => {
     // scenario listed as standing would be named as unreached on every clean
     // run, because not running is its ordinary case.
     const standing = new Set(standingFor(SUITES))
-    for (const name of CONDITIONAL) expect(standing.has(name)).toBe(false)
+    for (const name of CONDITIONAL_NAMES) expect(standing.has(name)).toBe(false)
   })
 
   test("addresses every name through `SCENARIO`, so an emitter cannot invent one", () => {
@@ -339,16 +339,20 @@ describe("a suite that never started", () => {
     expect(registryDisagreements(observed)).toEqual([])
   })
 
-  test("is not excused once it has reached a standing check", async () => {
-    // The clause that makes the excuse honest. A bootstrap failure reported
-    // *after* standing checks ran did not stop the suite reaching them, so
-    // whatever is missing afterwards is missing for some other reason.
+  test("is excused for what it could not reach after failing part-way through", async () => {
+    // A host that dies after the third of six checks genuinely prevented the
+    // other three. Both suites that can report a bootstrap failure do so from
+    // a catch, beside whatever already ran, so this is the ordinary shape of
+    // a crash — and naming the rest here would repeat what `unreached`
+    // already says while calling a crash registry drift.
     const observed = newObservations(STARTED_AT)
     observed.selected = ["b1"]
     const record = scenarioSink(observed)
 
     await asSuite(observed, "b1", async () => {
-      record({ name: STANDING.b1[0] as string, kind: "gating", status: "passed", detail: "" })
+      for (const name of STANDING.b1.slice(0, 3)) {
+        record({ name, kind: "gating", status: "passed", detail: "" })
+      }
       record({
         name: SCENARIO["b1 host registration"],
         kind: "gating",
@@ -357,7 +361,53 @@ describe("a suite that never started", () => {
       })
     })
 
-    expect(registryDisagreements(observed).length).toBe(STANDING.b1.length - 1)
+    expect(registryDisagreements(observed)).toEqual([])
+  })
+
+  test("is not excused by another suite's bootstrap failure", async () => {
+    // A name belongs to one suite. `b1 host registration` recorded inside b2
+    // is not b2 saying it could not start, and must not excuse b2 from
+    // anything — otherwise one suite's crash quietly covers another's drift.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b2"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b2", async () => {
+      record({
+        name: SCENARIO["b1 host registration"],
+        kind: "gating",
+        status: "failed",
+        detail: "recorded in the wrong suite",
+      })
+    })
+
+    expect(registryDisagreements(observed).length).toBe(STANDING.b2.length)
+  })
+
+  test("is not excused for a check it went on to skip afterwards", async () => {
+    // What makes the excuse terminal rather than blanket. A standing check
+    // recorded *after* the failure means the suite carried on, so the failure
+    // did not stop it and whatever is still missing is missing for some other
+    // reason.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      record({
+        name: SCENARIO["b1 host registration"],
+        kind: "gating",
+        status: "failed",
+        detail: "a transient host hiccup",
+      })
+      for (const name of STANDING.b1.slice(0, -1)) {
+        record({ name, kind: "gating", status: "passed", detail: "" })
+      }
+    })
+
+    expect(registryDisagreements(observed)).toEqual([
+      "`b1 documented installation path` is a standing b1 check and was not reported",
+    ])
   })
 })
 
