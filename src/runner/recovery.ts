@@ -28,7 +28,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 
 import { allIdentitiesGone, signallingIsSafe, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
-import { withLock } from "./locks.ts"
+import { withLock, withTryLock } from "./locks.ts"
 import { isRunId, RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue, type QueueState } from "./queue.ts"
 import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
@@ -81,12 +81,26 @@ export type RecoveryReport = {
  * something it does not own.
  */
 export function reconcileRoot(environment: RecoveryEnvironment): RecoveryReport {
-  return withLock(environment.storage.rootLock, () => reconcileLocked(environment))
+  const report = withTryLock(environment.storage.rootLock, () => reconcileLocked(environment))
+
+  // A held root lock means a live instance is already doing exactly this, and
+  // the answer for this one is to get out of its way. Waiting would be worse
+  // than useless here: reconciliation runs inside plugin startup, which is
+  // synchronous from the host's point of view, so a blocking acquisition
+  // cannot be cut short by the deadline that is supposed to bound it — the
+  // timer cannot fire until the wait it is bounding has already ended.
+  return report ?? { ...emptyReport(), status: "busy" }
 }
 
-function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
-  const { storage } = environment
-  const report: RecoveryReport = {
+/**
+ * A fresh report with nothing in it.
+ *
+ * A function rather than a constant because every field but one is an array,
+ * and a shared constant spread into each pass would hand them all the same
+ * arrays to push into.
+ */
+function emptyReport(): RecoveryReport {
+  return {
     status: "alreadyHealthy",
     needsFinalization: [],
     uncertain: [],
@@ -95,6 +109,11 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
     derivedDataCleaned: [],
     quarantineCleared: false,
   }
+}
+
+function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
+  const { storage } = environment
+  const report: RecoveryReport = emptyReport()
 
   if (environment.signal?.aborted === true) return { ...report, status: "cancelled" }
 

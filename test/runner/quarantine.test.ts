@@ -25,6 +25,7 @@ import {
   writeQueue,
   type AdmissionEnvironment,
 } from "../../src/runner/queue.ts"
+import { withLock } from "../../src/runner/locks.ts"
 import { reconcileRoot } from "../../src/runner/recovery.ts"
 import { fakeProbe, seedRun, withSandbox, type Sandbox } from "./harness.ts"
 
@@ -380,6 +381,71 @@ describe("publishing a quarantine", () => {
       const state = readQueue(box.storage)
       expect(state.activeRunId).toBe("run-someone-else")
       expect(state.quarantine?.runId).toBe(RUN)
+    })
+  })
+})
+
+describe("reconciliation at startup", () => {
+  test("defers rather than waiting when another instance holds the root", async () => {
+    await withSandbox((box) => {
+      // Reconciliation runs inside plugin startup, which is synchronous from
+      // the host's point of view — so a blocking acquisition could not be cut
+      // short by the deadline meant to bound it. The timer cannot fire until
+      // the wait it is bounding has already ended.
+      const report = withLock(box.storage.rootLock, () =>
+        reconcileRoot({
+          storage: box.storage,
+          probe: fakeProbe({}),
+          timestamp: () => TIMESTAMP,
+        }),
+      )
+
+      expect(report.status).toBe("busy")
+    })
+  })
+
+  test("reports nothing done when it deferred", async () => {
+    await withSandbox((box) => {
+      seedQuarantined(box, { runId: RUN })
+
+      const report = withLock(box.storage.rootLock, () =>
+        reconcileRoot({
+          storage: box.storage,
+          probe: fakeProbe({}),
+          timestamp: () => TIMESTAMP,
+        }),
+      )
+
+      // It did not look, so it must not claim to have found anything.
+      expect(report.needsFinalization).toEqual([])
+      expect(report.quarantined).toEqual([])
+      expect(report.quarantineCleared).toBe(false)
+    })
+  })
+
+  test("gives each pass its own report to fill", async () => {
+    await withSandbox((box) => {
+      seedQuarantined(box, {
+        runId: RUN,
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+      })
+
+      const world = { processes: { 4242: "supervisor-start" } }
+      const first = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe(world),
+        timestamp: () => TIMESTAMP,
+      })
+      const second = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe(world),
+        timestamp: () => TIMESTAMP,
+      })
+
+      // Two passes, two reports. Sharing one template's arrays would make the
+      // second pass report everything the first one found as well.
+      expect(first.quarantined).toEqual([RUN])
+      expect(second.quarantined).toEqual([])
     })
   })
 })

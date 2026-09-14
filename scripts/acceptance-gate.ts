@@ -17,12 +17,14 @@
  */
 
 import { spawnSync } from "node:child_process"
+import { basename } from "node:path"
 
 import { resolveRuntime } from "../src/adapter/runtime.ts"
 import { probeRuntimeCandidate, bunOnPath } from "../src/adapter/probe.ts"
 import { resolveToolchain } from "../src/runner/toolchain.ts"
 import { runFreshnessCheck, type BundleExamination } from "./freshness-check.ts"
 import { discoverDestination, type DestinationDiscovery } from "./gate/destination.ts"
+import { safeDiagnostic } from "./gate/diagnostic.ts"
 import { parseOptions, usage } from "./gate/options.ts"
 import { runLayer4 } from "./gate/layer4.ts"
 import { runInstallationGate } from "./gate/installation.ts"
@@ -221,12 +223,49 @@ function observedHostVersion(): string {
 }
 
 if (import.meta.main) {
+  const startedAt = new Date().toISOString()
+
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code
     })
     .catch((error: unknown) => {
-      process.stderr.write(`acceptance gate: ${String(error)}\n`)
+      // The path nobody plans for, and the one most worth a record: a gate
+      // that threw left no trace of having run at all, which is
+      // indistinguishable from never having been invoked.
+      const diagnostic = safeDiagnostic(error)
+      process.stderr.write(`acceptance gate: ${diagnostic}\n`)
+
+      try {
+        const path = writeReport(unobservedReport(startedAt, diagnostic))
+        process.stdout.write(`report         ${basename(path)}\n`)
+      } catch {
+        // Writing the report is the last thing attempted and the least
+        // important: the diagnostic above is already out.
+      }
       process.exitCode = 1
     })
+}
+
+/**
+ * A report for a run that established nothing.
+ *
+ * Every fact is stated as unobserved rather than left blank or defaulted,
+ * because a report that said "Xcode 0.0" would be a report that lied about
+ * having looked.
+ */
+function unobservedReport(startedAt: string, diagnostic: string): RunReport {
+  return {
+    schemaVersion: 1,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    selected: [],
+    toolchain: UNOBSERVED_TOOLCHAIN,
+    hostVersion: "unobserved",
+    runtime: { path: "", source: "unresolved" },
+    destination: { unavailable: diagnostic },
+    freshness: { status: "unavailable", observed: {}, drift: [], fixturesChecked: 0 },
+    scenarios: [],
+    outcome: "failed",
+  }
 }

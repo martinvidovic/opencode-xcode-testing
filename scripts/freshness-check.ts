@@ -20,6 +20,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { RUN_ARTIFACTS } from "../src/runner/paths.ts"
+import { formatDestination } from "../src/runner/xcodebuild.ts"
+import { discoverDestination } from "./gate/destination.ts"
 import { FIXTURE, generate } from "./generate-fixture-project.ts"
 
 export const DEFAULT_FIXTURE_DIR = join(import.meta.dir, "..", "test", "fixtures", "xcresult")
@@ -103,6 +105,20 @@ export function produceAndExamineBundle(): BundleExamination {
     const tree = generate({ out: join(workspace, "project"), variant: "passing" })
     const bundlePath = join(workspace, RUN_ARTIFACTS.resultBundle)
 
+    // Discovered, not assumed. "iPhone 17" is a device that happens to exist
+    // on the machine this was written on; a check that silently produced
+    // nothing everywhere else would report `fresh` on the strength of having
+    // looked at nothing.
+    const destination = discoverDestination()
+    if (destination.status !== "found") {
+      return {
+        status: "unavailable",
+        reason: destination.diagnostic,
+        commands: [],
+        missingKeys: [],
+      }
+    }
+
     const built = execute("/usr/bin/xcodebuild", [
       "test",
       "-project",
@@ -110,7 +126,7 @@ export function produceAndExamineBundle(): BundleExamination {
       "-scheme",
       FIXTURE.scheme,
       "-destination",
-      "platform=iOS Simulator,name=iPhone 17",
+      formatDestination(destination.destination),
       "-resultBundlePath",
       bundlePath,
       "-derivedDataPath",

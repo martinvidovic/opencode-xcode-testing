@@ -90,11 +90,26 @@ tests.
 
 The adapter cannot assume the documented 50 KiB / 2000 lines: `tool_output.max_lines` and
 `max_bytes` are user-configurable and may be lower, and the host does **not** materialize defaults
-— an unset `tool_output` arrives as `undefined`. Effective limits are read **once at plugin
-startup** (config is not hot-reloaded) and the adapter enforces
+— an unset `tool_output` arrives as `undefined`. Effective limits are read **once per session**
+(config is not hot-reloaded) and the adapter enforces
 `min(self-cap, effective host limit − safety margin)` for both lines and bytes, with baseline
 self-caps of ~1900 lines and ~32 KiB. #7's 65,536-byte domain-data cap remains separate and
 unchanged.
+
+**Amended (issue #37): "once at plugin startup" is not reachable, and is now "once, on first
+use".** The plugin factory runs *inside* the host's own bootstrap. Asking the host for its
+configuration from there deadlocks it: the config route cannot answer until the plugin it is
+waiting on has returned, so the factory waits on a server that is waiting on the factory. Observed
+against OpenCode 1.18.29, where it presents as a host that starts, serves `/doc`, and never answers
+`/config` — with the plugin's tools silently absent, which is indistinguishable from a project that
+never opted in.
+
+The property the original wording existed to protect is *read once*, not *read early*: two calls in
+one session must never disagree about the effective limits. Deferring the read to the first tool
+invocation and memoizing it preserves that exactly, because the host's configuration is not
+hot-reloaded between them. What is given up is only that the first rendered response pays for one
+config call. The acceptance gate exercises the documented installation path end to end, so a
+regression here shows up as a host that hangs rather than as a subtly wrong budget.
 
 ### Throw semantics
 
