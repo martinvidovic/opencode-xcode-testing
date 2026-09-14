@@ -32,3 +32,51 @@ export function oneOf<T extends string>(value: unknown, allowed: readonly T[]): 
 export function isArrayOf<T>(value: unknown, check: (entry: unknown) => entry is T): value is T[] {
   return Array.isArray(value) && value.every(check)
 }
+
+/**
+ * A count: an integer, not negative, and small enough to still be exact.
+ *
+ * `typeof value === "number"` admits `NaN`, `Infinity`, `-1` and `1e308`, and
+ * every one of them reaches a caller as a count. `NaN` is the worst of them,
+ * because it compares false against everything — a page that asks whether it
+ * has returned all of them would answer "no" forever — but a negative count
+ * or one past `Number.MAX_SAFE_INTEGER` is a number that has stopped meaning
+ * what its name says.
+ */
+export function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+}
+
+/**
+ * An elapsed time in milliseconds: finite, not negative, possibly fractional.
+ *
+ * The one quantity here that is legitimately not whole. `NaN` renders as
+ * "NaN ms" and a negative one describes a test that finished before it
+ * started; both are numbers that have stopped meaning what their name says.
+ */
+export function isDuration(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+}
+
+/**
+ * A position within a source file: an integer, and at least one.
+ *
+ * Editors count from one, so a zero or a negative line is not a location a
+ * caller can act on — it is a number that will send someone to the wrong
+ * place, or to no place at all.
+ */
+export function isPosition(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
+}
+
+/**
+ * Text that identifies something: a run id, a digest, a canonical test name.
+ *
+ * Emptiness is the case worth naming. `""` is a string, so a shape check
+ * passes, and it then reaches a caller as an identifier that addresses
+ * nothing — indistinguishable, at the point of use, from one that was never
+ * there.
+ */
+export function isIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0
+}

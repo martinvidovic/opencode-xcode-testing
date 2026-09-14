@@ -259,7 +259,13 @@ function page(
   // detect from the outside.
   const capped = capRecords(asked)
   const slice = capped.records
-  const nextPosition = position + slice.length
+
+  // By what the page *accounted for*, not by what it returned. A record too
+  // large to represent is passed over rather than corrupted, and a cursor that
+  // advanced only past returned records would come back to it on every
+  // subsequent request — an empty page, forever, at the one position the
+  // caller cannot get past.
+  const nextPosition = position + capped.consumed
   const hasMore = nextPosition < all.length
 
   const cursor = nextCursor(secret, index, facet, hasMore ? nextPosition : undefined)
@@ -273,8 +279,12 @@ function page(
     // a different fact from records being dropped and both can be true.
     fieldTruncated: capped.fieldTruncated,
     collectionTruncated: hasMore,
-    responseTruncated: capped.dropped > 0 || capped.fieldTruncated,
+    responseTruncated: capped.dropped > 0 || capped.fieldTruncated || capped.omitted > 0,
     hasMore,
+    // Stated separately because it is the one kind of loss paging cannot undo.
+    // Dropped records arrive on the next page; an omitted one never arrives,
+    // and a caller counting records needs to know the difference.
+    ...(capped.omitted === 0 ? {} : { recordsOmitted: capped.omitted }),
     ...(cursor === undefined ? {} : { nextCursor: cursor }),
   }
 
@@ -283,6 +293,22 @@ function page(
 
   if (completeness === "unavailable") return { status: "unsupported", facet }
   if (completeness === "partial") return { status: "incomplete", data, truncation }
+
+  // An omitted record makes the page incomplete, whatever the evidence behind
+  // it says. `available` carries a strong promise — that an empty page
+  // authoritatively means zero records — and a page that silently dropped the
+  // only record it had would break exactly that promise, in the direction a
+  // caller cannot detect: they would read "no failures" from a run that had
+  // one too large to show them.
+  if (capped.omitted > 0) {
+    return {
+      status: "incomplete",
+      data,
+      truncation,
+      annotation: `${capped.omitted} record(s) could not be returned within the response cap`,
+    }
+  }
+
   return { status: "available", completeness, data, truncation }
 }
 

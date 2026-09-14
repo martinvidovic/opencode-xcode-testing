@@ -271,11 +271,11 @@ describe("the response cap", () => {
     )
   })
 
-  test("holds even when the oversized field is one a caller acts on", async () => {
-    // A canonical identity is an identifier, and identifiers are the last
-    // thing to give — but the cap is not a preference. A record whose
-    // *identifier* is what makes it oversized has to give somewhere, or the
-    // response goes over the one bound that exists to never be crossed.
+  test("omits a record rather than shortening the identifier that makes it oversized", async () => {
+    // The cap is not a preference, and neither is an identifier. A halved
+    // canonical name still looks like a name: a caller would ask about a test
+    // that does not exist and be told, correctly and uselessly, that it is not
+    // there. Absence is the honest answer, and the page says so.
     const occurrence = {
       id: "occ-1",
       identity: { canonical: `AppTests/Suite/test${"x".repeat(200_000)}()` },
@@ -290,13 +290,42 @@ describe("the response cap", () => {
       indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
       async (inspect) => {
         const response = await inspect({ facet: "tests" })
-        if (response.status !== "available") throw new Error("expected a page")
+
+        // Never `available`: that status promises an empty page means zero
+        // records, and here it would mean one the caller cannot be shown.
+        if (response.status !== "incomplete") throw new Error("expected an incomplete page")
 
         expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
           RESPONSE_BYTE_CAP,
         )
-        expect((response.data as { records: unknown[] }).records).toHaveLength(1)
-        expect(response.truncation.fieldTruncated).toBe(true)
+        expect((response.data as { records: unknown[] }).records).toHaveLength(0)
+        expect(response.truncation.recordsOmitted).toBe(1)
+        expect(response.truncation.responseTruncated).toBe(true)
+
+        // And the cursor has moved past it: there is nothing after it here, so
+        // the page is the last one rather than an empty one repeating forever.
+        expect(response.truncation.hasMore).toBe(false)
+      },
+    )
+  })
+
+  test("omits an attestation whose selection is what makes it oversized", async () => {
+    // The same rule for the other record shape. A bundle name is what a
+    // verdict is *about*; halving it would attribute a verdict to a selection
+    // nobody made.
+    const attestation = {
+      selection: { bundle: `AppTests${"x".repeat(200_000)}` },
+      verdict: "matched" as const,
+    }
+
+    await retained(
+      indexWith({ attestations: [attestation] as NormalizedIndex["attestations"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "scope" })
+        if (response.status !== "incomplete") throw new Error("expected an incomplete page")
+
+        expect((response.data as { records: unknown[] }).records).toHaveLength(0)
+        expect(response.truncation.recordsOmitted).toBe(1)
       },
     )
   })

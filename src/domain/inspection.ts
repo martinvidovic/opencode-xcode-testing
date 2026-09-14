@@ -78,6 +78,17 @@ export type TruncationState = {
   hasMore: boolean
   /** Points at the first unreturned record. Pagination always moves forward. */
   nextCursor?: string
+  /**
+   * Records passed over because they could not be represented within the cap
+   * without altering an identifier, a kind or a status.
+   *
+   * A different fact from every other field here, and the only one describing
+   * a loss that paging cannot undo: a record left off this page for size
+   * arrives on the next one, and one counted here never arrives at all. The
+   * cursor has already moved past it. Additive, so it needs no `schemaVersion`
+   * bump, and absent on every ordinary page.
+   */
+  recordsOmitted?: number
 }
 
 /**

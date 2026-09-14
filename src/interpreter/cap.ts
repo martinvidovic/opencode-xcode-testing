@@ -16,6 +16,18 @@
  * big on its own. #7 says what happens then, and it is not "return it anyway":
  * identifiers, kinds, statuses and numbers are preserved, and display strings
  * are truncated deterministically until it fits.
+ *
+ * **Preserved means preserved.** When the display strings run out and the
+ * record still does not fit, what gives is the record — not its identifiers.
+ * A halved id addresses nothing and a halved status is a different status, and
+ * both are worse than absence because both still look like answers: a caller
+ * cannot tell a shortened id from a real one, and will ask about a test that
+ * does not exist. So the record is reduced to the fields a caller acts on, and
+ * if even those do not fit it is omitted and the page says so.
+ *
+ * Omitting is only safe because the cursor moves past it. A mandatory record
+ * that were dropped without advancing the position would freeze paging at
+ * exactly the record nobody can read.
  */
 
 import { RESPONSE_BYTE_CAP, RESPONSE_ENVELOPE_BYTES } from "../domain/limits.ts"
@@ -44,6 +56,25 @@ export type CappedPage<T> = {
   dropped: number
   /** A record's display strings were shortened to fit. Rare, and reported. */
   fieldTruncated: boolean
+  /**
+   * Records the caller will never see, because they could not be represented
+   * at all. Distinct from `dropped`: a dropped record arrives on the next
+   * page, and an omitted one does not exist as far as paging is concerned.
+   *
+   * At most one per page in practice, because only the *first* record is ever
+   * made to fit — every later one simply waits for the next page, where it
+   * becomes a first record and gets the same chance. A count rather than a
+   * flag because that is what it is counting.
+   */
+  omitted: number
+  /**
+   * How many input records this page accounts for — kept plus omitted.
+   *
+   * The cursor advances by this, not by the number returned. Advancing by the
+   * returned count would park the cursor forever on a record that cannot be
+   * returned, and every subsequent page would be the same empty one.
+   */
+  consumed: number
 }
 
 /**
@@ -56,85 +87,113 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
   let used = RESPONSE_ENVELOPE_BYTES
   const kept: T[] = []
   let fieldTruncated = false
+  let omitted = 0
 
   for (const record of records) {
+    // The separator is part of the cost, or a record that fits "exactly"
+    // lands a byte over once it is in a list.
     const size = responseBytes(record) + 1
+    const first = kept.length === 0
 
-    // The first record is mandatory: returning an empty page would freeze the
-    // cursor at this position forever, and the caller could never reach
-    // anything beyond it. So it goes in — shortened if it has to be, never
-    // dropped.
-    if (kept.length === 0) {
-      // The separator is part of the cost, or a record that fits "exactly"
-      // lands a byte over once it is in a list.
-      if (used + size > RESPONSE_BYTE_CAP) {
-        const shrunk = shrink(record, RESPONSE_BYTE_CAP - used - 1)
-        kept.push(shrunk.record)
-        fieldTruncated = shrunk.shortened
-        break
-      }
+    if (used + size <= RESPONSE_BYTE_CAP) {
       used += size
       kept.push(record)
       continue
     }
 
-    if (used + size > RESPONSE_BYTE_CAP) break
-    used += size
-    kept.push(record)
+    // Anything but the first record simply waits for the next page. The
+    // position has already moved past everything kept, so nothing is lost.
+    if (!first) break
+
+    // The first record is the one that cannot wait: returning an empty page
+    // would leave the caller at this position forever. So it is made to fit —
+    // by shortening what can be shortened, and failing that by keeping only
+    // what a caller acts on.
+    const shrunk = shrink(record, RESPONSE_BYTE_CAP - used - 1)
+    if (shrunk.record !== undefined) {
+      kept.push(shrunk.record)
+      fieldTruncated = shrunk.shortened
+      break
+    }
+
+    // Not even its identifiers fit. It is passed over rather than mangled, and
+    // the page reports it — the cursor moves on, so the caller reaches the
+    // rest of the evidence instead of stalling here.
+    omitted += 1
+    break
   }
 
-  return { records: kept, dropped: records.length - kept.length, fieldTruncated }
+  const consumed = kept.length + omitted
+  return { records: kept, dropped: records.length - consumed, fieldTruncated, omitted, consumed }
 }
 
 /**
- * Fields a shortened record keeps for as long as it can.
+ * Fields a shortened record keeps, whatever it costs to keep them.
  *
- * #7 names them: identifiers, kinds, statuses and safe numeric fields. They are
- * what a caller *acts* on — a truncated id addresses nothing, and a truncated
- * verdict is a different verdict — while a message that loses its tail is
- * still the same message, shorter.
- *
- * "For as long as it can" is the whole of it, though. The byte cap is not a
- * preference, and a record whose *identifier* is what makes it oversized has
- * to give somewhere: preserving these at all costs would mean returning a
- * response over the cap, which is the one outcome the cap exists to forbid.
+ * These are what a caller *acts* on, and none of them survives being
+ * shortened: an id addresses a thing, a status is a claim about it, a bundle
+ * name says which selection a verdict is about. The cap is still absolute — a
+ * record whose identifier alone is oversized is omitted rather than returned —
+ * but it is met by leaving the record out, never by returning a corrupted one.
  */
-const STRUCTURAL_FIELDS = new Set(["id", "testId", "kind", "status", "verdict", "canonical"])
+const STRUCTURAL_FIELDS = new Set([
+  "id",
+  "testId",
+  "kind",
+  "status",
+  "verdict",
+  "canonical",
+  "bundle",
+  "position",
+])
 
 /**
- * Shorten a record until it fits, deterministically.
+ * Shorten a record until it fits, deterministically. `undefined` when it cannot.
  *
- * Display strings go first, longest first, so the field costing the most is
- * the one that gives and the same record always shrinks the same way. Only
- * once there is nothing else left do identifiers start to shorten — and the
- * response says `fieldTruncated`, so a caller knows not to trust what it is
- * holding as a complete record.
+ * Display strings only, longest first, so the field costing the most is the
+ * one that gives and the same record always shrinks the same way.
+ *
+ * A structural field is never altered, at any budget. A caller reading a
+ * halved id cannot tell it from a whole one; they will ask about a test that
+ * does not exist and be told, correctly and uselessly, that it is not there.
+ * Nor is a record ever returned stripped down to its identifiers: that would
+ * be an object of the declared type with its required fields missing, which is
+ * the same lie one level down. Returning nothing is recoverable — the page
+ * reports it, and a caller knows there is something here they cannot have.
  */
-function shrink<T>(record: T, budget: number): { record: T; shortened: boolean } {
+function shrink<T>(record: T, budget: number): { record?: T; shortened: boolean } {
   let current: unknown = structuredClone(record)
   let shortened = false
 
   for (let attempt = 0; attempt < SHRINK_ATTEMPTS; attempt += 1) {
-    if (responseBytes(current) <= budget) break
-    // Display strings while any remain; then everything, because the cap wins.
-    if (!halveLongestString(current, true) && !halveLongestString(current, false)) break
+    if (responseBytes(current) <= budget) return { record: current as T, shortened }
+    if (!halveLongestString(current)) break
     shortened = true
   }
 
-  return { record: current as T, shortened }
+  // Every display string is gone and it still does not fit. There is nothing
+  // further to give that would leave a record a caller could use: what remains
+  // is identifiers, kinds and statuses, and none of those survives being
+  // shortened. So the record is not represented, and the page says so.
+  return { shortened: true }
 }
 
 /** Enough halvings to reduce any plausible field to nothing. */
 const SHRINK_ATTEMPTS = 512
 
 /**
- * Halve the longest shortenable string. False when there is none left.
+ * Halve the longest **display** string. False when there is none left.
+ *
+ * Structural fields are never candidates, at any point and for any budget.
+ * That is the whole of the guarantee: there is no second pass that relaxes it
+ * once the easy savings run out, because a cap met by corrupting an identifier
+ * has not been met — it has been swapped for a quieter failure.
  *
  * Ties are broken by key name rather than by iteration order, which JSON does
  * not promise to preserve — so two reads of the same record shrink identically
  * and a caller can compare them.
  */
-function halveLongestString(value: unknown, displayOnly: boolean): boolean {
+function halveLongestString(value: unknown): boolean {
   let longest: { holder: Record<string, unknown>; key: string; length: number } | undefined
 
   const visit = (node: unknown) => {
@@ -149,7 +208,7 @@ function halveLongestString(value: unknown, displayOnly: boolean): boolean {
       const entry = holder[key]
       if (typeof entry === "string") {
         if (entry.length <= 1) continue
-        if (displayOnly && STRUCTURAL_FIELDS.has(key)) continue
+        if (STRUCTURAL_FIELDS.has(key)) continue
         if (longest === undefined || entry.length > longest.length) {
           longest = { holder, key, length: entry.length }
         }

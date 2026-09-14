@@ -116,9 +116,12 @@ describe("a retained index that cannot be trusted", () => {
       log: { availability: "unavailable", retainedBytesExact: false },
       bundleDigestVerified: "unknown",
     })
+    // Evidence, not request: the run id asked for is a good one, and what is
+    // wrong is the file found under it. A caller told `invalid` would go and
+    // change what they asked, and nothing they can ask would help.
     expect(await inspectWith("run-real", index)).toMatchObject({
-      status: "invalid",
-      message: expect.stringContaining("does not belong"),
+      status: "incomplete",
+      annotation: expect.stringContaining("not trustworthy"),
     })
   })
 
@@ -138,8 +141,8 @@ describe("a retained index that cannot be trusted", () => {
     })
 
     expect(response).toMatchObject({
-      status: "invalid",
-      message: expect.stringContaining("not trustworthy"),
+      status: "incomplete",
+      annotation: expect.stringContaining("not trustworthy"),
     })
   })
 
@@ -153,7 +156,10 @@ describe("a retained index that cannot be trusted", () => {
       return service.inspect({ runId: "run-real", facet: "scope" })
     })
 
-    expect(response).toMatchObject({ status: "invalid" })
+    expect(response).toMatchObject({
+      status: "incomplete",
+      annotation: expect.stringContaining("not trustworthy"),
+    })
   })
 
   test("is refused when a location in it names somewhere on this machine", async () => {
@@ -201,5 +207,60 @@ describe("a retained index that cannot be trusted", () => {
     expect(response).toMatchObject({ status: "incomplete" })
     // And the refusal says nothing about what it refused.
     expect(JSON.stringify(response)).not.toContain("/Users/someone")
+  })
+})
+
+describe("damaged retained evidence", () => {
+  test("is an evidence outcome, never a complaint about the request", async () => {
+    // The distinction the contract turns on. `invalid` means "fix what you
+    // asked"; nothing a caller can ask will repair a file on this machine, so
+    // telling them that sends them to work on the one thing that is fine.
+    const response = await withSandbox(async (box) => {
+      const service = createTestToolService(environmentFor(box))
+      createRunDirectory(box.storage, "run-real")
+      seedRun(box.storage, { runId: "run-real", state: "completed" })
+      writeFileSync(join(runDirectory(box.storage, "run-real"), INDEX_ARTIFACT), "{ not json")
+
+      return service.inspect({ runId: "run-real", facet: "failures" })
+    })
+
+    expect(response.status).toBe("incomplete")
+  })
+
+  test("is an evidence outcome when the index decodes but does not validate", async () => {
+    // Structurally a JSON object of the right version, and its contents are
+    // not what this tool writes. It is the evidence that is wrong, not the
+    // request — and it is `incomplete` for the same reason.
+    const index = JSON.stringify({
+      indexVersion: INDEX_VERSION,
+      runId: "run-real",
+      decoderVersion: 1,
+      schemaVersion: "0.1.0",
+      occurrences: [],
+      testFailures: [],
+      buildErrors: [],
+      attestations: [{ verdict: "matched", selection: { bundle: 42 } }],
+      scopeVerdict: "matched",
+      scopeDigest: "d",
+      requestedSelectionCount: 0,
+      observedOutsideScope: 0,
+      build: { completeness: "unavailable" },
+      tests: { completeness: "unavailable" },
+      diagnostics: { completeness: "unavailable" },
+      fullMessages: {},
+      toolchain: {
+        developerDirectory: "/x",
+        xcodeVersion: "26.4.1",
+        xcodeBuild: "17E202",
+        xcresulttoolPath: "/x/t",
+        xcresulttoolVersion: "24757",
+        xcresulttoolDigest: "d",
+        schemaVersion: "0.1.0",
+      },
+      log: { availability: "unavailable", retainedBytesExact: false },
+      bundleDigestVerified: "unknown",
+    })
+
+    expect(await inspectWith("run-real", index)).toMatchObject({ status: "incomplete" })
   })
 })

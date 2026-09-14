@@ -1182,7 +1182,13 @@ async function inspectRetained(
     // different facts, and reporting the second as the first would hide the
     // only signal anyone gets that the storage was tampered with.
     if (error instanceof UnsafeArtifactError) {
-      return { status: "invalid", message: "the retained index for this Test Run is not trustworthy" }
+      // `incomplete`, not `invalid`. `invalid` is the contract's answer to a
+      // malformed *request*, and the request here is fine — a caller told
+      // `invalid` would reasonably go and change what they asked for, when
+      // nothing they can ask will help. What went wrong is on this machine,
+      // and it is the evidence that cannot be trusted, so it is reported at
+      // the level the evidence lives at.
+      return untrustworthyEvidence()
     }
     // A tombstone distinguishes "deleted" from "never known"; without one, the
     // run is genuinely unknown within this trusted root's namespace.
@@ -1218,7 +1224,9 @@ async function inspectRetained(
   // The index names the run it was published for. A file that disagrees is not
   // this run's evidence, whatever directory it was found in.
   if (parsed.runId !== request.runId) {
-    return { status: "invalid", message: "the retained index does not belong to this Test Run" }
+    // Also evidence rather than request: the run id asked for is a perfectly
+    // good one, and what is wrong is the file found under it.
+    return untrustworthyEvidence()
   }
 
   if (request.facet === "log") {
@@ -1408,7 +1416,10 @@ function inspectRetainedLog(
     // a retained artifact that stopped being one, not a facet this run never
     // had, so it reads as expiry rather than as "unsupported".
     if (error instanceof UnsafeArtifactError) {
-      return { status: "invalid", message: "the retained log for this Test Run is not trustworthy" }
+      // Evidence, like every other untrustworthy artifact here: the request
+      // named a real run and a real facet, and what cannot be trusted is a
+      // file on this machine.
+      return untrustworthyEvidence()
     }
     return { status: "expired" }
   }
@@ -1443,7 +1454,7 @@ function readLogWindow(path: string, window: LogWindow): { bytes: Buffer; totalB
  * tool did not write and cannot vouch for, and quoting it would be quoting
  * whatever wrote it.
  */
-function corruptedIndex(): InspectionResponse<unknown> {
+function damagedEvidence(annotation: string): InspectionResponse<unknown> {
   return {
     status: "incomplete",
     data: undefined,
@@ -1453,8 +1464,24 @@ function corruptedIndex(): InspectionResponse<unknown> {
       responseTruncated: false,
       hasMore: false,
     },
-    annotation: "the retained evidence for this Test Run could not be read",
+    annotation,
   }
+}
+
+/** Evidence that could not be read at all. */
+function corruptedIndex(): InspectionResponse<unknown> {
+  return damagedEvidence("the retained evidence for this Test Run could not be read")
+}
+
+/**
+ * Evidence that is present and must not be trusted.
+ *
+ * Worded apart from `corruptedIndex` on purpose: damage and tampering are
+ * different things to have found, and a reader deciding whether to go and look
+ * at their machine needs to know which.
+ */
+function untrustworthyEvidence(): InspectionResponse<unknown> {
+  return damagedEvidence("the retained evidence for this Test Run is not trustworthy")
 }
 
 function tombstoneExists(storage: Storage, runId: string): boolean {
