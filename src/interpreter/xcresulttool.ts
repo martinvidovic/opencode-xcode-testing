@@ -10,20 +10,33 @@
  * established by `metadata get` actually opening the bundle, and a failure here
  * maps onto a typed reason rather than a string match.
  *
- * Output is **streamed**, not collected synchronously. A synchronous read
- * carries a fixed output-buffer ceiling, and a large valid suite's test
- * hierarchy runs to many megabytes — silently truncating it would turn a
- * perfectly good Result Bundle into an unsupported schema. Streaming also keeps
- * the deadline meaningful: a blocking read cannot be interrupted when it
- * expires.
+ * Output is **streamed into a private file**, not collected in memory. A
+ * synchronous read carries a fixed output-buffer ceiling, and a large valid
+ * suite's test hierarchy runs to many megabytes — silently truncating it would
+ * turn a perfectly good Result Bundle into an unsupported schema. Streaming
+ * also keeps the deadline meaningful: a blocking read cannot be interrupted
+ * when it expires.
+ *
+ * Staging it on disk rather than in an array of chunks is what makes the bound
+ * honest. Accumulating means holding the payload once as chunks, again as one
+ * buffer, again as a string, and once more as objects — four copies of
+ * something whose size nothing here controls, which is why the old ceiling had
+ * to be small enough to reject suites that were merely large. The staged file
+ * costs one copy at decode time and bounds the rest against a disk.
+ *
+ * Every deadline here is monotonic. A structured read is bounded by a
+ * *duration* the caller has already spent part of, and a duration measured
+ * against a wall clock that an NTP step can move is not a duration.
  */
 
 import { spawn } from "node:child_process"
-import { existsSync } from "node:fs"
+import { createWriteStream, existsSync, readFileSync, rmSync } from "node:fs"
+import { dirname, join } from "node:path"
 
 import type { XcresultCommand } from "./anomalies.ts"
 import type { ToolchainIdentity, XcresultResponse, XcresultTool } from "./ports.ts"
-import { MAX_STRUCTURED_PAYLOAD_BYTES } from "../domain/limits.ts"
+import { monotonicNow } from "../domain/clock.ts"
+import { MAX_STAGED_PAYLOAD_BYTES } from "../domain/limits.ts"
 import { REQUESTED_SCHEMA_VERSION } from "./schema.ts"
 
 /**
@@ -70,7 +83,16 @@ function schemaPinned(words: string[], common: string[]): string[] {
 export function createXcresultTool(input: {
   identity: ToolchainIdentity
   bundlePath: string
+  /**
+   * Where a read stages its output. Defaults to the directory holding the
+   * bundle, which in production is the run's own `0700` directory — so the
+   * default is private for the same reason the evidence beside it is, and a
+   * staged file cannot outlive the run whose retention sweeps that directory.
+   */
+  stagingDir?: string
 }): XcresultTool {
+  const stagingDir = input.stagingDir ?? dirname(input.bundlePath)
+
   return {
     identity: input.identity,
 
@@ -82,9 +104,30 @@ export function createXcresultTool(input: {
           message: "the expected Result Bundle does not exist",
         })
       }
-      return read(input.identity, input.bundlePath, command, budgetMs, subject)
+      return read({
+        identity: input.identity,
+        bundlePath: input.bundlePath,
+        stagingDir,
+        command,
+        budgetMs,
+        ...(subject === undefined ? {} : { subject }),
+      })
     }
   }
+}
+
+/**
+ * A staged file nothing else can be holding.
+ *
+ * Opened `wx` at mode `0600`: exclusive creation refuses an existing path rather
+ * than writing through it, so a name that somehow already exists — a leftover,
+ * a link planted by something else — fails the read instead of silently
+ * becoming its output.
+ */
+let stagedReads = 0
+function stagedPath(stagingDir: string): string {
+  stagedReads += 1
+  return join(stagingDir, `.xcresult-read-${process.pid}-${stagedReads}.json`)
 }
 
 /** How long a structured read has to stop politely before it is killed. */
@@ -100,33 +143,55 @@ function stopGroup(pid: number | undefined, signal: NodeJS.Signals): void {
   }
 }
 
-function read(
-  identity: ToolchainIdentity,
-  bundlePath: string,
-  command: XcresultCommand,
-  budgetMs: number,
-  subject?: string,
-): Promise<XcresultResponse> {
+type StagedRead = {
+  identity: ToolchainIdentity
+  bundlePath: string
+  stagingDir: string
+  command: XcresultCommand
+  budgetMs: number
+  subject?: string
+}
+
+function read(input: StagedRead): Promise<XcresultResponse> {
   return new Promise((resolve) => {
+    const { command } = input
+    const staged = stagedPath(input.stagingDir)
+
     // Its own process group, so a read that has to be stopped is stopped
     // whole — `xcresulttool` spawns helpers, and signalling only the parent
     // leaves them behind holding the bundle open.
-    const child = spawn(identity.xcresulttoolPath, argumentsFor(command, bundlePath, subject), {
-      env: { ...process.env, DEVELOPER_DIR: identity.developerDirectory },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
-    })
+    const child = spawn(
+      input.identity.xcresulttoolPath,
+      argumentsFor(command, input.bundlePath, input.subject),
+      {
+        env: { ...process.env, DEVELOPER_DIR: input.identity.developerDirectory },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+      },
+    )
 
-    const chunks: Buffer[] = []
-    let accumulated = 0
-    const deadline = Date.now() + Math.max(1, budgetMs)
+    const budgetMs = Math.max(1, input.budgetMs)
+    const deadline = monotonicNow() + budgetMs
+    const sink = createWriteStream(staged, { flags: "wx", mode: 0o600 })
+    let stagedBytes = 0
     let settled = false
+
     const finish = (response: XcresultResponse) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      sink.destroy()
+      // The staged file is scratch, not evidence: it is removed on every exit
+      // from this read, including the ones nobody plans for.
+      rmSync(staged, { force: true })
       resolve(response)
     }
+
+    const timedOut = (): XcresultResponse => ({
+      ok: false,
+      failure: "timedOut",
+      message: "the structured read exceeded its remaining budget",
+    })
 
     // The remaining budget is the caller's, and a read that outlives it is
     // stopped rather than left to finish into a deadline that has passed.
@@ -134,29 +199,36 @@ function read(
     const timer = setTimeout(() => {
       stopGroup(child.pid, "SIGTERM")
       setTimeout(() => stopGroup(child.pid, "SIGKILL"), ESCALATION_GRACE_MS).unref?.()
+      finish(timedOut())
+    }, budgetMs)
+
+    sink.on("error", () =>
       finish({
         ok: false,
-        failure: "timedOut",
-        message: "the structured read exceeded its remaining budget",
-      })
-    }, Math.max(1, budgetMs))
+        failure: "commandFailed",
+        message: "the structured output could not be staged for reading",
+      }),
+    )
+
+    // Backpressure is the whole point of staging. Writing without it would
+    // queue whatever the disk has not taken yet in memory, which is the cost
+    // the staged file exists to avoid.
+    sink.on("drain", () => child.stdout?.resume())
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      accumulated += chunk.length
-      if (accumulated > MAX_STRUCTURED_PAYLOAD_BYTES) {
-        // Refused rather than absorbed. The alternative is holding an
-        // arbitrarily large payload in memory and then doubling it to decode,
-        // on behalf of a process whose output size nothing here controls.
+      stagedBytes += chunk.length
+      if (stagedBytes > MAX_STAGED_PAYLOAD_BYTES) {
         stopGroup(child.pid, "SIGKILL")
         finish({
           ok: false,
           failure: "unsupported",
-          message: `the structured output exceeded ${MAX_STRUCTURED_PAYLOAD_BYTES} bytes`,
+          message: `the structured output exceeded ${MAX_STAGED_PAYLOAD_BYTES} bytes`,
         })
         return
       }
-      chunks.push(chunk)
+      if (!sink.write(chunk)) child.stdout?.pause()
     })
+
     child.on("error", () =>
       finish({
         ok: false,
@@ -166,6 +238,8 @@ function read(
     )
 
     child.on("close", (status) => {
+      if (settled) return
+
       if (status !== 0) {
         finish({
           ok: false,
@@ -183,27 +257,53 @@ function read(
         return
       }
 
-      // The deadline covers decoding, not merely waiting. Parsing hundreds
-      // of megabytes takes real time, and a read that spent its whole budget
-      // arriving must not then spend another one being understood.
-      if (Date.now() >= deadline) {
-        finish({
-          ok: false,
-          failure: "timedOut",
-          message: "the structured read exceeded its remaining budget",
-        })
-        return
-      }
-
-      try {
-        finish({ ok: true, payload: JSON.parse(Buffer.concat(chunks).toString("utf8")) })
-      } catch {
-        finish({
-          ok: false,
-          failure: "unsupported",
-          message: "the structured output could not be parsed as JSON",
-        })
-      }
+      // Everything written has to reach the disk before it can be read back;
+      // a decode that raced the last write would report a valid payload as
+      // unparseable.
+      sink.end(() => finish(decodeStaged(staged, deadline)))
     })
   })
+}
+
+/**
+ * Turn a staged file into a payload, or into the reason it could not be one.
+ *
+ * The deadline is checked here as well as around the wait, because decoding is
+ * real work: a payload that spent its whole budget arriving must not then
+ * spend another one being understood.
+ */
+function decodeStaged(staged: string, deadline: number): XcresultResponse {
+  if (monotonicNow() >= deadline) {
+    return {
+      ok: false,
+      failure: "timedOut",
+      message: "the structured read exceeded its remaining budget",
+    }
+  }
+
+  let text: string
+  try {
+    text = readFileSync(staged, "utf8")
+  } catch {
+    // Reaching this means output that was staged successfully cannot be read
+    // back, or is larger than this runtime can hold as a single string. Either
+    // way it is output this tool cannot work with, which is what
+    // `unsupported` says — and it says it with the size, so the message is
+    // about the suite rather than about the schema.
+    return {
+      ok: false,
+      failure: "unsupported",
+      message: "the structured output could not be read back from its staged file",
+    }
+  }
+
+  try {
+    return { ok: true, payload: JSON.parse(text) }
+  } catch {
+    return {
+      ok: false,
+      failure: "unsupported",
+      message: "the structured output could not be parsed as JSON",
+    }
+  }
 }

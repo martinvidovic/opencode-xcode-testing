@@ -87,3 +87,32 @@ describe("digesting a large Result Bundle", () => {
     })
   })
 })
+
+describe("a wall clock that moves under a digest in progress", () => {
+  /** Run `work` with `Date.now` jumped forward by an hour after its first call. */
+  function withJumpingWallClock<T>(work: () => T): T {
+    const real = Date.now
+    let calls = 0
+    Date.now = () => (calls++ === 0 ? real() : real() + 3_600_000)
+    try {
+      return work()
+    } finally {
+      Date.now = real
+    }
+  }
+
+  test("does not expire a budget the walk has not spent", async () => {
+    await withSandbox((box) => {
+      // An NTP correction, a daylight change, a user setting the clock: the
+      // wall clock is allowed to jump, and a deadline measured against it
+      // jumps with it. Here the walk would be abandoned an hour early, and
+      // reported as an unfinished verification of a bundle that is fine.
+      const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 2)
+
+      const digest = withJumpingWallClock(() => bundleDigest(bundle, 30_000))
+
+      expect(digest).toBeDefined()
+      expect(digest).toBe(bundleDigest(bundle, 30_000))
+    })
+  })
+})

@@ -85,15 +85,20 @@ export const LOG_CHUNK_MIN_BYTES = 4
 export const RESPONSE_ENVELOPE_BYTES = 1_024
 
 /**
- * The most structured output a single `xcresulttool` read may produce.
+ * The most structured output a single `xcresulttool` read may stage.
  *
  * The tool is given a Result Bundle this repository did not write, for a test
- * suite whose size nothing here controls. Without a bound the decoder holds the
- * whole payload in memory and then doubles it to turn it into a string — so a
- * large enough suite stops being a slow read and becomes an exhausted process.
- * Generous enough that no plausible real suite reaches it, and finite.
+ * suite whose size nothing here controls, so the read needs a bound. What the
+ * bound is *on* matters as much as its value: output is streamed to a private
+ * file rather than accumulated, so this limits bytes written to a disk that
+ * has room for them, not bytes a process must hold at once.
+ *
+ * That is why it is generous. A cap sized for memory would reject a valid
+ * bundle — and reject it as `unsupported`, which reads as "this schema is
+ * wrong" when the truth is "this suite is large". A cap sized for disk is
+ * reached only by output no filesystem should be asked to hold either.
  */
-export const MAX_STRUCTURED_PAYLOAD_BYTES = 256 * 1024 * 1024
+export const MAX_STAGED_PAYLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 /**
  * The largest tool-managed file read whole into memory.
