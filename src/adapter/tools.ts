@@ -114,13 +114,18 @@ export type ToolDeps = {
 
 // --- xcode_test -----------------------------------------------------------
 
+/** The budget for this call, defaulting when the host told us nothing. */
+async function budgetFor(deps: ToolDeps): Promise<Budget> {
+  return deps.budget === undefined ? DEFAULT_BUDGET : await deps.budget()
+}
+
 export async function executeTest(
   args: TestArguments,
   context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
   const request = toTestRunRequest(args)
-  const budget = await resolveDeps(deps)
+  const budget = await budgetFor(deps)
   const startedAt = deps.now()
 
   const publish = (state: ProtocolState, runId?: string) => {
@@ -239,11 +244,6 @@ export function pendingCancellation(
  * whose result lands in session history, so completing it is strictly more
  * useful than discarding it — this is adapter behavior, not a contract change.
  */
-/** The budget for this call, defaulting when the host told us nothing. */
-async function resolveDeps(deps: ToolDeps): Promise<Budget> {
-  return deps.budget === undefined ? DEFAULT_BUDGET : await deps.budget()
-}
-
 export async function executeInspect(
   args: InspectArguments,
   _context: ToolContext,
@@ -251,7 +251,7 @@ export async function executeInspect(
 ): Promise<string> {
   const request = toInspectRunRequest(args)
   const response = await deps.service.inspect(request)
-  return serialize(renderInspection(request, response), await resolveDeps(deps)).text
+  return serialize(renderInspection(request, response), await budgetFor(deps)).text
 }
 
 export function renderInspection(
@@ -379,7 +379,7 @@ export async function executeRecover(
       block(PRIORITY.envelope, `Recovery: ${outcome.status}`),
       block(PRIORITY.reason, ...(outcome.message === undefined ? [] : ["", outcome.message])),
     ],
-    await resolveDeps(deps),
+    await budgetFor(deps),
   ).text
 }
 

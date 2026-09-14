@@ -32,15 +32,31 @@ import { renderReport, writeReport, type RunReport, type ScenarioResult } from "
 
 async function main(argv: string[]): Promise<number> {
   const parsed = parseOptions(argv)
+  const startedAt = new Date().toISOString()
+
   if (parsed.status === "rejected") {
-    // Before anything else, and without a report: nothing was selected, so
-    // there is no run to describe.
+    // A refused command line still leaves a record. Someone reading the
+    // reports later is trying to answer "what has this machine actually
+    // verified", and an invocation that verified nothing because it was
+    // mistyped is part of that answer.
     process.stderr.write(`acceptance gate: ${parsed.message}\n\n${usage()}\n`)
+    writeReport({
+      schemaVersion: 1,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      selected: [],
+      toolchain: UNOBSERVED_TOOLCHAIN,
+      hostVersion: "unobserved",
+      runtime: { path: "", source: "unresolved" },
+      destination: { unavailable: parsed.message },
+      freshness: { status: "unavailable", observed: {}, drift: [], fixturesChecked: 0 },
+      scenarios: [],
+      outcome: "failed",
+    })
     return 2
   }
 
   const { suites, project } = parsed.options
-  const startedAt = new Date().toISOString()
   const scenarios: ScenarioResult[] = []
 
   // Every path from here writes a report, including the ones that fail before
@@ -56,7 +72,9 @@ async function main(argv: string[]): Promise<number> {
       startedAt,
       finishedAt: new Date().toISOString(),
       selected: suites,
-      ...(project === undefined ? {} : { project: true }),
+      // Claimed only when a layer that uses it actually ran: otherwise the
+      // line says something the run did not do.
+      ...(project !== undefined && suites.includes("layer4") ? { project: true } : {}),
       toolchain: UNOBSERVED_TOOLCHAIN,
       hostVersion: observedHostVersion(),
       runtime: { path: "", source: "unresolved" },
@@ -125,19 +143,21 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
-  const execution =
+  const context =
     destination.status === "found"
       ? {
           toolchain: toolchain.identity,
           runtimePath: runtime.path,
           destination: destination.destination,
-          ...(project === undefined ? {} : { project }),
         }
       : undefined
 
   let bundle: BundleExamination | undefined
-  if (suites.includes("layer4") && execution !== undefined) {
-    const outcome = await runLayer4(execution)
+  if (suites.includes("layer4") && context !== undefined) {
+    const outcome = await runLayer4({
+      ...context,
+      ...(project === undefined ? {} : { project }),
+    })
     scenarios.push(...outcome.scenarios)
     bundle = outcome.bundle
   }
@@ -145,8 +165,10 @@ async function main(argv: string[]): Promise<number> {
     scenarios.push(...(await runRegistrationGate()))
     scenarios.push(...(await runInstallationGate()))
   }
-  if (suites.includes("b2") && execution !== undefined) {
-    scenarios.push(...(await runExecutionGate(execution)))
+  if (suites.includes("b2") && context !== undefined) {
+    // (b2) drives the host against generated projects with known outcomes, so
+    // it takes the shared context and not the project override.
+    scenarios.push(...(await runExecutionGate(context)))
   }
 
   // A run that executed no gating scenario has verified nothing, whatever its
@@ -175,7 +197,7 @@ async function main(argv: string[]): Promise<number> {
     // Drift is surfaced in the report and never fails the gate. It examines
     // the bundle the scenarios just produced, so the check is against a real
     // payload rather than against version strings alone.
-    freshness: runFreshnessCheck(bundle === undefined ? {} : { bundle }),
+    freshness: runFreshnessCheck(bundle === undefined ? { produce: true } : { bundle }),
   })
 }
 

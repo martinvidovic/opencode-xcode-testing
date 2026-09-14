@@ -15,28 +15,33 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import type { Destination, TestRunRequest } from "../../src/domain/request.ts"
+import type { TestRunRequest } from "../../src/domain/request.ts"
+import type { ExecutionContext } from "./context.ts"
 import type { TestToolResult } from "../../src/domain/result.ts"
 import type { ToolchainIdentity } from "../../src/domain/toolchain.ts"
 import { isTestRunSummary } from "../../src/domain/result.ts"
 import { createTestToolService } from "../../src/adapter/service.ts"
+import { readProjectConfiguration } from "../../src/adapter/trusted-root.ts"
 import { prepareStorage, runDirectory, storageFor, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
 import { loadCursorSecret } from "../../src/runner/secrets.ts"
 import { examineBundle, type BundleExamination } from "../freshness-check.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
+import { safeDiagnostic } from "./diagnostic.ts"
 import type { ScenarioResult } from "./report.ts"
 
-export type Layer4Options = {
-  toolchain: ToolchainIdentity
-  runtimePath: string
-  destination: Destination
+/**
+ * Layer 4's own context: the shared one, plus the project override that only
+ * this layer runs.
+ */
+export type Layer4Options = ExecutionContext & {
   /**
    * A locally owned real project to additionally run against.
    *
-   * Its scenarios are **report-only**, always. The standing gate has to be
-   * reproducible from committed files by anyone, and a green run that depended
-   * on a project only one person has is a claim nobody else can check — so a
-   * supplied project adds evidence and never supplies the verdict.
+   * ADR 0001 is precise about what this means: "`--project` runs must pass if
+   * invoked but do not form the gate." Not forming the gate is about the
+   * *standing* gate — a machine without this project is not failing — and not
+   * about tolerating a failure in front of someone who explicitly asked for
+   * it. So these scenarios gate when they run, and only run when asked for.
    */
   project?: string
 }
@@ -65,7 +70,7 @@ export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> 
     const passing = prepareProject(join(workspace, "passing"), "passing", options)
     const broken = prepareProject(join(workspace, "build-failed"), "buildFailed", options)
 
-    const service = serviceFor(passing, homeDir, options)
+    const service = serviceFor(passing, homeDir, { ...options, configured: "fixture" })
 
     const passed = await timed("passing run", () =>
       service.start(scoped(FIXTURE.passingSuite), noop).result,
@@ -113,7 +118,7 @@ export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> 
       }),
     )
 
-    const brokenService = serviceFor(broken, homeDir, options)
+    const brokenService = serviceFor(broken, homeDir, { ...options, configured: "fixture" })
     const buildFailed = await timed("buildFailed", () =>
       brokenService.start({ requestedScope: { kind: "all" } }, noop).result,
     )
@@ -287,12 +292,14 @@ async function pagingScenario(
 /**
  * The same seam, against a project this machine happens to own.
  *
- * Every result here is report-only. A real project can fail for reasons that
- * say nothing about this tool — a scheme that does not build, a test that is
- * genuinely broken — and letting those turn the gate red would train everyone
- * to ignore it. What it proves is narrower and still worth having: that the
- * adapter resolves, admits, runs and classifies against a project nobody
- * generated.
+ * What this proves is narrower than the fixture scenarios and still worth
+ * having: that the adapter resolves, admits, runs and classifies against a
+ * project nobody generated — a real scheme, a real destination, real tests.
+ *
+ * The project's own `.opencode/xcode-test.json` is what configures it.
+ * Forcing the fixture's scheme onto someone else's project would fail scheme
+ * resolution on nearly every real repository, which is not a finding about
+ * anything.
  */
 async function projectScenarios(
   project: string,
@@ -300,37 +307,30 @@ async function projectScenarios(
   options: Layer4Options,
 ): Promise<ScenarioResult[]> {
   const started = Date.now()
+  const scenario = (status: "passed" | "failed", detail: string): ScenarioResult => ({
+    name: "supplied project run",
+    // Gating, per ADR 0001: "`--project` runs must pass if invoked but do not
+    // form the gate." Somebody who named a project wants to be told.
+    kind: "gating",
+    status,
+    detail,
+    durationMs: Date.now() - started,
+  })
+
   try {
-    const service = serviceFor(project, homeDir, options)
+    const service = serviceFor(project, homeDir, { ...options, configured: undefined })
     const result = await service.start({ requestedScope: { kind: "all" } }, noop).result
 
-    const detail = isTestRunSummary(result)
-      ? `${describe(result)}; ${result.tests.counts?.total ?? 0} test(s) observed`
-      : describe(result)
-
+    // A classified outcome is the bar. Which outcome a real project reaches —
+    // passing, failing, failing to build — is the project's business and not
+    // evidence about this tool.
     return [
-      {
-        name: "supplied project run",
-        kind: "report-only",
-        // Anything that reached a classified outcome is a success for this
-        // scenario. Which outcome it reached is the project's business.
-        status: isTestRunSummary(result) ? "passed" : "failed",
-        detail,
-        durationMs: Date.now() - started,
-      },
+      isTestRunSummary(result)
+        ? scenario("passed", `${describe(result)}; ${result.tests.counts?.total ?? 0} test(s) observed`)
+        : scenario("failed", `reached no Test Run: ${describe(result)}`),
     ]
   } catch (error) {
-    return [
-      {
-        name: "supplied project run",
-        kind: "report-only",
-        status: "failed",
-        // The message may name paths on this machine, and the report is
-        // durable: only the error's kind is recorded.
-        detail: `the run could not be driven: ${(error as Error).name}`,
-        durationMs: Date.now() - started,
-      },
-    ]
+    return [scenario("failed", `the run could not be driven: ${safeDiagnostic(error)}`)]
   }
 }
 
@@ -401,7 +401,7 @@ async function timeoutScenario(
 function prepareProject(
   path: string,
   variant: "passing" | "buildFailed",
-  options: Layer4Options,
+  options: ExecutionContext,
 ): string {
   const tree = generate({ out: path, variant })
   mkdirSync(join(tree.root, ".opencode"), { recursive: true })
@@ -416,7 +416,16 @@ function prepareProject(
   return tree.root
 }
 
-function serviceFor(trustedRoot: string, homeDir: string, options: Layer4Options) {
+/**
+ * `configured: undefined` means "let the project speak for itself": the
+ * generated fixture is configured from here because the gate generated it,
+ * and a supplied project is not.
+ */
+function serviceFor(
+  trustedRoot: string,
+  homeDir: string,
+  options: ExecutionContext & { configured?: undefined | "fixture" },
+) {
   const storage = storageFor(homeDir, trustedRoot)
   prepareStorage(storage)
 
@@ -424,14 +433,17 @@ function serviceFor(trustedRoot: string, homeDir: string, options: Layer4Options
     storage,
     trustedRoot,
     homeDir,
-    configuration: {
-      status: "loaded",
-      configuration: {
-        schemaVersion: 1,
-        scheme: FIXTURE.scheme,
-        destination: options.destination,
-      },
-    },
+    configuration:
+      options.configured === undefined
+        ? readProjectConfiguration(trustedRoot)
+        : {
+            status: "loaded",
+            configuration: {
+              schemaVersion: 1,
+              scheme: FIXTURE.scheme,
+              destination: options.destination,
+            },
+          },
     toolchain: options.toolchain,
     runtime: { path: options.runtimePath },
     supervisorEntrypoint: SUPERVISOR_ENTRYPOINT,

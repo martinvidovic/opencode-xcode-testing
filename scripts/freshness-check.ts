@@ -11,12 +11,16 @@
  * Output is machine-readable and maps observed facts onto the fixtures they
  * affect, via each fixture's structured provenance.
  *
- * Usage: bun scripts/freshness-check.ts [--fixtures <directory>] [--json]
+ * Usage: bun scripts/freshness-check.ts [--fixtures <dir>] [--json] [--no-build]
  */
 
 import { spawnSync } from "node:child_process"
-import { readdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+
+import { RUN_ARTIFACTS } from "../src/runner/paths.ts"
+import { FIXTURE, generate } from "./generate-fixture-project.ts"
 
 export const DEFAULT_FIXTURE_DIR = join(import.meta.dir, "..", "test", "fixtures", "xcresult")
 
@@ -84,12 +88,60 @@ const REQUIRED_KEYS: Record<string, string[]> = {
 }
 
 /**
+ * Produce a Result Bundle and examine it, when nobody has one to hand.
+ *
+ * The gate produces one as a side effect of running its scenarios, and
+ * examining that is cheaper than building a second. Run on its own, though —
+ * or with only the suites that never build anything — this check would have
+ * nothing but version strings to go on, so it generates the fixture project
+ * and runs it. Non-fatal like everything else here: a machine that cannot
+ * build reports that it could not, never drift it did not observe.
+ */
+export function produceAndExamineBundle(): BundleExamination {
+  const workspace = mkdtempSync(join(tmpdir(), "xcode-test-freshness-"))
+  try {
+    const tree = generate({ out: join(workspace, "project"), variant: "passing" })
+    const bundlePath = join(workspace, RUN_ARTIFACTS.resultBundle)
+
+    const built = execute("/usr/bin/xcodebuild", [
+      "test",
+      "-project",
+      join(tree.root, `${FIXTURE.projectName}.xcodeproj`),
+      "-scheme",
+      FIXTURE.scheme,
+      "-destination",
+      "platform=iOS Simulator,name=iPhone 17",
+      "-resultBundlePath",
+      bundlePath,
+      "-derivedDataPath",
+      join(workspace, "DerivedData"),
+    ])
+
+    return existsSync(bundlePath)
+      ? examineBundle(bundlePath)
+      : {
+          status: "unavailable",
+          reason: `a Result Bundle could not be produced on this machine: ${firstLine(built.stdout)}`,
+          commands: [],
+          missingKeys: [],
+        }
+  } catch (error) {
+    return {
+      status: "unavailable",
+      reason: `a Result Bundle could not be produced on this machine: ${(error as Error).name}`,
+      commands: [],
+      missingKeys: [],
+    }
+  } finally {
+    rmSync(workspace, { recursive: true, force: true })
+  }
+}
+
+/**
  * Read a real Result Bundle with the same commands interpretation uses.
  *
  * Non-fatal like everything else here: an absent bundle is reported as one,
- * never as a failure. The gate generates a bundle as a side effect of running
- * its scenarios, and examining that one is both cheaper and more honest than
- * generating another that nothing else ever looked at.
+ * never as a failure.
  */
 export function examineBundle(
   bundlePath: string | undefined,
@@ -278,12 +330,16 @@ export function render(report: FreshnessReport): string {
 }
 
 export function runFreshnessCheck(
-  options: { directory?: string; bundle?: BundleExamination } = {},
+  options: { directory?: string; bundle?: BundleExamination; produce?: boolean } = {},
 ): FreshnessReport {
   const directory = options.directory ?? DEFAULT_FIXTURE_DIR
   const report = compare(observeToolchain(), readFixtureProvenance(directory))
-  // Examined by whoever produced the bundle, while it still existed.
-  const bundle = options.bundle ?? examineBundle(undefined)
+
+  // Examined by whoever produced the bundle, while it still existed —
+  // otherwise produced here, so the check is never version strings alone.
+  const bundle =
+    options.bundle ??
+    (options.produce === true ? produceAndExamineBundle() : examineBundle(undefined))
 
   return {
     ...report,
@@ -299,7 +355,9 @@ if (import.meta.main) {
   const at = argv.indexOf("--fixtures")
   const directory = at === -1 ? DEFAULT_FIXTURE_DIR : (argv[at + 1] ?? DEFAULT_FIXTURE_DIR)
 
-  const report = runFreshnessCheck({ directory })
+  // Run on its own, this builds a Result Bundle to look at: version strings
+  // say the toolchain moved, not that anything the decoders read did.
+  const report = runFreshnessCheck({ directory, produce: !argv.includes("--no-build") })
   process.stdout.write(argv.includes("--json") ? `${JSON.stringify(report, null, 2)}\n` : render(report))
 
   // Non-fatal by design: drift is surfaced, never a reason to fail the gate.

@@ -19,6 +19,8 @@ import { join } from "node:path"
 
 import { TOOL_IDS, descriptionFor } from "../../src/adapter/descriptions.ts"
 import { defaultConfigDirectory } from "../link-host-package.ts"
+import { safeDiagnostic } from "./diagnostic.ts"
+import { bounded, SERVER_BOOT_MS } from "./host.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
 
@@ -28,66 +30,6 @@ const TEMPLATES = join(REPO, "examples", "agent")
 
 /** A port nothing else is likely to hold, so the gate never adopts a running server. */
 const GATE_PORT = 45_729
-
-/**
- * How long the host may take to come up with this plugin loaded.
- *
- * The SDK's own default is five seconds, which is a reasonable figure for a
- * bare server and not for this one: the host boots the plugin as part of
- * starting, and the plugin's startup probes a runtime by executing a
- * TypeScript file in a subprocess. The plugin bounds that work itself; this
- * number only says the gate is willing to wait for it rather than calling a
- * cold machine a registration failure.
- */
-const SERVER_BOOT_MS = 60_000
-
-/**
- * How long any single host call may take before the gate gives up on it.
- *
- * A standing gate that can hang is not a gate — it is a job somebody
- * eventually notices and kills, and it reports nothing either way. Every
- * interaction with the host is therefore bounded, and a call that overruns is
- * a scenario failure with a diagnostic rather than a wait with no end.
- */
-const HOST_CALL_MS = 30_000
-
-/** Bound one host call, naming what was being asked when it overran. */
-async function bounded<T>(what: string, call: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      call,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`the host did not answer \`${what}\` within ${HOST_CALL_MS}ms`)),
-          HOST_CALL_MS,
-        )
-      }),
-    ])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
-}
-
-type OpencodeClient = {
-  tool: {
-    ids(options: unknown): Promise<{ data?: string[] }>
-    list(options: unknown): Promise<{ data?: Array<{ id: string; description?: string; parameters?: unknown }> }>
-  }
-  session: { create(options: unknown): Promise<{ data?: { id: string } }> }
-  app: { agents(options: unknown): Promise<{ data?: Array<Record<string, unknown>> }> }
-}
-
-type Sdk = {
-  createOpencode(options: {
-    port: number
-    timeout: number
-    config: { plugin: string[] }
-  }): Promise<{
-    client: OpencodeClient
-    server: { url: string; close(): void }
-  }>
-}
 
 /**
  * The SDK is host-managed test infrastructure, not a repository dependency, so
@@ -162,7 +104,7 @@ export async function runRegistrationGate(): Promise<ScenarioResult[]> {
         name: "b1 host registration",
         kind: "gating",
         status: "failed",
-        detail: `the headless instance could not be driven: ${String(error)}`,
+        detail: `the headless instance could not be driven: ${safeDiagnostic(error)}`,
       },
     ]
   } finally {

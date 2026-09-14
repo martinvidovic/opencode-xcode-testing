@@ -120,7 +120,30 @@ describe("what a report says", () => {
     expect(rendered.startsWith("acceptance gate: passed")).toBe(true)
   })
 
-  test("names the report's own path, so the run can be found again", () => {
-    expect(renderReport(report(), "/tmp/acceptance-1.json")).toContain("/tmp/acceptance-1.json")
+  test("names the report file, without naming anyone's home directory", () => {
+    // This text is what somebody pastes into an issue. The JSON beside it is
+    // 0600 and may carry machine-local paths; this must not.
+    const rendered = renderReport(report(), "/Users/someone/Library/x/acceptance-1.json")
+
+    expect(rendered).toContain("acceptance-1.json")
+    expect(rendered).not.toContain("/Users/someone")
+  })
+
+  test("carries no machine-local path at all", () => {
+    const rendered = renderReport(report(), "/Users/someone/reports/acceptance-1.json")
+
+    // A developer directory and a runtime path say nothing a reader of an
+    // issue can act on, and both name where this machine keeps things.
+    expect(rendered).not.toContain("/Applications/Xcode.app")
+    expect(rendered).not.toContain("/opt/homebrew/bin/bun")
+    expect(rendered.split("\n").some((line) => /(?<![\w.])\/[A-Za-z]/.test(line))).toBe(false)
+  })
+
+  test("says plainly when the command line selected nothing at all", () => {
+    // A refused command line still leaves a record: someone reading the
+    // reports is answering "what has this machine verified", and an
+    // invocation that verified nothing because it was mistyped is part of it.
+    const rendered = renderReport(report({ selected: [], outcome: "failed" }), "/somewhere")
+    expect(rendered).toContain("selected       (nothing)")
   })
 })

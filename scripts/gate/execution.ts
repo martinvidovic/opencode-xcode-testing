@@ -16,7 +16,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import type { Destination } from "../../src/domain/request.ts"
-import type { ToolchainIdentity } from "../../src/domain/toolchain.ts"
+import type { ExecutionContext } from "./context.ts"
 import { byteLength, lineCount, resolveBudget } from "../../src/adapter/budget.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
 import { defaultConfigDirectory } from "../link-host-package.ts"
@@ -27,29 +27,13 @@ import {
   STUB_PROVIDER_ID,
   type StubProvider,
 } from "./provider.ts"
+import { safeDiagnostic } from "./diagnostic.ts"
 import type { ScenarioResult } from "./report.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
 const STUB_PORT = 45_795
 const HOST_PORT = 45_796
-
-export type ExecutionOptions = {
-  toolchain: ToolchainIdentity
-  runtimePath: string
-  destination: Destination
-  /**
-   * A locally owned real project.
-   *
-   * (b2) drives the *host*, and every scenario here asserts a rendered
-   * contract — the exact outcome text, the budget, the shape of an inspection.
-   * Those assertions are about generated projects with known outcomes, so a
-   * supplied project is deliberately not run here; Layer 4 is where it adds
-   * its report-only evidence. Accepted so the option can be forwarded
-   * uniformly rather than being silently dropped by one layer.
-   */
-  project?: string
-}
 
 type Client = {
   session: {
@@ -65,7 +49,7 @@ type ToolPart = {
   state?: { status?: string; output?: string; error?: string }
 }
 
-export async function runExecutionGate(options: ExecutionOptions): Promise<ScenarioResult[]> {
+export async function runExecutionGate(options: ExecutionContext): Promise<ScenarioResult[]> {
   const sdkPath = join(
     defaultConfigDirectory(),
     "node_modules",
@@ -115,7 +99,7 @@ export async function runExecutionGate(options: ExecutionOptions): Promise<Scena
       server.close()
     }
   } catch (error) {
-    return [failure("b2 execution", `the stub-provider route could not be driven: ${String(error)}`)]
+    return [failure("b2 execution", `the stub-provider route could not be driven: ${safeDiagnostic(error)}`)]
   } finally {
     stub?.stop()
     process.chdir(previousCwd)
@@ -135,7 +119,7 @@ async function scenarios(
     tool: "xcode_test",
     args: scope(FIXTURE.passingSuite),
   })
-  results.push(expectText("b2 passing", passed, "Test Run passed"))
+  results.push(expectOutcome("b2 passing", passed, "Test Run passed"))
   results.push(
     stub.turns > 0
       ? success("b2 driven by a model turn", `${stub.turns} scripted turns served, credential-free`)
@@ -146,7 +130,7 @@ async function scenarios(
     tool: "xcode_test",
     args: scope(FIXTURE.failingSuite),
   })
-  results.push(expectText("b2 testFailed", failed, "Test Run testFailed"))
+  results.push(expectOutcome("b2 testFailed", failed, "Test Run testFailed"))
   results.push(
     /failures \(\d+\):\n\s+\S+:\d+/.test(failed)
       ? success("b2 rendered diagnostics", diagnosticExcerpt(failed))
@@ -165,23 +149,18 @@ async function scenarios(
     tool: "xcode_test",
     args: scope("NoSuchSuiteExists"),
   })
+  // The exact contract, in the headline. "Not passed" would be satisfied by
+  // any wrong answer at all, and a caller reading this text needs to be told
+  // their *selection* was the problem rather than their code.
   results.push(
-    // The exact contract, rendered. "Not passed" would be satisfied by any
-    // wrong answer at all, and a caller reading this text needs to be told
-    // their *selection* was the problem rather than their code.
-    /infrastructureFailed/.test(zeroMatch) && /scopeMismatch/.test(zeroMatch)
-      ? success("b2 zero-match", firstLine(zeroMatch))
-      : failure(
-          "b2 zero-match",
-          `expected infrastructureFailed/scopeMismatch, rendered: ${firstLine(zeroMatch)}`,
-        ),
+    expectOutcome("b2 zero-match", zeroMatch, "Test Run infrastructureFailed: scopeMismatch"),
   )
 
   const buildFailed = await invoke(client, stub, roots.broken, {
     tool: "xcode_test",
     args: { scope: { kind: "all" } },
   })
-  results.push(expectText("b2 buildFailed", buildFailed, "Test Run buildFailed"))
+  results.push(expectOutcome("b2 buildFailed", buildFailed, "Test Run buildFailed"))
 
   const runId = /^run\s+(\S+)/m.exec(failed)?.[1]
   if (runId === undefined) {
@@ -200,17 +179,33 @@ async function scenarios(
       tool: "xcode_test_inspect",
       args: { runId, facet: "log", maxBytes: 4096 },
     })
-    results.push(
-      /untrusted/i.test(logged) && /bytes\s+\d+\.\./.test(logged)
-        ? success("b2 log facet", firstLine(logged))
-        : failure(
-            "b2 log facet",
-            `expected a byte-ranged chunk labelled untrusted, rendered: ${firstLine(logged)}`,
-          ),
-    )
+    results.push(logFacetResult(logged, runId))
   }
 
   return results
+}
+
+/**
+ * What a log chunk must have rendered.
+ *
+ * Three separate claims, each checked where it belongs rather than by seeing
+ * whether a word occurs: the response is about this run's log, it carries the
+ * byte range that makes paging possible, and it is fenced and named as
+ * untrusted — which is the only thing standing between a model and text the
+ * project wrote.
+ */
+function logFacetResult(rendered: string, runId: string): ScenarioResult {
+  const headline = firstLine(rendered)
+  if (!headline.startsWith(`Inspection of log for run ${runId}`)) {
+    return failure("b2 log facet", `not a log inspection of this run: ${headline}`)
+  }
+  if (!/^bytes\s+\d+\.\.\d+$/m.test(rendered)) {
+    return failure("b2 log facet", `no byte range to continue from: ${headline}`)
+  }
+  if (!rendered.includes("begin untrusted log") || !rendered.includes("end untrusted log")) {
+    return failure("b2 log facet", "the log was not fenced and labelled as untrusted")
+  }
+  return success("b2 log facet", headline)
 }
 
 /**
@@ -280,7 +275,7 @@ async function invoke(
 function prepareProject(
   path: string,
   variant: "passing" | "buildFailed",
-  options: ExecutionOptions,
+  options: ExecutionContext,
 ): string {
   const tree = generate({ out: path, variant })
   mkdirSync(join(tree.root, ".opencode"), { recursive: true })
@@ -299,10 +294,19 @@ function scope(suite: string): unknown {
   return { scope: { kind: "selected", tests: [{ bundle: FIXTURE.testTarget, suite }] } }
 }
 
-function expectText(name: string, output: string, expected: string): ScenarioResult {
-  return output.includes(expected)
-    ? success(name, firstLine(output))
-    : failure(name, `expected "${expected}", got "${firstLine(output) || "(no tool output)"}"`)
+/**
+ * Assert the rendered **headline**, not that a word appears somewhere.
+ *
+ * A substring test passes on the word turning up inside an explanatory
+ * diagnostic — "this was not a testFailed run because…" contains
+ * `testFailed`. The headline is the first line, and it is the sentence the
+ * renderer contracts to produce, so that is what is compared.
+ */
+function expectOutcome(name: string, output: string, expected: string): ScenarioResult {
+  const headline = firstLine(output)
+  return headline.startsWith(expected)
+    ? success(name, headline)
+    : failure(name, `expected a headline of "${expected}", got "${headline || "(no tool output)"}"`)
 }
 
 function firstLine(output: string): string {
