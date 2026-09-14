@@ -33,12 +33,13 @@ import { runExecutionGate } from "./gate/execution.ts"
 import {
   asSuite,
   newObservations,
+  registryDisagreements,
   reportFrom,
-  rosterDrift,
   scenarioSink,
   type Observations,
 } from "./gate/observations.ts"
 import { renderReport, writeReport } from "./gate/report.ts"
+import { registryProblems, SCENARIO } from "./gate/scenarios.ts"
 
 /**
  * Exported so the report-writing paths can be exercised without a simulator.
@@ -192,15 +193,15 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     return finish("failed", "no gating scenario ran, so nothing was verified")
   }
 
-  // Reported, never gating: a roster is bookkeeping about the gate, not
-  // evidence about the tool. `rosterDrift` says why it is checked at all.
-  const drift = rosterDrift(observed)
-  if (drift.length > 0) {
+  // Reported, never gating: a registry is bookkeeping about the gate, not
+  // evidence about the tool. `registryDisagreements` says why it is checked.
+  const disagreements = [...registryProblems(), ...registryDisagreements(observed)]
+  if (disagreements.length > 0) {
     record({
-      name: "scenario roster",
+      name: SCENARIO["scenario registry"],
       kind: "report-only",
       status: "failed",
-      detail: `a completed suite did not produce: ${drift.join(", ")}`,
+      detail: disagreements.join("; "),
     })
   }
 

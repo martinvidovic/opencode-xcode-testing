@@ -22,6 +22,7 @@ import { defaultConfigDirectory } from "../link-host-package.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
 import { bounded, SERVER_BOOT_MS } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
+import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
 
@@ -55,7 +56,7 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
   const sdk = await loadSdk()
   if (sdk === undefined) {
     record({
-      name: "b1 host registration",
+      name: SCENARIO["b1 host registration"],
       kind: "gating",
       status: "failed",
       detail:
@@ -66,7 +67,7 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
 
   if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
     record({
-      name: "b1 host registration",
+      name: SCENARIO["b1 host registration"],
       kind: "gating",
       status: "failed",
       detail:
@@ -104,7 +105,7 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
     // suite's scenarios are in the report the moment each finishes, so a
     // failure here says what went wrong without erasing what went right.
     record({
-      name: "b1 host registration",
+      name: SCENARIO["b1 host registration"],
       kind: "gating",
       status: "failed",
       detail: `the headless instance could not be driven: ${safeDiagnostic(error)}`,
@@ -146,8 +147,8 @@ export async function registrationScenarios(
 
   record(
     missing.length === 0
-      ? pass("b1 tool ids register", `${TOOL_IDS.join(", ")} all present, credential-free`)
-      : fail("b1 tool ids register", `missing from the host: ${missing.join(", ")}`),
+      ? pass(SCENARIO["b1 tool ids register"], `${TOOL_IDS.join(", ")} all present, credential-free`)
+      : fail(SCENARIO["b1 tool ids register"], `missing from the host: ${missing.join(", ")}`),
   )
 
   // This endpoint filters by model, so the model id is chosen deliberately
@@ -169,12 +170,12 @@ function descriptionScenario(
 ): ScenarioResult {
   for (const id of TOOL_IDS) {
     const listed = byId.get(id)
-    if (listed === undefined) return fail("b1 tool descriptions", `${id} was not listed`)
+    if (listed === undefined) return fail(SCENARIO["b1 tool descriptions"], `${id} was not listed`)
     if (listed.description !== descriptionFor(id)) {
-      return fail("b1 tool descriptions", `${id}'s description is not the shipped sidecar text`)
+      return fail(SCENARIO["b1 tool descriptions"], `${id}'s description is not the shipped sidecar text`)
     }
   }
-  return pass("b1 tool descriptions", "each description is exactly the shipped sidecar file")
+  return pass(SCENARIO["b1 tool descriptions"], "each description is exactly the shipped sidecar file")
 }
 
 function parameterScenario(
@@ -187,10 +188,10 @@ function parameterScenario(
 
   return complaints.length === 0
     ? pass(
-        "b1 parameter schemas",
+        SCENARIO["b1 parameter schemas"],
         "all three normalize to their contract: only `scope` is required, facets are a closed set, recovery takes no arguments",
       )
-    : fail("b1 parameter schemas", complaints.join("; "))
+    : fail(SCENARIO["b1 parameter schemas"], complaints.join("; "))
 }
 
 async function markerScenario(client: OpencodeClient, directory: string): Promise<ScenarioResult> {
@@ -204,8 +205,8 @@ async function markerScenario(client: OpencodeClient, directory: string): Promis
   const leaked = TOOL_IDS.filter((id) => ids.has(id))
 
   return leaked.length === 0
-    ? pass("b1 enablement marker gates registration", "an unmarked root registers nothing, silently")
-    : fail("b1 enablement marker gates registration", `registered without a marker: ${leaked.join(", ")}`)
+    ? pass(SCENARIO["b1 enablement marker gates registration"], "an unmarked root registers nothing, silently")
+    : fail(SCENARIO["b1 enablement marker gates registration"], `registered without a marker: ${leaked.join(", ")}`)
 }
 
 /**
@@ -237,7 +238,7 @@ async function agentScenario(client: OpencodeClient, directory: string): Promise
 
   const missing = expected.filter((name) => !names.has(name))
   if (missing.length > 0) {
-    return fail("b1 restricted agents", `the host did not load: ${missing.join(", ")}`)
+    return fail(SCENARIO["b1 restricted agents"], `the host did not load: ${missing.join(", ")}`)
   }
 
   for (const name of expected) {
@@ -248,17 +249,17 @@ async function agentScenario(client: OpencodeClient, directory: string): Promise
     )
 
     if (resolveAction(rules, "bash") !== "deny") {
-      return fail("b1 restricted agents", `${name} does not deny bash`)
+      return fail(SCENARIO["b1 restricted agents"], `${name} does not deny bash`)
     }
     for (const id of TOOL_IDS) {
       if (resolveAction(rules, id) !== "allow") {
-        return fail("b1 restricted agents", `${name} does not expose ${id}`)
+        return fail(SCENARIO["b1 restricted agents"], `${name} does not expose ${id}`)
       }
     }
   }
 
   return pass(
-    "b1 restricted agents",
+    SCENARIO["b1 restricted agents"],
     `${expected.join(", ")} deny bash and allow the family, as the host resolves them`,
   )
 }

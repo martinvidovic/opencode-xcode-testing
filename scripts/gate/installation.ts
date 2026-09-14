@@ -22,6 +22,7 @@ import { TOOL_IDS } from "../../src/adapter/descriptions.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
 import { bootHost, toolIds } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
+import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
@@ -74,7 +75,7 @@ export async function runInstallationGate(record: ScenarioSink): Promise<void> {
 
 function scenario(started: number, status: "passed" | "failed", detail: string): ScenarioResult {
   return {
-    name: "b1 documented installation path",
+    name: SCENARIO["b1 documented installation path"],
     kind: "gating",
     status,
     detail,
