@@ -1,5 +1,10 @@
 # Xcode Test Tool
 
+> **Work in progress.** This is an early build being hardened against a real
+> Xcode install, and some of its edges show it: paths are absolute throughout,
+> installation is a manual symlink, and the shape of a tool's arguments may
+> still change between commits. It works, and it is not yet settled.
+
 A local OpenCode capability for running scoped Xcode tests while exposing only
 trustworthy, compact results to the model.
 
