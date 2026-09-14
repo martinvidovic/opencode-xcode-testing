@@ -81,6 +81,34 @@ export const CONDITIONAL = [
 ] as const
 
 /**
+ * Conditional failures that mean a suite never got to its standing checks.
+ *
+ * A suite that could not start a host, or could not resolve the SDK, reports
+ * one of these and returns. Its standing scenarios were never runnable, so
+ * asking what it missed would name every one of them — saying twice what
+ * `unreached` already said once, on every machine without a host.
+ *
+ * `supplied project run` is deliberately **not** here, and the distinction is
+ * the whole point of the list. It runs *after* the standing scenarios, against
+ * a project somebody named on the command line, and it can fail for reasons
+ * that have nothing to do with whether the standing checks ran. Treating every
+ * conditional failure alike let a failed `--project` run hide a standing
+ * scenario that had silently stopped being reported — the drift this check
+ * exists to catch, concealed by the one flag that was supposed to reduce noise.
+ */
+export const BOOTSTRAP_FAILURES: readonly string[] = ["b1 host registration", "b2 execution"]
+
+/** Whether this name is one of the suite's standing checks. */
+export function isStanding(suite: Suite, name: string): boolean {
+  return (STANDING[suite] as readonly string[]).includes(name)
+}
+
+/** Whether a failure of this name means the suite never reached its checks. */
+export function isBootstrapFailure(name: string): boolean {
+  return BOOTSTRAP_FAILURES.includes(name)
+}
+
+/**
  * Every name the gate may report.
  *
  * A union rather than `string`, so an emitter naming something the registry
@@ -95,11 +123,6 @@ export type ScenarioName =
 const STANDING_NAMES: readonly string[] = Object.values(STANDING).flat()
 
 export const ALL_SCENARIOS: readonly string[] = [...STANDING_NAMES, ...CONDITIONAL]
-
-/** Whether this name is reported only when something specific happens. */
-export function isConditional(name: string): boolean {
-  return (CONDITIONAL as readonly string[]).includes(name)
-}
 
 /** Whether this name is one the registry knows about at all. */
 export function isRegistered(name: string): boolean {
@@ -132,6 +155,14 @@ export function registryProblems(): string[] {
   for (const name of CONDITIONAL) {
     if (STANDING_NAMES.includes(name)) {
       problems.push(`\`${name}\` is both standing and conditional`)
+    }
+  }
+
+  for (const name of BOOTSTRAP_FAILURES) {
+    // A bootstrap failure suppresses a check, so one that is not conditional
+    // would be a standing scenario quietly exempting its own suite.
+    if (!(CONDITIONAL as readonly string[]).includes(name)) {
+      problems.push(`\`${name}\` suppresses reporting but is not conditional`)
     }
   }
 

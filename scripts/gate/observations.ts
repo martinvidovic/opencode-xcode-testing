@@ -21,8 +21,9 @@
 
 import type { Suite } from "./options.ts"
 import {
-  isConditional,
+  isBootstrapFailure,
   isRegistered,
+  isStanding,
   registryProblems,
   STANDING,
   standingFor,
@@ -263,9 +264,20 @@ export function registryDisagreements(observed: Observations): string[] {
     if (!entry.completed) continue
 
     const results = observed.scenarios.slice(entry.from, entry.to)
-    // A conditional scenario that failed is a suite saying why it could not
-    // proceed. It has accounted for itself; the rest is `unreached`'s job.
-    if (results.some((s) => s.status === "failed" && isConditional(s.name))) continue
+
+    // A bootstrap failure is a suite saying it never got started: no host, no
+    // SDK. It has accounted for itself and the rest is `unreached`'s job.
+    //
+    // Both halves are required, and the second is what makes the first
+    // honest. A declared bootstrap failure that nonetheless ran standing
+    // checks did reach them, so whatever is missing after that is missing for
+    // some other reason — and a suite is only excused by a failure that
+    // genuinely stopped it, not by one that merely has the right name.
+    const reachedStanding = results.some((result) => isStanding(entry.suite, result.name))
+    const neverStarted = results.some(
+      (result) => result.status === "failed" && isBootstrapFailure(result.name),
+    )
+    if (neverStarted && !reachedStanding) continue
 
     const produced = new Set(results.map((scenario) => scenario.name))
     for (const name of STANDING[entry.suite]) {
