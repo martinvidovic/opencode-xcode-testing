@@ -16,6 +16,7 @@ import {
   FOCUSED_ACTIVITY_NODE_CAP,
   FOCUSED_MESSAGE_CHAR_CAP,
   RESPONSE_BYTE_CAP,
+  STACK_FRAME_TEXT_CHAR_CAP,
 } from "../../src/domain/limits.ts"
 import type { ActivityNode, DiagnosticSummary } from "../../src/domain/inspection.ts"
 import { extractFrames } from "../../src/interpreter/frames.ts"
@@ -251,5 +252,103 @@ describe("the response cap", () => {
     expect(focused.attachments.length).toBeLessThan(oversized.attachments.length)
     expect(focused.id).toBe("diag-1")
     expect(focused.message.length).toBeGreaterThan(0)
+  })
+})
+
+describe("a stack frame whose path is longer than the display budget", () => {
+  /** A trace whose one source frame names a pathologically deep file. */
+  function traceWithPath(path: string): string {
+    return ["XCTAssertEqual failed", `    at ${path}:42:9`].join("\n")
+  }
+
+  // Inside the trusted root, because a path outside it is reduced to its
+  // basename before this rule is ever reached — the long ones that survive
+  // are repository paths, which is exactly the case that matters.
+  const ENORMOUS = `${ROOT}/Sources/${"Nested/".repeat(400)}Login.swift`
+
+  test("is dropped rather than cut into a different file", () => {
+    // A path cut to a length names nothing. The reader who follows it learns
+    // only that this tool is wrong about where things are — and unlike a
+    // missing frame, they have no way to tell that is what happened.
+    //
+    // The whole frame goes, not just its location. A source-line frame is
+    // *only* a location, so stripping one leaves an object with no fields —
+    // a slot in a bounded collection and bytes in a bounded response, saying
+    // nothing.
+    const view = focusedDiagnostic(indexWith(traceWithPath(ENORMOUS)), DIAGNOSTIC, ROOT, undefined)
+
+    expect(view.focused?.stackFrames).toEqual([])
+  })
+
+  test("says a collection was cut, which is exactly what happened", () => {
+    // The flag has to match the loss. A frame removed is a collection that
+    // lost an element; reporting a field truncation would be describing a
+    // different event, and this contract has a word for each.
+    const view = focusedDiagnostic(indexWith(traceWithPath(ENORMOUS)), DIAGNOSTIC, ROOT, undefined)
+
+    expect(view.truncation.collectionTruncated).toBe(true)
+    expect(view.truncation.fieldTruncated).toBe(false)
+  })
+
+  test("keeps a path that fits exactly as it was recorded", () => {
+    // The other direction, so the rule above cannot be satisfied by dropping
+    // every location: an ordinary path comes back whole, numbers and all.
+    const view = focusedDiagnostic(
+      indexWith(traceWithPath(`${ROOT}/Sources/App/Login.swift`)),
+      DIAGNOSTIC,
+      ROOT,
+      undefined,
+    )
+
+    expect(view.focused?.stackFrames[0]?.location).toEqual({
+      path: "Sources/App/Login.swift",
+      line: 42,
+      column: 9,
+    })
+  })
+
+  test("stays within the response cap however many oversized paths there are", () => {
+    // Each frame is now either whole or absent, so no number of pathological
+    // paths can push a response past the one bound the contract fixes. This
+    // measures what the code produced rather than a response shape the test
+    // wrote for itself.
+    const lines = ["XCTAssertEqual failed"]
+    for (let index = 0; index < 50; index += 1) lines.push(`    at ${ENORMOUS}${index}:1`)
+
+    const view = focusedDiagnostic(indexWith(lines.join("\n")), DIAGNOSTIC, ROOT, undefined)
+
+    expect(Buffer.byteLength(JSON.stringify(view), "utf8")).toBeLessThanOrEqual(RESPONSE_BYTE_CAP)
+    expect(view.focused?.stackFrames).toEqual([])
+    expect(view.truncation.collectionTruncated).toBe(true)
+  })
+
+  test("reports a symbol cut to its bound, rather than cutting it quietly", () => {
+    // Display text is shortened, which is allowed — and said. A symbol at
+    // exactly the cap is not the symbol that was recorded, and a caller
+    // comparing it against a build log needs to know that.
+    const long = "s".repeat(STACK_FRAME_TEXT_CHAR_CAP * 2)
+    const trace = ["XCTAssertEqual failed", `0   AppTests    0x0000000104a2b1c4 ${long} + 132`].join(
+      "\n",
+    )
+
+    const view = focusedDiagnostic(indexWith(trace), DIAGNOSTIC, ROOT, undefined)
+
+    expect(view.truncation.fieldTruncated).toBe(true)
+  })
+
+  test("still returns the symbol and module a frame carries", () => {
+    // Those are display text: shortened, they are the same symbol and the
+    // same module. Only the path has the property that cutting it changes
+    // what it names.
+    const long = "s".repeat(STACK_FRAME_TEXT_CHAR_CAP * 2)
+    const trace = ["XCTAssertEqual failed", `0   AppTests    0x0000000104a2b1c4 ${long} + 132`].join(
+      "\n",
+    )
+
+    const view = focusedDiagnostic(indexWith(trace), DIAGNOSTIC, ROOT, undefined)
+    const frame = view.focused?.stackFrames[0]
+
+    expect(frame?.module).toBe("AppTests")
+    expect(frame?.symbol?.length).toBe(STACK_FRAME_TEXT_CHAR_CAP)
   })
 })

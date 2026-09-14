@@ -36,6 +36,7 @@ import {
   FOCUSED_STACK_FRAME_CAP,
   RESPONSE_BYTE_CAP,
   RESPONSE_ENVELOPE_BYTES,
+  STACK_FRAME_PATH_LIMIT,
   STACK_FRAME_TEXT_CHAR_CAP,
   SUMMARY_TEST_FAILURE_CAP,
 } from "../domain/limits.ts"
@@ -114,12 +115,23 @@ export function focusedDiagnostic(
   const message = capTo(full, FOCUSED_MESSAGE_CHAR_CAP)
 
   const extracted = extractFrames(full, trustedRoot)
-  const frames = capCollection(extracted.frames.map(capFrame), FOCUSED_STACK_FRAME_CAP)
+  const outcomes = extracted.frames.map(capFrame)
+  const frames = capCollection(
+    outcomes.flatMap((outcome) => (outcome.frame === undefined ? [] : [outcome.frame])),
+    FOCUSED_STACK_FRAME_CAP,
+  )
+  // Every cap that bites is reported, and each as itself. A dropped frame is
+  // a collection that lost an element; a shortened symbol is a string that is
+  // no longer the one recorded.
+  const frameDropped = outcomes.some((outcome) => outcome.dropped)
+  const frameTextShortened = outcomes.some((outcome) => outcome.shortened)
   const activities = capActivities(lazy?.activities ?? [])
+  const attached = (lazy?.attachments ?? []).map(capAttachment)
   const attachments = capCollection(
-    (lazy?.attachments ?? []).map(capAttachment),
+    attached.map((entry) => entry.value),
     ATTACHMENT_METADATA_CAP,
   )
+  const attachmentTextShortened = attached.some((entry) => entry.truncated)
 
   const view: FocusedDiagnostic = {
     id: diagnostic.id,
@@ -134,12 +146,16 @@ export function focusedDiagnostic(
 
   return fit(view, {
     ...UNTRUNCATED,
-    fieldTruncated: message.truncated,
+    fieldTruncated: message.truncated || frameTextShortened || attachmentTextShortened,
     // Zero frames because none could be read is a collection we could not
     // fill, and #8 requires saying so rather than presenting an empty stack
     // as a complete one.
     collectionTruncated:
-      frames.truncated || activities.truncated || attachments.truncated || !extracted.recognized,
+      frames.truncated ||
+      frameDropped ||
+      activities.truncated ||
+      attachments.truncated ||
+      !extracted.recognized,
   })
 }
 
@@ -227,6 +243,12 @@ function fit<T extends { message?: string }>(view: T, truncation: TruncationStat
   // Detail is not returned at all, and the response says which field is why —
   // an oversized test name and an oversized path are different things to go
   // and look at.
+  // A stack-frame location can never be what blocks this. `capFrame` drops an
+  // oversized one before the view is assembled, and the shedding above
+  // removes whole frames before the message is even touched — so by the time
+  // anything is over the cap, no frame is left to be over it with. The rule
+  // is enforced earlier rather than here, which is why this branch names
+  // identities and the record's own location and nothing from a frame.
   const overCap = !fits(current)
   const blockedBy = overCap
     ? blockingFields(current, RESPONSE_BYTE_CAP - RESPONSE_ENVELOPE_BYTES)
@@ -287,21 +309,71 @@ function capCollection<T>(items: T[], cap: number): Capped<T[]> {
     : { value: items.slice(0, cap), truncated: true }
 }
 
-function capFrame(frame: StackFrame): StackFrame {
+/**
+ * Bound a stack frame for display, and report what that cost.
+ *
+ * A symbol and a module are display text: shortened, they are still the same
+ * symbol and the same module, recognisable and shorter. A **path is not** —
+ * see `STRUCTURAL_FIELDS` in `cap.ts`, which refuses to shorten one for the
+ * same reason. This is where that rule has to be applied a second time,
+ * because the display budget runs first and the response cap would otherwise
+ * never see the path it was meant to protect.
+ *
+ * A frame whose path is oversized is dropped **whole**, not stripped of its
+ * location. Two reasons, and the second is the one that matters.
+ *
+ * `extractFrames` produces frames carrying *either* a symbol and a module *or*
+ * a location, never both, so stripping a source-line frame leaves an object
+ * with no fields at all — occupying a slot in a bounded collection and bytes
+ * in a bounded response while saying nothing.
+ *
+ * And dropping the frame is what keeps the truncation metadata true. A frame
+ * removed is a collection that lost an element, which is a fact this contract
+ * has a word for; a frame kept with a field missing is neither a shortened
+ * string nor a shorter collection, and would have to be reported as one or the
+ * other — saying a collection was cut when a field was removed is not a
+ * smaller inaccuracy than saying nothing.
+ */
+function capFrame(frame: StackFrame): FrameOutcome {
+  const location = frame.location
+  if (location !== undefined && location.path.length > STACK_FRAME_PATH_LIMIT) {
+    return { dropped: true, shortened: false }
+  }
+
+  const symbol = frame.symbol === undefined ? undefined : capTo(frame.symbol, STACK_FRAME_TEXT_CHAR_CAP)
+  const module = frame.module === undefined ? undefined : capTo(frame.module, STACK_FRAME_TEXT_CHAR_CAP)
+
   return {
-    ...(frame.symbol === undefined
-      ? {}
-      : { symbol: capTo(frame.symbol, STACK_FRAME_TEXT_CHAR_CAP).value }),
-    ...(frame.module === undefined
-      ? {}
-      : { module: capTo(frame.module, STACK_FRAME_TEXT_CHAR_CAP).value }),
-    ...(frame.location === undefined ? {} : { location: capLocation(frame.location) }),
+    frame: {
+      ...(symbol === undefined ? {} : { symbol: symbol.value }),
+      ...(module === undefined ? {} : { module: module.value }),
+      ...(location === undefined ? {} : { location: keepLocation(location) }),
+    },
+    dropped: false,
+    shortened: (symbol?.truncated ?? false) || (module?.truncated ?? false),
   }
 }
 
-function capLocation(location: SafeLocation): SafeLocation {
+/**
+ * What became of one frame.
+ *
+ * Deliberately not `Capped<StackFrame>`: nothing here is truncated. A frame is
+ * either returned, cut to its display bounds, or not returned — and a caller
+ * is told which, because "shortened" and "gone" are different losses.
+ */
+type FrameOutcome = {
+  /** Absent when the frame was dropped rather than bounded. */
+  frame?: StackFrame
+  /** Dropped because its path could not be shown without being changed. */
+  dropped: boolean
+  /** Display text was cut to its cap. */
+  shortened: boolean
+}
+
+/** Kept exactly as recorded. Only the numbers beside it are optional. */
+function keepLocation(location: SafeLocation): SafeLocation {
   return {
-    path: capTo(location.path, STACK_FRAME_TEXT_CHAR_CAP).value,
+    path: location.path,
     ...(location.line === undefined ? {} : { line: location.line }),
     ...(location.column === undefined ? {} : { column: location.column }),
   }
@@ -346,14 +418,29 @@ function capActivities(nodes: ActivityNode[]): Capped<ActivityNode[]> {
   return { value: walk(nodes, 1), truncated }
 }
 
-function capAttachment(attachment: AttachmentMetadata): AttachmentMetadata {
+/**
+ * Bound an attachment's metadata, and say whether that cost anything.
+ *
+ * Both fields are display text here: v1 exposes no attachment contents and no
+ * attachment paths, so a name addresses nothing and cutting it loses only
+ * legibility. That makes shortening the right call — but not a silent one.
+ * Every cap that bites is reported.
+ */
+function capAttachment(attachment: AttachmentMetadata): Capped<AttachmentMetadata> {
+  const name = capTo(attachment.name, ATTACHMENT_TEXT_CHAR_CAP)
+  const mediaType =
+    attachment.mediaType === undefined
+      ? undefined
+      : capTo(attachment.mediaType, ATTACHMENT_TEXT_CHAR_CAP)
+
   return {
-    name: capTo(attachment.name, ATTACHMENT_TEXT_CHAR_CAP).value,
-    ...(attachment.mediaType === undefined
-      ? {}
-      : { mediaType: capTo(attachment.mediaType, ATTACHMENT_TEXT_CHAR_CAP).value }),
-    ...(attachment.byteSize === undefined ? {} : { byteSize: attachment.byteSize }),
-    // Metadata only. v1 exposes no attachment contents and no attachment paths.
-    contentAccessible: false,
+    value: {
+      name: name.value,
+      ...(mediaType === undefined ? {} : { mediaType: mediaType.value }),
+      ...(attachment.byteSize === undefined ? {} : { byteSize: attachment.byteSize }),
+      // Metadata only. v1 exposes no attachment contents and no attachment paths.
+      contentAccessible: false,
+    },
+    truncated: name.truncated || (mediaType?.truncated ?? false),
   }
 }
