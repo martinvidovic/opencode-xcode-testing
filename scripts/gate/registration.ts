@@ -21,6 +21,7 @@ import { TOOL_IDS, descriptionFor } from "../../src/adapter/descriptions.ts"
 import { defaultConfigDirectory } from "../link-host-package.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
 import { bounded, SERVER_BOOT_MS } from "./host.ts"
+import type { ScenarioSink } from "./observations.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
 
@@ -49,30 +50,29 @@ async function loadSdk(): Promise<Sdk | undefined> {
   return (await import(candidate)) as Sdk
 }
 
-export async function runRegistrationGate(): Promise<ScenarioResult[]> {
+/** Records each scenario as it finishes; see `ScenarioSink`. */
+export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
   const sdk = await loadSdk()
   if (sdk === undefined) {
-    return [
-      {
-        name: "b1 host registration",
-        kind: "gating",
-        status: "failed",
-        detail:
-          "@opencode-ai/sdk was not found under the OpenCode config directory; the gate looked there because the SDK is host-managed test infrastructure rather than a repository dependency.",
-      },
-    ]
+    record({
+      name: "b1 host registration",
+      kind: "gating",
+      status: "failed",
+      detail:
+        "@opencode-ai/sdk was not found under the OpenCode config directory; the gate looked there because the SDK is host-managed test infrastructure rather than a repository dependency.",
+    })
+    return
   }
 
   if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
-    return [
-      {
-        name: "b1 host registration",
-        kind: "gating",
-        status: "failed",
-        detail:
-          "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`.",
-      },
-    ]
+    record({
+      name: "b1 host registration",
+      kind: "gating",
+      status: "failed",
+      detail:
+        "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`.",
+    })
+    return
   }
 
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b1-"))
@@ -90,23 +90,25 @@ export async function runRegistrationGate(): Promise<ScenarioResult[]> {
     })
 
     try {
-      return [
-        ...(await registrationScenarios(client, marked)),
-        await markerScenario(client, unmarked),
-        await agentScenario(client, marked),
-      ]
+      // Sequential and recorded one at a time. Written as one array literal
+      // these evaluate in the same order but reach the report only if every
+      // one of them returns — and the last two boot host machinery.
+      for (const scenario of await registrationScenarios(client, marked)) record(scenario)
+      record(await markerScenario(client, unmarked))
+      record(await agentScenario(client, marked))
     } finally {
       server.close()
     }
   } catch (error) {
-    return [
-      {
-        name: "b1 host registration",
-        kind: "gating",
-        status: "failed",
-        detail: `the headless instance could not be driven: ${safeDiagnostic(error)}`,
-      },
-    ]
+    // Recorded beside whatever already ran rather than instead of it: this
+    // suite's scenarios are in the report the moment each finishes, so a
+    // failure here says what went wrong without erasing what went right.
+    record({
+      name: "b1 host registration",
+      kind: "gating",
+      status: "failed",
+      detail: `the headless instance could not be driven: ${safeDiagnostic(error)}`,
+    })
   } finally {
     process.chdir(previousCwd)
     rmSync(workspace, { recursive: true, force: true })

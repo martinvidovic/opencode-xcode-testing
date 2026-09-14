@@ -38,6 +38,16 @@ export type RunReport = {
    */
   selected: Suite[]
   /**
+   * Which selected suites were entered, and which finished.
+   *
+   * `selected` says what was asked for and `scenarios` says what happened;
+   * neither says whether a suite that produced three results was meant to
+   * produce three or eight. A suite entered and not completed is one whose
+   * remaining scenarios were never reached. Additive, so it needs no
+   * `schemaVersion` bump.
+   */
+  suites?: Array<{ suite: Suite; entered: true; completed: boolean }>
+  /**
    * Whether a real project was supplied. Deliberately a boolean: a project
    * path is a private fact about someone's machine, and the report says that
    * the standing gate was not what ran without naming where it ran instead.

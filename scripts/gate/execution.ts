@@ -28,6 +28,7 @@ import {
   type StubProvider,
 } from "./provider.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
+import type { ScenarioSink } from "./observations.ts"
 import type { ScenarioResult } from "./report.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
@@ -49,7 +50,11 @@ type ToolPart = {
   state?: { status?: string; output?: string; error?: string }
 }
 
-export async function runExecutionGate(options: ExecutionContext): Promise<ScenarioResult[]> {
+/** Records each scenario as it finishes; see `ScenarioSink`. */
+export async function runExecutionGate(
+  options: ExecutionContext,
+  record: ScenarioSink,
+): Promise<void> {
   const sdkPath = join(
     defaultConfigDirectory(),
     "node_modules",
@@ -59,15 +64,17 @@ export async function runExecutionGate(options: ExecutionContext): Promise<Scena
     "index.js",
   )
   if (!existsSync(sdkPath)) {
-    return [failure("b2 execution", "@opencode-ai/sdk was not found under the OpenCode config directory")]
+    record(failure("b2 execution", "@opencode-ai/sdk was not found under the OpenCode config directory"))
+    return
   }
   if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
-    return [
+    record(
       failure(
         "b2 execution",
         "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`.",
       ),
-    ]
+    )
+    return
   }
 
   const { createOpencode } = (await import(sdkPath)) as {
@@ -94,12 +101,15 @@ export async function runExecutionGate(options: ExecutionContext): Promise<Scena
     })
 
     try {
-      return await scenarios(client, stub, { passing, broken })
+      await scenarios(client, stub, { passing, broken }, record)
     } finally {
       server.close()
     }
   } catch (error) {
-    return [failure("b2 execution", `the stub-provider route could not be driven: ${safeDiagnostic(error)}`)]
+    // Beside what already ran, not instead of it. Every scenario this suite
+    // finished is already in the report, so a failure here adds a reason
+    // rather than replacing eleven results with one.
+    record(failure("b2 execution", `the stub-provider route could not be driven: ${safeDiagnostic(error)}`))
   } finally {
     stub?.stop()
     process.chdir(previousCwd)
@@ -111,16 +121,16 @@ async function scenarios(
   client: Client,
   stub: StubProvider,
   roots: { passing: string; broken: string },
-): Promise<ScenarioResult[]> {
-  const results: ScenarioResult[] = []
+  record: ScenarioSink,
+): Promise<void> {
   const budget = resolveBudget(undefined)
 
   const passed = await invoke(client, stub, roots.passing, {
     tool: "xcode_test",
     args: scope(FIXTURE.passingSuite),
   })
-  results.push(expectOutcome("b2 passing", passed, "Test Run passed"))
-  results.push(
+  record(expectOutcome("b2 passing", passed, "Test Run passed"))
+  record(
     stub.turns > 0
       ? success("b2 driven by a model turn", `${stub.turns} scripted turns served, credential-free`)
       : failure("b2 driven by a model turn", "the stub provider was never called"),
@@ -130,13 +140,13 @@ async function scenarios(
     tool: "xcode_test",
     args: scope(FIXTURE.failingSuite),
   })
-  results.push(expectOutcome("b2 testFailed", failed, "Test Run testFailed"))
-  results.push(
+  record(expectOutcome("b2 testFailed", failed, "Test Run testFailed"))
+  record(
     /failures \(\d+\):\n\s+\S+:\d+/.test(failed)
       ? success("b2 rendered diagnostics", diagnosticExcerpt(failed))
       : failure("b2 rendered diagnostics", "a real failing run rendered no located failure"),
   )
-  results.push(
+  record(
     lineCount(failed) <= budget.maxLines && byteLength(failed) <= budget.maxBytes
       ? success(
           "b2 budget invariant",
@@ -152,7 +162,7 @@ async function scenarios(
   // The exact contract, in the headline. "Not passed" would be satisfied by
   // any wrong answer at all, and a caller reading this text needs to be told
   // their *selection* was the problem rather than their code.
-  results.push(
+  record(
     expectOutcome("b2 zero-match", zeroMatch, "Test Run infrastructureFailed: scopeMismatch"),
   )
 
@@ -160,17 +170,17 @@ async function scenarios(
     tool: "xcode_test",
     args: { scope: { kind: "all" } },
   })
-  results.push(expectOutcome("b2 buildFailed", buildFailed, "Test Run buildFailed"))
+  record(expectOutcome("b2 buildFailed", buildFailed, "Test Run buildFailed"))
 
   const runId = /^run\s+(\S+)/m.exec(failed)?.[1]
   if (runId === undefined) {
-    results.push(failure("b2 inspection without rerun", "no run id was rendered to inspect"))
+    record(failure("b2 inspection without rerun", "no run id was rendered to inspect"))
   } else {
     const inspected = await invoke(client, stub, roots.passing, {
       tool: "xcode_test_inspect",
       args: { runId, facet: "failures" },
     })
-    results.push(inspectionResult(inspected, runId))
+    record(inspectionResult(inspected, runId))
 
     // The log facet reads a file rather than the index, and is the one facet
     // whose content is untrusted. Both facts have to survive the round trip
@@ -179,10 +189,8 @@ async function scenarios(
       tool: "xcode_test_inspect",
       args: { runId, facet: "log", maxBytes: 4096 },
     })
-    results.push(logFacetResult(logged, runId))
+    record(logFacetResult(logged, runId))
   }
-
-  return results
 }
 
 /**

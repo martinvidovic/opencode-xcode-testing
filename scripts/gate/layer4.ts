@@ -16,6 +16,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { monotonicNow } from "../../src/domain/clock.ts"
+import type { ScenarioSink } from "./observations.ts"
 import type { TestRunRequest } from "../../src/domain/request.ts"
 import type { ExecutionContext } from "./context.ts"
 import type { TestToolResult } from "../../src/domain/result.ts"
@@ -51,24 +52,28 @@ export type Layer4Options = ExecutionContext & {
 const SUPERVISOR_ENTRYPOINT = join(import.meta.dir, "..", "..", "src", "runner", "supervisor-entry.ts")
 
 /**
- * The scenarios, and what a real Result Bundle they produced actually
- * contained.
+ * Run the Layer 4 scenarios against a real simulator.
  *
- * The **examination** travels out, not the path. Every artifact this function
- * creates lives in a workspace it deletes on the way out, so a path handed to
- * a later caller would name a directory that no longer exists — which is
- * exactly the bug the first version of this had, and which the gate's own
- * report caught.
+ * `record` is called as each scenario finishes, not once at the end. This
+ * suite drives real `xcodebuild` invocations, so it is the likeliest place in
+ * the gate for something to throw — and every scenario before the throw is a
+ * fact about this machine that stays true.
+ *
+ * What comes back is the **examination** of the Result Bundle, not its path.
+ * Every artifact this function creates lives in a workspace it deletes on the
+ * way out, so a path handed to a later caller would name a directory that no
+ * longer exists — exactly the bug the first version of this had, and which
+ * the gate's own report caught.
  */
-export type Layer4Outcome = { scenarios: ScenarioResult[]; bundle?: BundleExamination }
-
-export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> {
+export async function runLayer4(
+  options: Layer4Options,
+  record: ScenarioSink,
+): Promise<BundleExamination | undefined> {
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-gate-"))
   const homeDir = join(workspace, "home")
   mkdirSync(homeDir, { recursive: true })
 
   try {
-    const results: ScenarioResult[] = []
     const passing = prepareProject(join(workspace, "passing"), "passing", options)
     const broken = prepareProject(join(workspace, "build-failed"), "buildFailed", options)
 
@@ -77,7 +82,7 @@ export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> 
     const passed = await timed("passing run", () =>
       service.start(scoped(FIXTURE.passingSuite), noop).result,
     )
-    results.push(
+    record(
       expect(passed, "passing run", (result) =>
         outcomeOf(result) === "passed"
           ? undefined
@@ -88,7 +93,7 @@ export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> 
     const failed = await timed("failing run", () =>
       service.start(scoped(FIXTURE.failingSuite), noop).result,
     )
-    results.push(
+    record(
       expect(failed, "failing run", (result) =>
         outcomeOf(result) === "testFailed"
           ? undefined
@@ -99,7 +104,7 @@ export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> 
     const zeroMatch = await timed("zero-match detection", () =>
       service.start(scoped("NoSuchSuiteExists"), noop).result,
     )
-    results.push(
+    record(
       expect(zeroMatch, "zero-match detection", (result) => {
         // The exact contract, not merely "not passed". Xcode exits zero here,
         // so an exit-code wrapper reports a green empty run — but so does a
@@ -124,7 +129,7 @@ export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> 
     const buildFailed = await timed("buildFailed", () =>
       brokenService.start({ requestedScope: { kind: "all" } }, noop).result,
     )
-    results.push(
+    record(
       expect(buildFailed, "buildFailed", (result) =>
         outcomeOf(result) === "buildFailed"
           ? undefined
@@ -132,24 +137,23 @@ export async function runLayer4(options: Layer4Options): Promise<Layer4Outcome> 
       ),
     )
 
-    results.push(await inspectionScenario(service, failed))
-    results.push(await pagingScenario(service, passed))
+    record(await inspectionScenario(service, failed))
+    record(await pagingScenario(service, passed))
 
     // Report-only, per ADR 0001: these are timing-sensitive by nature, and
     // #11's stub suite already proves the supervision machinery deterministically.
-    results.push(await cancellationScenario(service))
-    results.push(await timeoutScenario(service))
+    record(await cancellationScenario(service))
+    record(await timeoutScenario(service))
 
     if (options.project !== undefined) {
-      results.push(...(await projectScenarios(options.project, homeDir, options)))
+      for (const scenario of await projectScenarios(options.project, homeDir, options)) {
+        record(scenario)
+      }
     }
 
     // Examined here, while the bundle still exists.
     const bundlePath = bundleOf(homeDir, passing, passed)
-    return {
-      scenarios: results,
-      ...(bundlePath === undefined ? {} : { bundle: examineBundle(bundlePath) }),
-    }
+    return bundlePath === undefined ? undefined : examineBundle(bundlePath)
   } finally {
     rmSync(workspace, { recursive: true, force: true })
   }

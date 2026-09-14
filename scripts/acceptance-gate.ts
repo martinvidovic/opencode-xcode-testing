@@ -30,7 +30,13 @@ import { runLayer4 } from "./gate/layer4.ts"
 import { runInstallationGate } from "./gate/installation.ts"
 import { runRegistrationGate } from "./gate/registration.ts"
 import { runExecutionGate } from "./gate/execution.ts"
-import { newObservations, reportFrom, type Observations } from "./gate/observations.ts"
+import {
+  asSuite,
+  newObservations,
+  reportFrom,
+  scenarioSink,
+  type Observations,
+} from "./gate/observations.ts"
 import { renderReport, writeReport } from "./gate/report.ts"
 
 /**
@@ -64,9 +70,16 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   if (project !== undefined && suites.includes("layer4")) observed.project = true
   observed.hostVersion = observedHostVersion()
 
-  // Held by reference, so a scenario pushed here is a scenario the report has
-  // — including a report written from a `catch` three suites later.
+  // A read alias for the pass/fail decision below. Nothing pushes through it —
+  // the suites write through `record`, which is the only handle they get.
   const scenarios = observed.scenarios
+
+  // Handed to every suite, so a scenario is in the report the moment it
+  // finishes rather than when its suite returns. A suite is where the gate
+  // talks to a simulator, a host process and a compiler, which makes it the
+  // likeliest place for something to throw — and the results before the throw
+  // are facts about this machine that stay true.
+  const record = scenarioSink(observed)
 
   // Every path from here writes a report, including the ones that fail before
   // a single scenario runs. A gate invocation that left no durable trace is
@@ -152,21 +165,22 @@ export async function main(argv: string[], observed: Observations): Promise<numb
 
   let bundle: BundleExamination | undefined
   if (suites.includes("layer4") && context !== undefined) {
-    const outcome = await runLayer4({
-      ...context,
-      ...(project === undefined ? {} : { project }),
-    })
-    scenarios.push(...outcome.scenarios)
-    bundle = outcome.bundle
+    // Wrapped so the report can tell "this suite ran four scenarios" from
+    // "this suite ran four scenarios and then stopped".
+    bundle = await asSuite(observed, "layer4", () =>
+      runLayer4({ ...context, ...(project === undefined ? {} : { project }) }, record),
+    )
   }
   if (suites.includes("b1")) {
-    scenarios.push(...(await runRegistrationGate()))
-    scenarios.push(...(await runInstallationGate()))
+    await asSuite(observed, "b1", async () => {
+      await runRegistrationGate(record)
+      await runInstallationGate(record)
+    })
   }
   if (suites.includes("b2") && context !== undefined) {
     // (b2) drives the host against generated projects with known outcomes, so
     // it takes the shared context and not the project override.
-    scenarios.push(...(await runExecutionGate(context)))
+    await asSuite(observed, "b2", () => runExecutionGate(context, record))
   }
 
   // A run that executed no gating scenario has verified nothing, whatever its
@@ -180,7 +194,17 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   // Drift is surfaced in the report and never fails the gate. It examines the
   // bundle the scenarios just produced, so the check is against a real payload
   // rather than against version strings alone.
-  observed.freshness = runFreshnessCheck(bundle === undefined ? { produce: true } : { bundle })
+  //
+  // Two-stage, because the second stage may build an Xcode project and the
+  // first is a string comparison already made. `record` lands the comparison
+  // in the report immediately, so a run that ends during the build reports
+  // what it did establish instead of reporting that nobody looked.
+  observed.freshness = runFreshnessCheck({
+    ...(bundle === undefined ? { produce: true } : { bundle }),
+    record: (partial) => {
+      observed.freshness = partial
+    },
+  })
 
   return finish(gating.some((scenario) => scenario.status === "failed") ? "failed" : "passed")
 }

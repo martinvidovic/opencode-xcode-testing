@@ -21,6 +21,7 @@ import { join } from "node:path"
 import { TOOL_IDS } from "../../src/adapter/descriptions.ts"
 import { safeDiagnostic } from "./diagnostic.ts"
 import { bootHost, toolIds } from "./host.ts"
+import type { ScenarioSink } from "./observations.ts"
 import type { ScenarioResult } from "./report.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
@@ -29,7 +30,8 @@ const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
 /** Its own port, so this never adopts the registration gate's host. */
 const PORT = 45_741
 
-export async function runInstallationGate(): Promise<ScenarioResult[]> {
+/** Records its one scenario as it finishes; see `ScenarioSink`. */
+export async function runInstallationGate(record: ScenarioSink): Promise<void> {
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-install-"))
   const started = Date.now()
 
@@ -52,7 +54,7 @@ export async function runInstallationGate(): Promise<ScenarioResult[]> {
     }
 
     const missing = TOOL_IDS.filter((id) => !registered.includes(id))
-    return [
+    record(
       scenario(
         started,
         missing.length === 0 ? "passed" : "failed",
@@ -60,11 +62,11 @@ export async function runInstallationGate(): Promise<ScenarioResult[]> {
           ? "a plugin-directory symlink, exactly as the README describes it, registers the family"
           : `installing the documented way registered nothing: ${missing.join(", ")} absent`,
       ),
-    ]
+    )
   } catch (error) {
-    return [
+    record(
       scenario(started, "failed", `the documented installation could not be exercised: ${safeDiagnostic(error)}`),
-    ]
+    )
   } finally {
     rmSync(workspace, { recursive: true, force: true })
   }
