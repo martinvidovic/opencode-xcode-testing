@@ -24,9 +24,11 @@ import { main, recordUncaughtFailure } from "../../scripts/acceptance-gate.ts"
 import {
   newObservations,
   reportFrom,
+  scenarioSink,
   UNOBSERVED_TOOLCHAIN,
   type Observations,
 } from "../../scripts/gate/observations.ts"
+import { runFreshnessCheck } from "../../scripts/freshness-check.ts"
 import { reportPathFor, writeReport, type RunReport } from "../../scripts/gate/report.ts"
 
 const STARTED_AT = "2026-09-14T01:00:00.000Z"
@@ -224,5 +226,89 @@ describe("the handler that runs when everything else has gone wrong", () => {
     expect(() =>
       recordUncaughtFailure(partlyObserved(), new Error("boom"), missing),
     ).not.toThrow()
+  })
+})
+
+describe("a suite that throws part-way through", () => {
+  test("keeps the scenarios it finished before the throw", () => {
+    // The shape every suite now has: results reach the report one at a time,
+    // through a sink, rather than being collected and returned at the end. A
+    // suite is where the gate talks to a simulator, a host process and a
+    // compiler, so it is the likeliest place for something to throw — and
+    // returning the collected list at the end means the throw takes all of it.
+    const observed = newObservations(STARTED_AT)
+    const record = scenarioSink(observed)
+
+    const suite = () => {
+      record({ name: "passing run", kind: "gating", status: "passed", detail: "passed" })
+      record({ name: "failing run", kind: "gating", status: "passed", detail: "testFailed" })
+      throw new Error("the simulator went away")
+    }
+
+    expect(suite).toThrow()
+
+    const report = reportFrom(observed, "failed", "Error: the simulator went away")
+    expect(report.scenarios.map((scenario) => scenario.name)).toEqual([
+      "passing run",
+      "failing run",
+    ])
+  })
+
+  test("distinguishes what passed, what failed, and what was never reached", () => {
+    // Three states, and the third is the absence of a record rather than a
+    // record saying nothing. `selected` is what makes it readable: a reader
+    // who knows b2 was selected and sees no b2 scenario knows the suite did
+    // not get there.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["layer4", "b2"]
+    const record = scenarioSink(observed)
+
+    record({ name: "passing run", kind: "gating", status: "passed", detail: "passed" })
+    record({ name: "buildFailed", kind: "gating", status: "failed", detail: "expected 2 errors" })
+
+    const report = reportFrom(observed, "failed", "Error: boom")
+
+    expect(report.scenarios.filter((s) => s.status === "passed")).toHaveLength(1)
+    expect(report.scenarios.filter((s) => s.status === "failed")).toHaveLength(1)
+    expect(report.selected).toContain("b2")
+    expect(report.scenarios.some((s) => s.name.startsWith("b2"))).toBe(false)
+    expect(report.diagnostic).toBe("Error: boom")
+  })
+
+  test("cannot have its record reordered or removed by the suite writing to it", () => {
+    // The sink is a function, not the array. A suite can add to the report and
+    // can do nothing else to it — including nothing to what another suite
+    // recorded before it.
+    const observed = newObservations(STARTED_AT)
+    const record = scenarioSink(observed)
+
+    record({ name: "first", kind: "gating", status: "passed", detail: "" })
+    expect(Array.isArray(record)).toBe(false)
+    expect(observed.scenarios.map((s) => s.name)).toEqual(["first"])
+  })
+})
+
+describe("a freshness check that begins and cannot finish", () => {
+  test("reports what it established rather than reporting that nobody looked", () => {
+    // The version comparison is cheap and already true; examining a bundle can
+    // build an Xcode project and take minutes. A run that ends during the
+    // second half used to report the whole check as unobserved.
+    const observed = newObservations(STARTED_AT)
+
+    const attempt = () => {
+      runFreshnessCheck({
+        bundle: { status: "examined", commands: [], missingKeys: [] },
+        record: (partial) => {
+          observed.freshness = partial
+          throw new Error("the build went away")
+        },
+      })
+    }
+
+    expect(attempt).toThrow()
+
+    const report = reportFrom(observed, "failed", "Error: the build went away")
+    expect(report.freshness).not.toEqual({ status: "unobserved" })
+    expect((report.freshness as { observed: unknown }).observed).toBeDefined()
   })
 })

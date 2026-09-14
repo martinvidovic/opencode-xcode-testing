@@ -346,10 +346,25 @@ export function render(report: FreshnessReport): string {
 }
 
 export function runFreshnessCheck(
-  options: { directory?: string; bundle?: BundleExamination; produce?: boolean } = {},
+  options: {
+    directory?: string
+    bundle?: BundleExamination
+    produce?: boolean
+    /**
+     * Called with the version-string comparison as soon as it is made, before
+     * the bundle work that can take minutes and build an Xcode project.
+     *
+     * The comparison is cheap and already true; the bundle examination is
+     * neither. Without this, a caller whose run ends during the second half
+     * has nothing to show for the first, and reports the whole check as
+     * unobserved — which says nobody looked, when somebody did.
+     */
+    record?: (partial: FreshnessReport) => void
+  } = {},
 ): FreshnessReport {
   const directory = options.directory ?? DEFAULT_FIXTURE_DIR
   const report = compare(observeToolchain(), readFixtureProvenance(directory))
+  options.record?.({ ...report })
 
   // Examined by whoever produced the bundle, while it still existed —
   // otherwise produced here, so the check is never version strings alone.

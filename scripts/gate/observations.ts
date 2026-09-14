@@ -65,6 +65,27 @@ export function newObservations(startedAt: string): Observations {
 }
 
 /**
+ * How a suite reports a scenario the moment it finishes.
+ *
+ * A suite that collected its results and returned them at the end lost every
+ * one of them when it threw part-way — and a suite is exactly where a throw is
+ * likely, because a suite is the part that talks to a simulator, a host
+ * process and a compiler. Eleven scenarios that passed are eleven facts about
+ * this machine, and they do not stop being true because the twelfth blew up.
+ *
+ * A function rather than the array itself, so a suite cannot reorder, re-read
+ * or remove what another suite recorded: the only thing it can do with the
+ * report is add to it.
+ */
+export type ScenarioSink = (scenario: ScenarioResult) => void
+
+export function scenarioSink(observed: Observations): ScenarioSink {
+  return (scenario) => {
+    observed.scenarios.push(scenario)
+  }
+}
+
+/**
  * The report these observations support, and no more than that.
  *
  * Every fact absent from the accumulator is written as unobserved. That is the
