@@ -19,7 +19,10 @@ import { join } from "node:path"
 
 import { TOOL_IDS, descriptionFor } from "../../src/adapter/descriptions.ts"
 import { defaultConfigDirectory } from "../link-host-package.ts"
+import { safeDiagnostic } from "./diagnostic.ts"
+import { bounded, SERVER_BOOT_MS } from "./host.ts"
 import type { ScenarioResult } from "./report.ts"
+import { schemaComplaints } from "./schemas.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
@@ -27,22 +30,6 @@ const TEMPLATES = join(REPO, "examples", "agent")
 
 /** A port nothing else is likely to hold, so the gate never adopts a running server. */
 const GATE_PORT = 45_729
-
-type OpencodeClient = {
-  tool: {
-    ids(options: unknown): Promise<{ data?: string[] }>
-    list(options: unknown): Promise<{ data?: Array<{ id: string; description?: string; parameters?: unknown }> }>
-  }
-  session: { create(options: unknown): Promise<{ data?: { id: string } }> }
-  app: { agents(options: unknown): Promise<{ data?: Array<Record<string, unknown>> }> }
-}
-
-type Sdk = {
-  createOpencode(options: unknown): Promise<{
-    client: OpencodeClient
-    server: { url: string; close(): void }
-  }>
-}
 
 /**
  * The SDK is host-managed test infrastructure, not a repository dependency, so
@@ -98,6 +85,7 @@ export async function runRegistrationGate(): Promise<ScenarioResult[]> {
     process.chdir(marked)
     const { client, server } = await sdk.createOpencode({
       port: GATE_PORT,
+      timeout: SERVER_BOOT_MS,
       config: { plugin: [PLUGIN] },
     })
 
@@ -116,7 +104,7 @@ export async function runRegistrationGate(): Promise<ScenarioResult[]> {
         name: "b1 host registration",
         kind: "gating",
         status: "failed",
-        detail: `the headless instance could not be driven: ${String(error)}`,
+        detail: `the headless instance could not be driven: ${safeDiagnostic(error)}`,
       },
     ]
   } finally {
@@ -130,9 +118,14 @@ async function registrationScenarios(
   directory: string,
 ): Promise<ScenarioResult[]> {
   // The factory runs at instance bootstrap, so an instance has to exist first.
-  await client.session.create({ query: { directory }, body: { title: "acceptance gate" } })
+  await bounded(
+    "session.create",
+    client.session.create({ query: { directory }, body: { title: "acceptance gate" } }),
+  )
 
-  const ids = new Set((await client.tool.ids({ query: { directory } })).data ?? [])
+  const ids = new Set(
+    (await bounded("tool.ids", client.tool.ids({ query: { directory } }))).data ?? [],
+  )
   const missing = TOOL_IDS.filter((id) => !ids.has(id))
 
   const results: ScenarioResult[] = [
@@ -143,9 +136,12 @@ async function registrationScenarios(
 
   // This endpoint filters by model, so the model id is chosen deliberately
   // rather than left to whatever happens to be configured.
-  const listed = await client.tool.list({
-    query: { directory, provider: "anthropic", model: "claude-sonnet-4-5" },
-  })
+  const listed = await bounded(
+    "tool.list",
+    client.tool.list({
+      query: { directory, provider: "anthropic", model: "claude-sonnet-4-5" },
+    }),
+  )
   const byId = new Map((listed.data ?? []).map((entry) => [entry.id, entry]))
 
   results.push(descriptionScenario(byId))
@@ -169,41 +165,27 @@ function descriptionScenario(
 function parameterScenario(
   byId: Map<string, { description?: string; parameters?: unknown }>,
 ): ScenarioResult {
-  const test = byId.get("xcode_test")?.parameters as
-    | { properties?: Record<string, unknown>; required?: string[] }
-    | undefined
+  // Every tool, not just the one with the most arguments: a schema nobody
+  // checks is a schema that drifts, and `xcode_test_inspect` is the one a
+  // model reaches for after every failing run.
+  const complaints = TOOL_IDS.flatMap((id) => schemaComplaints(id, byId.get(id)?.parameters))
 
-  if (test?.properties === undefined) {
-    return fail("b1 parameter schemas", "xcode_test exposed no parameter schema")
-  }
-
-  const properties = Object.keys(test.properties).sort()
-  const expected = ["container", "destination", "scheme", "scope", "timeoutSeconds"]
-  if (properties.join(",") !== expected.join(",")) {
-    return fail("b1 parameter schemas", `xcode_test exposed ${properties.join(", ")}`)
-  }
-
-  // The legacy JSON-Schema fallback marks every key required. If that had been
-  // taken, a model would have to invent a destination on every call.
-  const required = (test.required ?? []).sort()
-  if (required.join(",") !== "scope") {
-    return fail("b1 parameter schemas", `xcode_test requires ${required.join(", ") || "(nothing)"}`)
-  }
-
-  const recover = byId.get("xcode_test_recover")?.parameters as
-    | { properties?: Record<string, unknown> }
-    | undefined
-  const recoverKeys = Object.keys(recover?.properties ?? {})
-  if (recoverKeys.length > 0) {
-    return fail("b1 parameter schemas", `xcode_test_recover invented arguments: ${recoverKeys.join(", ")}`)
-  }
-
-  return pass("b1 parameter schemas", "only `scope` is required; recovery takes no arguments")
+  return complaints.length === 0
+    ? pass(
+        "b1 parameter schemas",
+        "all three normalize to their contract: only `scope` is required, facets are a closed set, recovery takes no arguments",
+      )
+    : fail("b1 parameter schemas", complaints.join("; "))
 }
 
 async function markerScenario(client: OpencodeClient, directory: string): Promise<ScenarioResult> {
-  await client.session.create({ query: { directory }, body: { title: "acceptance gate" } })
-  const ids = new Set((await client.tool.ids({ query: { directory } })).data ?? [])
+  await bounded(
+    "session.create",
+    client.session.create({ query: { directory }, body: { title: "acceptance gate" } }),
+  )
+  const ids = new Set(
+    (await bounded("tool.ids", client.tool.ids({ query: { directory } }))).data ?? [],
+  )
   const leaked = TOOL_IDS.filter((id) => ids.has(id))
 
   return leaked.length === 0
@@ -231,7 +213,7 @@ export function resolveAction(rules: PermissionRule[], toolId: string): string |
 }
 
 async function agentScenario(client: OpencodeClient, directory: string): Promise<ScenarioResult> {
-  const agents = (await client.app.agents({ query: { directory } })).data ?? []
+  const agents = (await bounded("app.agents", client.app.agents({ query: { directory } }))).data ?? []
   const names = new Set(agents.map((agent) => String(agent["name"])))
 
   const expected = readdirSync(TEMPLATES)

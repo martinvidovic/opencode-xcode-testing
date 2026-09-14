@@ -129,9 +129,14 @@ export const server: Plugin = async (input) => {
     return {}
   }
 
-  // Read once: the host's configuration is not hot-reloaded, so re-reading
-  // per call could only invent a disagreement between two calls in one session.
-  const hostOutputLimits = await readOutputLimits(input.client)
+  // Read once, but **not here**. The factory runs inside the host's own
+  // bootstrap, and asking the host a question before that bootstrap finishes
+  // deadlocks it: the config route cannot answer until the plugin it is
+  // waiting on returns. Deferring to first use keeps the read-once property —
+  // the host's configuration is not hot-reloaded, so two calls in one session
+  // can never disagree — without the factory depending on a server that is
+  // still starting.
+  const hostOutputLimits = once(() => readOutputLimits(input.client))
 
   const skew = hostVersionDiagnostic(outcome.hostVersion)
   if (skew !== undefined) process.stderr.write(`xcode-test: ${skew}\n`)
@@ -151,7 +156,7 @@ export const server: Plugin = async (input) => {
   // hot-reloaded, so re-reading per call could only invent a disagreement.
   const deps: ToolDeps = {
     service,
-    budget: resolveBudget(hostOutputLimits),
+    budget: async () => resolveBudget(await hostOutputLimits()),
     now: () => Number(process.hrtime.bigint() / 1_000_000n),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     timestamp: () => new Date().toISOString(),
@@ -298,4 +303,15 @@ function serviceFor(input: {
     freeBytes: freeBytesOn(input.storage.toolRoot),
     cursorSecret: loadCursorSecret(input.storage),
   })
+}
+
+/**
+ * Evaluate once, on first use, and hand every later caller the same answer.
+ *
+ * Not a cache for speed: it is what lets a value be "read once per session"
+ * without that read having to happen at a moment when it cannot succeed.
+ */
+function once<T>(read: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined
+  return () => (pending ??= read())
 }

@@ -15,7 +15,7 @@
  * Usage: bun scripts/link-host-package.ts [--config <dir>]
  */
 
-import { existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -33,12 +33,8 @@ export function linkHostPackage(repoRoot: string, configDirectory: string): Link
   const target = join(configDirectory, "node_modules", HOST_SCOPE)
   const link = join(repoRoot, "node_modules", HOST_SCOPE)
 
-  if (!existsSync(join(target, "plugin"))) {
-    return {
-      status: "unavailable",
-      diagnostic: `${HOST_SCOPE}/plugin was not found under the OpenCode config directory. The host installs it on first run, so start OpenCode once and try again.`,
-    }
-  }
+  const problem = packageProblem(join(target, "plugin"))
+  if (problem !== undefined) return { status: "unavailable", diagnostic: problem }
 
   mkdirSync(join(repoRoot, "node_modules"), { recursive: true })
 
@@ -49,6 +45,32 @@ export function linkHostPackage(repoRoot: string, configDirectory: string): Link
 
   symlinkSync(target, link)
   return { status: "linked", target, link }
+}
+
+/**
+ * Why this is not the package we mean to link, or `undefined` if it is.
+ *
+ * A directory called `plugin` is not the same thing as `@opencode-ai/plugin`.
+ * Linking whatever happens to sit at that path would produce the exact failure
+ * this script exists to prevent — a plugin whose imports resolve to something
+ * unexpected, loading into silence — only now with a reassuring "linked"
+ * message in front of it. So the manifest is read and the name is checked.
+ */
+function packageProblem(path: string): string | undefined {
+  const absent = `${HOST_SCOPE}/plugin was not found under the OpenCode config directory. The host installs it on first run, so start OpenCode once and try again.`
+  if (!existsSync(path)) return absent
+
+  let manifest: unknown
+  try {
+    manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8"))
+  } catch {
+    return `${path} has no readable package.json, so it is not the host's ${HOST_SCOPE}/plugin.`
+  }
+
+  const name = (manifest as { name?: unknown }).name
+  return name === `${HOST_SCOPE}/plugin`
+    ? undefined
+    : `${path} declares itself \`${String(name)}\`, not ${HOST_SCOPE}/plugin. Linking it would resolve this plugin's imports to something else entirely.`
 }
 
 function isBrokenLink(path: string): boolean {

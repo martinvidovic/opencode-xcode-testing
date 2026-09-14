@@ -11,9 +11,10 @@
 
 import { mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 import { TOOL_DIRECTORY } from "../../src/runner/paths.ts"
+import type { Suite } from "./options.ts"
 
 export type ScenarioResult = {
   name: string
@@ -28,6 +29,20 @@ export type RunReport = {
   schemaVersion: 1
   startedAt: string
   finishedAt: string
+  /**
+   * The suites this invocation selected, whether or not any of them ran.
+   *
+   * Recorded because "passed" means nothing without it: a report that listed
+   * only the scenarios that executed could not distinguish a full gate from
+   * one that selected a single suite, and the difference is the whole claim.
+   */
+  selected: Suite[]
+  /**
+   * Whether a real project was supplied. Deliberately a boolean: a project
+   * path is a private fact about someone's machine, and the report says that
+   * the standing gate was not what ran without naming where it ran instead.
+   */
+  project?: boolean
   /** The observed toolchain identity facts (#8), minus the private digest. */
   toolchain: {
     xcodeVersion: string
@@ -59,13 +74,23 @@ export function writeReport(report: RunReport, homeDir = homedir()): string {
   return path
 }
 
+/**
+ * The human-readable summary, printed to stdout.
+ *
+ * Deliberately **not** the same content as the JSON beside it. The JSON is
+ * `0600` inside tool-managed storage and may carry machine-local paths; this
+ * text is what somebody pastes into an issue, so it carries none. A developer
+ * directory and a runtime path say nothing a reader of that issue can act on,
+ * and both name where this particular machine keeps things.
+ */
 export function renderReport(report: RunReport, path: string): string {
   const lines = [
     `acceptance gate: ${report.outcome}`,
     "",
+    `selected       ${report.selected.join(", ") || "(nothing)"}${report.project === true ? " (against a supplied project)" : ""}`,
     `toolchain      Xcode ${report.toolchain.xcodeVersion} (${report.toolchain.xcodeBuild}), xcresulttool ${report.toolchain.xcresulttoolVersion}, schema ${report.toolchain.schemaVersion}`,
     `host           OpenCode ${report.hostVersion}`,
-    `runtime        ${report.runtime.path}${report.runtime.version === undefined ? "" : ` (${report.runtime.version})`} [${report.runtime.source}]`,
+    `runtime        ${report.runtime.version ?? "unknown version"} [${report.runtime.source}]`,
     `destination    ${
       "unavailable" in report.destination
         ? report.destination.unavailable
@@ -75,6 +100,8 @@ export function renderReport(report: RunReport, path: string): string {
     "scenarios:",
   ]
 
+  if (report.scenarios.length === 0) lines.push("  (none ran)")
+
   for (const scenario of report.scenarios) {
     const mark = scenario.status === "passed" ? "ok  " : scenario.status === "failed" ? "FAIL" : "skip"
     const suffix = scenario.kind === "report-only" ? " [report-only]" : ""
@@ -83,6 +110,8 @@ export function renderReport(report: RunReport, path: string): string {
     if (scenario.detail.length > 0) lines.push(`       ${scenario.detail}`)
   }
 
-  lines.push("", `report         ${path}`)
+  // The report's own filename, not its full path: enough to find it in the
+  // reports directory, and not a line that names someone's home directory.
+  lines.push("", `report         ${basename(path)}`)
   return `${lines.join("\n")}\n`
 }

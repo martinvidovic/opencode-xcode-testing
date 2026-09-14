@@ -90,12 +90,19 @@ Install once per machine, in OpenCode's own config directory:
 }
 ```
 
-in `~/.config/opencode/opencode.json`. Or, equivalently, symlink the checkout
-into the plugin directory:
+in `~/.config/opencode/opencode.json`. Or, equivalently, symlink the plugin
+**file** into OpenCode's plugin directory:
 
 ```bash
-ln -s /absolute/path/to/opencode-xcode-testing ~/.config/opencode/plugin/xcode-test
+mkdir -p ~/.config/opencode/plugin
+ln -s /absolute/path/to/opencode-xcode-testing/src/adapter/plugin.ts \
+  ~/.config/opencode/plugin/xcode-test.ts
 ```
+
+The link points at the file, not at the checkout: OpenCode loads `.ts` files
+from that directory and has no way to pick an entry point out of a repository.
+The symlink still resolves its imports from the real checkout, which is what
+lets the host-provided `@opencode-ai/plugin` link above do its job.
 
 **Why global is the default:** the entry contains an absolute path that is true
 only on your machine. `~/.config/opencode/opencode.json` is the one file that is
@@ -289,13 +296,27 @@ bun scripts/acceptance-gate.ts --b2       # execution through a scripted model t
 
 It generates its own Xcode project, so it depends on nothing private and
 nothing committed beyond this repository. Every run writes a durable report —
-observed toolchain, host version, resolved runtime, destination, per-scenario
-results and freshness drift — into the tool-managed storage root, never
-anywhere this repository could accidentally track it.
+selected suites, observed toolchain, host version, resolved runtime,
+destination, per-scenario results and freshness drift — into the tool-managed
+storage root, never anywhere this repository could accidentally track it. That
+includes runs that fail before a scenario starts: an invocation that left no
+trace is one nobody can check afterwards.
 
-No usable simulator is a **failure with a diagnostic**, never a silent skip: a
-gate that passes because it found nothing to run on reports green on a machine
-where nothing was verified.
+`--project <path>` additionally runs against a real Xcode project you own:
+
+```bash
+bun scripts/acceptance-gate.ts --layer4 --project ~/code/MyApp
+```
+
+Those scenarios are **report-only**, always. The standing gate has to be
+reproducible from committed files by anyone, and a green run that depended on a
+project only one person has is a claim nobody else can check — so a supplied
+project adds evidence and never supplies the verdict.
+
+Three things are deliberately failures rather than skips, because each one
+would otherwise report green on a machine where nothing was verified: no usable
+simulator, an option the gate does not recognize, and a selection that ran no
+gating scenario.
 
 ## Design record
 

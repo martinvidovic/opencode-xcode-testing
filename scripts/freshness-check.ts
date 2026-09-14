@@ -11,12 +11,16 @@
  * Output is machine-readable and maps observed facts onto the fixtures they
  * affect, via each fixture's structured provenance.
  *
- * Usage: bun scripts/freshness-check.ts [--fixtures <directory>] [--json]
+ * Usage: bun scripts/freshness-check.ts [--fixtures <dir>] [--json] [--no-build]
  */
 
 import { spawnSync } from "node:child_process"
-import { readdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+
+import { RUN_ARTIFACTS } from "../src/runner/paths.ts"
+import { FIXTURE, generate } from "./generate-fixture-project.ts"
 
 export const DEFAULT_FIXTURE_DIR = join(import.meta.dir, "..", "test", "fixtures", "xcresult")
 
@@ -42,6 +46,152 @@ export type FreshnessReport = {
   observed: ObservedToolchain
   drift: Drift[]
   fixturesChecked: number
+  /** What a real bundle actually produced, when one was available to read. */
+  bundle?: BundleExamination
+}
+
+/**
+ * The shapes a real Result Bundle yields, per classification-critical command.
+ *
+ * Version strings are indirect evidence: they say the toolchain moved, not
+ * that anything the decoders rely on did. This is the direct evidence — the
+ * commands run against a bundle this machine's Xcode just produced, and the
+ * top-level keys each payload came back with. A command that stops answering,
+ * or a payload that loses a key the decoders read, is drift that no version
+ * comparison would have caught.
+ */
+export type BundleExamination = {
+  status: "examined" | "unavailable"
+  /** Why nothing was examined, when that is the answer. */
+  reason?: string
+  commands: Array<{
+    command: string
+    status: "decoded" | "failed"
+    /** Top-level keys observed, so a shape change is visible in the report. */
+    keys?: string[]
+    message?: string
+  }>
+  /** Keys the decoders read that a real payload no longer carries. */
+  missingKeys: string[]
+}
+
+/**
+ * The top-level keys each decoder reads. Kept here rather than imported from
+ * the decoders so that a decoder quietly dropping one shows up as drift
+ * instead of silently agreeing with itself.
+ */
+const REQUIRED_KEYS: Record<string, string[]> = {
+  "get content-availability": ["hasTestResults"],
+  "get build-results": ["errorCount", "warningCount"],
+  "get test-results tests": ["testNodes"],
+  "get test-results summary": ["result"],
+}
+
+/**
+ * Produce a Result Bundle and examine it, when nobody has one to hand.
+ *
+ * The gate produces one as a side effect of running its scenarios, and
+ * examining that is cheaper than building a second. Run on its own, though —
+ * or with only the suites that never build anything — this check would have
+ * nothing but version strings to go on, so it generates the fixture project
+ * and runs it. Non-fatal like everything else here: a machine that cannot
+ * build reports that it could not, never drift it did not observe.
+ */
+export function produceAndExamineBundle(): BundleExamination {
+  const workspace = mkdtempSync(join(tmpdir(), "xcode-test-freshness-"))
+  try {
+    const tree = generate({ out: join(workspace, "project"), variant: "passing" })
+    const bundlePath = join(workspace, RUN_ARTIFACTS.resultBundle)
+
+    const built = execute("/usr/bin/xcodebuild", [
+      "test",
+      "-project",
+      join(tree.root, `${FIXTURE.projectName}.xcodeproj`),
+      "-scheme",
+      FIXTURE.scheme,
+      "-destination",
+      "platform=iOS Simulator,name=iPhone 17",
+      "-resultBundlePath",
+      bundlePath,
+      "-derivedDataPath",
+      join(workspace, "DerivedData"),
+    ])
+
+    return existsSync(bundlePath)
+      ? examineBundle(bundlePath)
+      : {
+          status: "unavailable",
+          reason: `a Result Bundle could not be produced on this machine: ${firstLine(built.stdout)}`,
+          commands: [],
+          missingKeys: [],
+        }
+  } catch (error) {
+    return {
+      status: "unavailable",
+      reason: `a Result Bundle could not be produced on this machine: ${(error as Error).name}`,
+      commands: [],
+      missingKeys: [],
+    }
+  } finally {
+    rmSync(workspace, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Read a real Result Bundle with the same commands interpretation uses.
+ *
+ * Non-fatal like everything else here: an absent bundle is reported as one,
+ * never as a failure.
+ */
+export function examineBundle(
+  bundlePath: string | undefined,
+  run: (command: string, args: string[]) => { status: number | null; stdout: string } = execute,
+): BundleExamination {
+  if (bundlePath === undefined) {
+    return { status: "unavailable", reason: "no Result Bundle was produced by this run", commands: [], missingKeys: [] }
+  }
+
+  const commands: BundleExamination["commands"] = []
+  const missingKeys: string[] = []
+
+  for (const [command, required] of Object.entries(REQUIRED_KEYS)) {
+    const result = run("/usr/bin/xcrun", [
+      "xcresulttool",
+      ...command.split(" "),
+      "--path",
+      bundlePath,
+      "--format",
+      "json",
+      "--schema-version",
+      "0.1.0",
+    ])
+
+    if (result.status !== 0) {
+      commands.push({ command, status: "failed", message: firstLine(result.stdout) })
+      missingKeys.push(...required.map((key) => `${command}.${key}`))
+      continue
+    }
+
+    let payload: unknown
+    try {
+      payload = JSON.parse(result.stdout)
+    } catch {
+      commands.push({ command, status: "failed", message: "the payload was not JSON" })
+      missingKeys.push(...required.map((key) => `${command}.${key}`))
+      continue
+    }
+
+    const keys =
+      typeof payload === "object" && payload !== null ? Object.keys(payload).sort() : []
+    commands.push({ command, status: "decoded", keys })
+    missingKeys.push(...required.filter((key) => !keys.includes(key)).map((key) => `${command}.${key}`))
+  }
+
+  return { status: "examined", commands, missingKeys: missingKeys.sort() }
+}
+
+function firstLine(text: string): string {
+  return (text.split("\n")[0] ?? "").trim().slice(0, 200)
 }
 
 type FixtureProvenance = {
@@ -159,7 +309,11 @@ export function render(report: FreshnessReport): string {
     return `freshness: unavailable — ${report.observed.unavailable ?? "the toolchain could not be observed"}\n`
   }
   if (report.status === "fresh") {
-    return `freshness: fresh — ${report.fixturesChecked} fixtures match the observed toolchain\n`
+    const examined =
+      report.bundle?.status === "examined"
+        ? `, and a real Result Bundle carried every shape they rely on`
+        : ""
+    return `freshness: fresh — ${report.fixturesChecked} fixtures match the observed toolchain${examined}\n`
   }
 
   const lines = [`freshness: drifted — ${report.drift.length} fact(s) no longer match`]
@@ -169,11 +323,31 @@ export function render(report: FreshnessReport): string {
       `    affected: ${entry.affectedFixtures.join(", ")}`,
     )
   }
+  for (const key of report.bundle?.missingKeys ?? []) {
+    lines.push(`  a real Result Bundle no longer carries ${key}`)
+  }
   return `${lines.join("\n")}\n`
 }
 
-export function runFreshnessCheck(directory = DEFAULT_FIXTURE_DIR): FreshnessReport {
-  return compare(observeToolchain(), readFixtureProvenance(directory))
+export function runFreshnessCheck(
+  options: { directory?: string; bundle?: BundleExamination; produce?: boolean } = {},
+): FreshnessReport {
+  const directory = options.directory ?? DEFAULT_FIXTURE_DIR
+  const report = compare(observeToolchain(), readFixtureProvenance(directory))
+
+  // Examined by whoever produced the bundle, while it still existed —
+  // otherwise produced here, so the check is never version strings alone.
+  const bundle =
+    options.bundle ??
+    (options.produce === true ? produceAndExamineBundle() : examineBundle(undefined))
+
+  return {
+    ...report,
+    bundle,
+    // A payload that lost a key the decoders read is drift, whatever the
+    // version strings say — and it is the kind that actually breaks things.
+    status: bundle.missingKeys.length > 0 ? "drifted" : report.status,
+  }
 }
 
 if (import.meta.main) {
@@ -181,7 +355,9 @@ if (import.meta.main) {
   const at = argv.indexOf("--fixtures")
   const directory = at === -1 ? DEFAULT_FIXTURE_DIR : (argv[at + 1] ?? DEFAULT_FIXTURE_DIR)
 
-  const report = runFreshnessCheck(directory)
+  // Run on its own, this builds a Result Bundle to look at: version strings
+  // say the toolchain moved, not that anything the decoders read did.
+  const report = runFreshnessCheck({ directory, produce: !argv.includes("--no-build") })
   process.stdout.write(argv.includes("--json") ? `${JSON.stringify(report, null, 2)}\n` : render(report))
 
   // Non-fatal by design: drift is surfaced, never a reason to fail the gate.
