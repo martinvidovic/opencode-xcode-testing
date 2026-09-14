@@ -69,27 +69,25 @@ export function avoidedTerms(contextFile: string): Map<string, string> {
   return rulings
 }
 
-/**
- * Report every use of an avoided phrase beneath `root`.
- *
- * `CONTEXT.md` itself is not linted: it is where the avoided words are
- * written down, so it is the one file that must contain them.
- */
+/** Report every use of an avoided phrase beneath `root`. */
 export function lintVocabulary(root: string, contextFile: string): VocabularyViolation[] {
   const rulings = avoidedTerms(contextFile)
   const violations: VocabularyViolation[] = []
+  const glossary = relative(root, contextFile)
 
   for (const file of textFiles(root)) {
     const lines = readFileSync(file, "utf8").split("\n")
 
     const display = relative(root, file)
-    if (display.includes(SELF)) continue
+    // The glossary is where the avoided words are written down, so it is the
+    // one file that must contain them.
+    if (display === glossary || SELF.has(display)) continue
 
     lines.forEach((text, index) => {
       const lowered = text.toLowerCase()
       for (const [avoided, canonical] of rulings) {
         if (!mentions(lowered, avoided)) continue
-        if (LITERAL_USES.some((use) => display.endsWith(use.file) && use.term === avoided)) continue
+        if (LITERAL_USES.some((use) => use.file === display && use.term === avoided)) continue
         violations.push({ file: display, line: index + 1, found: avoided, canonical })
       }
     })
@@ -106,13 +104,13 @@ export function lintVocabulary(root: string, contextFile: string): VocabularyVio
  */
 export const LITERAL_USES: ReadonlyArray<{ file: string; term: string; because: string }> = [
   {
-    file: "interpreter/log.ts",
+    file: "src/interpreter/log.ts",
     term: "test output",
     because:
       "the literal output of tests, enumerated among what a raw log contains — not a Result Bundle",
   },
   {
-    file: "runner/generation.test.ts",
+    file: "test/runner/generation.test.ts",
     term: "test target",
     because:
       "an Xcode build target of type bundle.unit-test, which is what the fixture project declares — not a Requested Scope",
@@ -132,8 +130,14 @@ function mentions(line: string, phrase: string): boolean {
   return new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`).test(line)
 }
 
-/** The lint's own files, which must contain the words they rule on. */
-const SELF = "lint/vocabulary"
+/**
+ * The lint's own files, which must contain the words they rule on.
+ *
+ * Named exactly rather than matched by substring, in the manner of
+ * `hygiene-lint`'s allowlists: a prefix match would silently exempt anything
+ * anyone later put beside them.
+ */
+const SELF = new Set(["test/lint/vocabulary-lint.ts", "test/lint/vocabulary.test.ts"])
 
 const LINTED = new Set([".ts", ".txt", ".md"])
 const SKIPPED = new Set(["node_modules", ".git", "fixtures", "golden"])

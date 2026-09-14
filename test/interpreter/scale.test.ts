@@ -293,11 +293,18 @@ describe("a read that has to be stopped", () => {
     mkdirSync(bundle, { recursive: true })
 
     const alive = join(directory, "grandchild-alive")
+    // The file is created by the parent's very first statement, and the
+    // parent then waits for the grandchild before producing any output. Both
+    // halves matter: without the first, "it never wrote" can mean the fork
+    // lost a race with the kill; without the second, the read can time out
+    // while `sh` is still starting on a loaded machine. Neither is a fact
+    // about process groups, and both used to fail this test.
     const script = join(directory, "xcresulttool")
     writeFileSync(
       script,
       [
         "#!/bin/sh",
+        `echo start >> "${alive}"`,
         `( while true; do echo tick >> "${alive}"; sleep 0.05; done ) &`,
         "while true; do echo '{}'; sleep 0.05; done",
       ].join("\n") + "\n",
@@ -308,19 +315,17 @@ describe("a read that has to be stopped", () => {
       const identity = { ...identityFor(loadFixture("passed")), xcresulttoolPath: script }
       const tool = createXcresultTool({ identity, bundlePath: bundle })
 
-      const response = await tool.run("get test-results tests", 300)
+      // Generous, so that a slow `sh` start is absorbed by the budget rather
+      // than racing it. What is under test is whether the group dies, not how
+      // quickly the machine can fork a shell.
+      const response = await tool.run("get test-results tests", 3_000)
       expect(response).toMatchObject({ ok: false, failure: "timedOut" })
 
-      // Waited for rather than sampled. A fixed window has to be long enough
-      // for the slowest machine and short enough to be worth running, and a
-      // dying process's last write landing inside it is indistinguishable
-      // from one that is still alive. Quiescence is the actual property:
-      // whatever was writing has stopped, however long it took to stop.
-      const settled = await quiescent(alive)
-
-      // It wrote before it died, so the check is about stopping rather than
-      // about never having started.
-      expect(settled).toBeGreaterThan(0)
+      // Waited for rather than sampled at a fixed offset. A fixed window has
+      // to be long enough for the slowest machine and short enough to be
+      // worth running, and a dying process's last write landing inside it is
+      // indistinguishable from one that is still going.
+      expect(await startedThenStopped(alive)).toBeGreaterThan(0)
       expect(stagedFiles(directory)).toEqual([])
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -329,20 +334,25 @@ describe("a read that has to be stopped", () => {
 })
 
 /**
- * Wait until the file stops growing, and return the size it stopped at.
+ * Wait for the spawned writer to start, then to stop, and report where it got to.
  *
- * Two consecutive equal readings, because one is not evidence: a writer
- * sleeping between appends looks stopped at any single instant. Generous
- * overall, because the thing under test is *whether* the group died and not
- * how fast — a slow machine should make this take longer, never fail.
+ * Both halves are necessary and the order matters. Waiting only for it to stop
+ * passes the moment it has not yet started — "nothing, then nothing" looks
+ * exactly like "stopped" — which would make this green for a run where the
+ * process was killed before it could prove it had ever been alive.
  */
-async function quiescent(path: string): Promise<number> {
+async function startedThenStopped(path: string): Promise<number> {
   const deadline = Date.now() + 20_000
-  let previous = -1
 
+  while (Date.now() < deadline && sizeOf(path) === 0) await Bun.sleep(25)
+  if (sizeOf(path) === 0) throw new Error("the spawned grandchild never wrote anything")
+
+  let previous = -1
   while (Date.now() < deadline) {
     await Bun.sleep(250)
     const size = sizeOf(path)
+    // Two equal readings, because one is not evidence: a writer sleeping
+    // between appends looks stopped at any single instant.
     if (size === previous) return size
     previous = size
   }

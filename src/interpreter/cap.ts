@@ -149,7 +149,7 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
  * record is always omitted and `fieldTruncated` is unreachable. That is the
  * intended reading of "preserve identifiers" for records that are nothing else.
  */
-export const STRUCTURAL_FIELDS = new Set([
+const STRUCTURAL_FIELDS = new Set([
   "id",
   "testId",
   "kind",
@@ -274,7 +274,12 @@ export function blockingFields(record: unknown, budget: number): string[] {
     blocking.push(path.join("."))
   }
 
-  return blocking
+  // Everything protected is gone and it still does not fit. Nothing here is
+  // then the answer, so the caller is given none rather than a list that
+  // would be wrong about what shortening would have achieved. `fit` sheds
+  // first, so reaching this means a record whose unprotected remainder is
+  // itself over the cap.
+  return responseBytes(remaining) <= budget ? blocking : []
 }
 
 /** Every protected leaf in the record, as a path from its root and its cost. */

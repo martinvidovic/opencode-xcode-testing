@@ -66,7 +66,6 @@ export type LazyOutcome =
   | { status: "incomplete"; detail?: undefined; annotation?: string }
   | { status: "unsupported"; detail?: undefined }
 
-/** A Focused Detail and the truncation it had to apply to fit. */
 /**
  * A Focused Detail, or the absence of one it could not honestly produce.
  *

@@ -20,18 +20,20 @@ import { avoidedTerms, lintVocabulary } from "./vocabulary-lint.ts"
 const REPO = join(import.meta.dir, "..", "..")
 const CONTEXT = join(REPO, "CONTEXT.md")
 
-describe("the shipped source, scripts and tests", () => {
-  for (const tree of ["src", "scripts", "test", "docs"]) {
-    test(`use the glossary's terms throughout ${tree}`, () => {
-      const violations = lintVocabulary(join(REPO, tree), CONTEXT)
+describe("the repository", () => {
+  test("uses the glossary's terms throughout", () => {
+    // One sweep from the root rather than one per tree, so every path is
+    // unique and an exemption for `src/interpreter/log.ts` cannot silently
+    // also exempt `test/interpreter/log.ts`. It also means nothing is outside
+    // the lint by having been left off a list.
+    const violations = lintVocabulary(REPO, CONTEXT)
 
-      // Named rather than counted: the point of failing is to say where and
-      // what to write instead.
-      expect(
-        violations.map((v) => `${tree}/${v.file}:${v.line} "${v.found}" → ${v.canonical}`),
-      ).toEqual([])
-    })
-  }
+    // Named rather than counted: the point of failing is to say where, and
+    // what to write instead.
+    expect(
+      violations.map((v) => `${v.file}:${v.line} "${v.found}" → ${v.canonical}`),
+    ).toEqual([])
+  })
 })
 
 describe("the lint itself", () => {

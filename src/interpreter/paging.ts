@@ -459,18 +459,35 @@ function omittedResponse(
   truncation: TruncationState,
   blockedBy: readonly string[],
 ): InspectionResponse<FacetPage> {
+  // Bounded, because this is the one part of a response assembled *after* the
+  // data was fitted to the cap. Everything else in an envelope is a fixed
+  // literal; these are field paths derived from the record, so an unbounded
+  // list would push an already-fitted response over the bound it was fitted
+  // to — the cap broken by the message explaining the cap.
+  const named = blockedBy.slice(0, BLOCKED_FIELD_CAP)
+  const rest = blockedBy.length - named.length
+  const fields = rest > 0 ? `${named.join(", ")} and ${rest} more` : named.join(", ")
+
   const reason =
-    blockedBy.length === 0
-      ? "this record cannot be returned within the response cap"
-      : `this record cannot be returned within the response cap: ${blockedBy.join(", ")} would have to be shortened, and a shortened identifier or safe location names something that does not exist`
+    named.length === 0
+      ? OMITTED_REASON
+      : `${OMITTED_REASON}: ${fields} would have to be shortened, and a shortened identifier or safe location names something that does not exist`
 
   return {
     status: "incomplete",
-    data: { view: "omitted", facet, reason, blockedBy: [...blockedBy] },
+    // A fixed literal, unlike `reason`. The annotation is what every other
+    // `incomplete` response carries, and keeping it constant is what keeps the
+    // envelope a known size.
+    annotation: OMITTED_REASON,
+    data: { view: "omitted", facet, reason, blockedBy: [...named] },
     truncation,
-    annotation: reason,
   }
 }
+
+/** How many blocking fields a reason names before it summarises the rest. */
+export const BLOCKED_FIELD_CAP = 4
+
+export const OMITTED_REASON = "this record cannot be returned within the response cap"
 
 function single(data: FacetPage): InspectionResponse<FacetPage> {
   return {
