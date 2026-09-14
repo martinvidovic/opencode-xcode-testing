@@ -145,4 +145,51 @@ describe("a retained index that cannot be trusted", () => {
 
     expect(response).toMatchObject({ status: "invalid" })
   })
+
+  test("is refused when a location in it names somewhere on this machine", async () => {
+    // The index is the last thing between a planted file and a model. A
+    // location it carries is rendered as a place to go and look.
+    const index = JSON.stringify({
+      indexVersion: INDEX_VERSION,
+      runId: "run-real",
+      decoderVersion: 1,
+      schemaVersion: "0.1.0",
+      occurrences: [],
+      testFailures: [
+        {
+          id: "diag-1",
+          kind: "testFailure",
+          message: "it failed",
+          inspectionAvailable: true,
+          location: { path: "/Users/someone/Secret/Login.swift" },
+        },
+      ],
+      buildErrors: [],
+      attestations: [],
+      scopeVerdict: "matched",
+      scopeDigest: "d",
+      requestedSelectionCount: 0,
+      observedOutsideScope: 0,
+      build: { completeness: "complete" },
+      tests: { completeness: "complete" },
+      diagnostics: { completeness: "complete" },
+      fullMessages: {},
+      toolchain: {
+        developerDirectory: "/x",
+        xcodeVersion: "26.4.1",
+        xcodeBuild: "17E202",
+        xcresulttoolPath: "/x/t",
+        xcresulttoolVersion: "24757",
+        xcresulttoolDigest: "d",
+        schemaVersion: "0.1.0",
+      },
+      log: { availability: "unavailable", retainedBytesExact: false },
+      bundleDigestVerified: "yes",
+    })
+
+    const response = await inspectWith("run-real", index)
+    expect(response).toMatchObject({ status: "invalid" })
+    // And the refusal says nothing about what it refused.
+    expect(JSON.stringify(response)).not.toContain("/Users/someone")
+  })
 })

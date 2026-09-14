@@ -13,8 +13,18 @@
  */
 
 import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
-import { closeSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs"
+import { createHash, type Hash } from "node:crypto"
+import {
+  closeSync,
+  constants,
+  existsSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  readSync,
+} from "node:fs"
 import { join } from "node:path"
 
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
@@ -1474,8 +1484,24 @@ export const DIGEST_BUDGET_MS = 30_000
 export const LAZY_DEADLINE_MS = 60_000
 
 /**
+ * How much of a file is held in memory at once while digesting it.
+ *
+ * A Result Bundle near the 5 GiB retention target contains single files far
+ * larger than anything that should be resident, and a digest is a streaming
+ * operation by nature: the hash never needs more than the chunk in front of
+ * it. Reading a file whole to hash it turns a bounded operation into one whose
+ * memory is whatever the project happened to produce.
+ */
+export const DIGEST_CHUNK_BYTES = 1024 * 1024
+
+/**
  * A deterministic content digest (#8): recursive, name-ordered, and dependent
  * on nothing but the bytes — so two machines reading the same bundle agree.
+ *
+ * Bounded in both directions. Memory is one chunk at a time, whatever the file
+ * size; time is the caller's budget, checked *inside* each file as well as
+ * between them, because a single large file is exactly where an overrun would
+ * otherwise go unnoticed.
  *
  * Returns `undefined` when the budget runs out. Verification is never skipped;
  * an unfinished one is reported as unfinished.
@@ -1507,10 +1533,38 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string 
       const stats = lstatSync(child)
       if (stats.isSymbolicLink()) hash.update(readlinkSync(child))
       else if (stats.isDirectory()) walk(child)
-      else if (stats.isFile()) hash.update(readFileSync(child))
+      else if (stats.isFile() && !hashFile(hash, child, deadline)) {
+        expired = true
+        return
+      }
     }
   }
 
   walk(path)
   return expired ? undefined : hash.digest("hex")
+}
+
+/**
+ * Stream one file into the hash. False when the budget ran out part-way.
+ *
+ * Opened with `O_NOFOLLOW` but not with the owner-only checks tool-managed
+ * files get: the contents of a Result Bundle are written by `xcodebuild` with
+ * the ambient umask, and what protects them is the `0700` run directory they
+ * sit inside, not their own mode. The caller has already established this
+ * entry is a regular file rather than a link.
+ */
+function hashFile(hash: Hash, path: string, deadline: number): boolean {
+  const buffer = Buffer.allocUnsafe(DIGEST_CHUNK_BYTES)
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+
+  try {
+    while (true) {
+      if (Date.now() >= deadline) return false
+      const read = readSync(fd, buffer, 0, buffer.length, null)
+      if (read <= 0) return true
+      hash.update(buffer.subarray(0, read))
+    }
+  } finally {
+    closeSync(fd)
+  }
 }

@@ -33,6 +33,17 @@ import { REQUESTED_SCHEMA_VERSION } from "./schema.ts"
  * never from a request. It is still passed as `--test-id=<value>` rather than
  * as two words, so a value beginning with a dash is a value and not a flag.
  */
+/**
+ * The most structured output a single read may produce.
+ *
+ * `xcresulttool` is given a Result Bundle this tool did not write, for a test
+ * suite whose size nothing here controls. Without a cap the decoder holds the
+ * whole payload in memory and then doubles it to turn it into a string — so a
+ * large enough suite stops being a slow read and becomes an exhausted process.
+ * Generous enough that no plausible real suite reaches it, and finite.
+ */
+export const MAX_PAYLOAD_BYTES = 256 * 1024 * 1024
+
 export function argumentsFor(
   command: XcresultCommand,
   bundlePath: string,
@@ -117,6 +128,7 @@ function read(
     })
 
     const chunks: Buffer[] = []
+    let accumulated = 0
     let settled = false
     const finish = (response: XcresultResponse) => {
       if (settled) return
@@ -138,7 +150,22 @@ function read(
       })
     }, Math.max(1, budgetMs))
 
-    child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk))
+    child.stdout?.on("data", (chunk: Buffer) => {
+      accumulated += chunk.length
+      if (accumulated > MAX_PAYLOAD_BYTES) {
+        // Refused rather than absorbed. The alternative is holding an
+        // arbitrarily large payload in memory and then doubling it to decode,
+        // on behalf of a process whose output size nothing here controls.
+        stopGroup(child.pid, "SIGKILL")
+        finish({
+          ok: false,
+          failure: "unsupported",
+          message: `the structured output exceeded ${MAX_PAYLOAD_BYTES} bytes`,
+        })
+        return
+      }
+      chunks.push(chunk)
+    })
     child.on("error", () =>
       finish({
         ok: false,
