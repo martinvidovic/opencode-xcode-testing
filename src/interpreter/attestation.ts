@@ -27,7 +27,21 @@ export type Attestation = {
 export function attestScope(
   scope: RequestedScope,
   occurrences: NormalizedOccurrence[],
-  evidence: { testingReached: boolean | "unknown" },
+  evidence: {
+    testingReached: boolean | "unknown"
+    /**
+     * Observed tests that could not be identified, and so are not among the
+     * occurrences here.
+     *
+     * A selection is attested by counting what matched it, and a count taken
+     * over an incomplete set is not a count. Without this, a test that ran but
+     * could not be named simply vanishes, the selection that covered it
+     * matches nothing, and the verdict is `mismatched` — which says the caller
+     * asked for something that did not run. Not knowing is `unverifiable`, and
+     * that is what this is.
+     */
+    unidentifiable?: number
+  },
 ): Attestation {
   const normalized = normalizeRequestedScope(scope)
   const selections = normalized.kind === "selected" ? normalized.tests : []
@@ -40,7 +54,12 @@ export function attestScope(
     }
   }
 
-  const identityUsable = occurrences.every((occurrence) => occurrence.identityComplete)
+  // Both halves of the same question. An occurrence whose identity could not
+  // be cross-checked makes matching unsafe; a test missing from the set
+  // entirely makes it unsafe in the same way and for a stronger reason.
+  const identityUsable =
+    (evidence.unidentifiable ?? 0) === 0 &&
+    occurrences.every((occurrence) => occurrence.identityComplete)
 
   if (normalized.kind === "all") {
     const verdict: ScopeVerdict = !identityUsable

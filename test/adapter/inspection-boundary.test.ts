@@ -331,16 +331,32 @@ describe("a retained index carrying an identity that names nothing", () => {
     })
 
     test(`is damaged evidence — missing canonical form, ${claim}`, async () => {
+      // `canonical` is the field a focused view prints, so a leak here is the
+      // one a reader would actually see.
       const { canonical: _dropped, ...nameless } = WHOLE
       const response = await inspectWith("run-real", indexWithIdentity(nameless, complete))
 
       expect(response.status).toBe("incomplete")
+      expect(JSON.stringify(response)).not.toContain("LoginTests")
     })
 
     test(`is damaged evidence — blank optional part, ${claim}`, async () => {
       const response = await inspectWith("run-real", indexWithIdentity({ ...WHOLE, suite: "" }, complete))
 
       expect(response.status).toBe("incomplete")
+      expect(JSON.stringify(response)).not.toContain("testSignsIn")
+    })
+
+    test(`reads normally when the optional parts are simply absent, ${claim}`, async () => {
+      // Absent is not blank. An identity with no suite is one Xcode did not
+      // give a suite for, and refusing it would reject evidence this tool
+      // legitimately publishes.
+      const response = await inspectWith(
+        "run-real",
+        indexWithIdentity({ bundle: "AppTests", canonical: "AppTests" }, complete),
+      )
+
+      expect(response.status).toBe("available")
     })
   }
 

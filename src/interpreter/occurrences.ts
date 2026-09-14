@@ -61,6 +61,17 @@ export type NormalizationOutcome = {
   occurrences: NormalizedOccurrence[]
   /** Plan/launch infrastructure, retained privately and never counted. */
   pseudoTestCount: number
+  /**
+   * Test Cases dropped because nothing above them carried a usable bundle
+   * name.
+   *
+   * Distinct from `pseudoTestCount`, and the distinction is the point. A plan
+   * or launch node is not a test and was never going to be counted. This is a
+   * real Test Case that cannot be named, so dropping it makes the reported
+   * count *short* — and a count that is silently short is the failure this
+   * whole tool exists to prevent. The caller degrades the facet instead.
+   */
+  unnameableCount: number
   /** A `Test Case` carrying a recognized shape but no usable status. */
   missingStatusCount: number
   /** A status literal the decoder does not recognize: an incompatible schema. */
@@ -70,11 +81,21 @@ export type NormalizationOutcome = {
 /**
  * Walk the node hierarchy once, in source order, collecting occurrences.
  *
- * A `Test Case` with no test-bundle ancestor is plan or launch infrastructure —
- * user-authored tests always live inside a bundle — so it is confidently
- * classified as a pseudo-test, excluded from counts, and never treated as an
- * out-of-scope observation. Anything the decoder cannot confidently classify is
- * counted as a normal occurrence: miscounting beats silently dropping a test.
+ * A `Test Case` with no test-bundle ancestor **at all** is plan or launch
+ * infrastructure — user-authored tests always live inside a bundle — so it is
+ * confidently classified as a pseudo-test, excluded from counts, and never
+ * treated as an out-of-scope observation.
+ *
+ * A `Test Case` beneath a bundle node whose *name* is blank is a different
+ * thing entirely: a real test that cannot be identified. It is not published,
+ * because an identity of `""` reaches a model as a name that matches nothing
+ * and looks like it should — but neither is it quietly discarded. It is
+ * counted in `unnameableCount`, which degrades the tests facet to `partial`
+ * and makes scope verdicts `unverifiable`, so the count is stated as the lower
+ * bound it is and no selection is told it matched nothing.
+ *
+ * Everything else the decoder cannot confidently classify is counted as a
+ * normal occurrence: miscounting beats silently dropping a test.
  */
 export function normalizeTestNodes(
   nodes: RawTestNode[],
@@ -83,6 +104,7 @@ export function normalizeTestNodes(
   const outcome: NormalizationOutcome = {
     occurrences: [],
     pseudoTestCount: 0,
+    unnameableCount: 0,
     missingStatusCount: 0,
     unrecognizedStatuses: [],
   }
@@ -91,7 +113,16 @@ export function normalizeTestNodes(
     if (node.nodeType === "Test Case") {
       const { bundle } = ancestry
       if (bundle === undefined) {
-        outcome.pseudoTestCount += 1
+        // No bundle above it at all: plan and launch infrastructure, which is
+        // not a test and is not counted as one.
+        if (!ancestry.sawBundleNode) {
+          outcome.pseudoTestCount += 1
+          return
+        }
+        // There *was* a bundle node and it had no usable name. This is a real
+        // test that cannot be identified, and losing it quietly would make the
+        // count short.
+        outcome.unnameableCount += 1
         return
       }
       collectOccurrence(node, { ...ancestry, bundle }, path, options, outcome)
@@ -111,7 +142,18 @@ export function normalizeTestNodes(
   return outcome
 }
 
-type Ancestry = { bundle?: string; suite?: string }
+type Ancestry = {
+  bundle?: string
+  suite?: string
+  /**
+   * A bundle node was passed, whether or not it had a usable name.
+   *
+   * What separates a test whose bundle could not be named from a node that
+   * was never a test: the first is evidence lost and has to be reported, the
+   * second is plan and launch infrastructure and never counted.
+   */
+  sawBundleNode?: true
+}
 
 function extendAncestry(node: RawTestNode, ancestry: Ancestry): Ancestry {
   // A blank name is no name. Recording one would give every test beneath this
@@ -120,7 +162,10 @@ function extendAncestry(node: RawTestNode, ancestry: Ancestry): Ancestry {
   // did not. Left undefined, these are counted as the infrastructure nodes
   // they are indistinguishable from.
   if (TEST_BUNDLE_NODE_TYPES.has(node.nodeType)) {
-    return isIdentifier(node.name) ? { bundle: node.name } : {}
+    // `sawBundleNode` either way, so a test beneath an unnamed bundle is
+    // distinguishable from one with no bundle node above it at all. The first
+    // is evidence lost; the second was never a test.
+    return isIdentifier(node.name) ? { bundle: node.name, sawBundleNode: true } : { sawBundleNode: true }
   }
   if (node.nodeType === "Test Suite") {
     return isIdentifier(node.name) ? { ...ancestry, suite: node.name } : ancestry
@@ -256,7 +301,6 @@ function deriveIdentity(
   node: RawTestNode,
   ancestry: Ancestry & { bundle: string },
 ): { identity: TestIdentity; complete: boolean } {
-  const bundle = ancestry.bundle
   const selectable = node.nodeIdentifier === undefined ? undefined : parseIdentifier(node.nodeIdentifier)
   const reference = node.nodeIdentifierURL === undefined ? undefined : parseIdentifier(node.nodeIdentifierURL)
 
@@ -285,7 +329,7 @@ function deriveIdentity(
   // not give us, and writing it as a present-but-blank field would put a name
   // in front of a reader that matches nothing and looks like it should.
   const parts = {
-    bundle,
+    bundle: ancestry.bundle,
     ...(isIdentifier(suite) ? { suite } : {}),
     ...(isIdentifier(test) ? { test } : {}),
   }

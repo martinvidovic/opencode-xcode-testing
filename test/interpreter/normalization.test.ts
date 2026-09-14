@@ -8,7 +8,8 @@ import { describe, expect, test } from "bun:test"
 import { AnomalyLog } from "../../src/interpreter/anomalies.ts"
 import { decodeTestSummary } from "../../src/interpreter/decode.ts"
 import { aggregateAttempts, normalizeTestNodes } from "../../src/interpreter/occurrences.ts"
-import { FAILED_EXIT, interpretFixture } from "./harness.ts"
+import { attestScope } from "../../src/interpreter/attestation.ts"
+import { FAILED_EXIT, interpretFixture, loadFixture } from "./harness.ts"
 
 describe("attempt aggregation", () => {
   test("lets a failed attempt beat a passing retry", () => {
@@ -304,5 +305,153 @@ describe("a bundle node Xcode gave no name", () => {
 
     expect(occurrences[0]?.identityComplete).toBe(true)
     expect(occurrences[0]?.identity.canonical).toBe("AppTests/LoginTests/testSignsIn()")
+  })
+})
+
+describe("a test that ran and cannot be named", () => {
+  function underBlankBundle() {
+    return normalizeTestNodes(
+      [
+        {
+          nodeType: "Unit test bundle",
+          name: "",
+          children: [
+            {
+              nodeType: "Test Case",
+              name: "testSignsIn()",
+              nodeIdentifier: "LoginTests/testSignsIn()",
+              result: "Passed",
+              children: [],
+            },
+          ],
+        },
+      ],
+      { trustedRoot: "/repo" },
+    )
+  }
+
+  test("is counted as a loss, not as infrastructure", () => {
+    // The distinction that keeps the drop honest. A plan or launch node was
+    // never a test and is not counted as one; this is a real test, so losing
+    // it makes the reported count short — and a count that is silently short
+    // is the failure this whole tool exists to prevent.
+    const outcome = underBlankBundle()
+
+    expect(outcome.occurrences).toEqual([])
+    expect(outcome.unnameableCount).toBe(1)
+    expect(outcome.pseudoTestCount).toBe(0)
+  })
+
+  test("is still infrastructure when there was no bundle node at all", () => {
+    // The other side of the same distinction, unchanged: a Test Case with
+    // nothing above it is the plan or launch node it has always been.
+    const outcome = normalizeTestNodes(
+      [{ nodeType: "Test Case", name: "launch", result: "Passed", children: [] }],
+      { trustedRoot: "/repo" },
+    )
+
+    expect(outcome.pseudoTestCount).toBe(1)
+    expect(outcome.unnameableCount).toBe(0)
+  })
+})
+
+describe("a scope attested over an incomplete set of tests", () => {
+  const SELECTED = {
+    kind: "selected" as const,
+    tests: [{ bundle: "AppTests", suite: "LoginTests" }],
+  }
+  const OCCURRENCE = {
+    id: "occ-1",
+    identity: {
+      bundle: "AppTests",
+      suite: "OtherTests",
+      test: "testOther()",
+      canonical: "AppTests/OtherTests/testOther()",
+    },
+    identityComplete: true,
+    status: "passed" as const,
+    position: "0",
+    attempts: [],
+    failures: [],
+  }
+
+  test("is unverifiable, not mismatched, when a test was dropped for having no name", () => {
+    // The selection covered a test that ran. Dropping that test because it
+    // could not be identified leaves nothing matching the selection, and
+    // reporting `mismatched` would tell the caller they asked for something
+    // that did not run — about a test that did.
+    const attestation = attestScope(SELECTED, [OCCURRENCE], {
+      testingReached: true,
+      unidentifiable: 1,
+    })
+
+    expect(attestation.verdict).toBe("unverifiable")
+    expect(attestation.attestations[0]?.verdict).toBe("unverifiable")
+  })
+
+  test("is mismatched when every test that ran could be identified", () => {
+    // The other direction, so the case above cannot pass by never matching:
+    // with nothing lost, a selection that really matched nothing says so.
+    const attestation = attestScope(SELECTED, [OCCURRENCE], { testingReached: true })
+
+    expect(attestation.attestations[0]?.verdict).toBe("mismatched")
+  })
+})
+
+describe("a run whose evidence includes a test that cannot be named", () => {
+  test("reports its count as a lower bound rather than as complete", async () => {
+    // End to end, because this is the claim a caller reads. Two tests ran and
+    // one of them cannot be identified, so the tool can report one — and the
+    // only honest way to report one out of two is to say the number is
+    // partial. Reporting it as complete would be reporting a count that is
+    // short, in a response whose whole purpose is being trustworthy about
+    // exactly that.
+    const fixture = loadFixture("passed")
+    const withUnnameable = {
+      ...(fixture.payloads["get test-results tests"] as Record<string, unknown>),
+      testNodes: [
+        {
+          nodeType: "Test Plan",
+          name: "App",
+          children: [
+            {
+              nodeType: "Unit test bundle",
+              name: "AppTests",
+              children: [
+                {
+                  nodeType: "Test Case",
+                  name: "testNamed()",
+                  nodeIdentifier: "LoginTests/testNamed()",
+                  result: "Passed",
+                  children: [],
+                },
+              ],
+            },
+            {
+              nodeType: "Unit test bundle",
+              name: "",
+              children: [
+                {
+                  nodeType: "Test Case",
+                  name: "testUnnameable()",
+                  nodeIdentifier: "OtherTests/testUnnameable()",
+                  result: "Passed",
+                  children: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+
+    const interpreted = await interpretFixture("passed", {
+      reader: {
+        payloads: { "get test-results tests": withUnnameable },
+      },
+    })
+
+    expect(interpreted.summary.tests.completeness).toBe("partial")
+    expect(interpreted.summary.tests.counts?.total).toBe(1)
   })
 })

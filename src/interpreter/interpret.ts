@@ -120,6 +120,8 @@ type Gathered = {
   /** Set when supplemental failure detail could not be read losslessly. */
   diagnosticsDegraded: boolean
   testingReached: boolean | "unknown"
+  /** Observed tests dropped because nothing named the bundle they ran in. */
+  unidentifiable: number
   defect?: EvidenceDefect
   cancelledDuringInterpretation: boolean
   provenance?: ResultProvenance
@@ -154,6 +156,7 @@ async function gather(
     supplementalFailures: [],
     diagnosticsDegraded: false,
     testingReached: "unknown",
+    unidentifiable: 0,
     cancelledDuringInterpretation: false,
   }
 
@@ -309,9 +312,18 @@ async function gather(
         })
         state.occurrences = normalized.occurrences
 
+        state.unidentifiable = normalized.unnameableCount
+
         if (normalized.unrecognizedStatuses.length > 0) {
           // A new status literal is an incompatible critical shape, not a gap.
           setDefect("unsupportedResultSchema", "a test reported an unrecognized status", "tests")
+          state.tests = { completeness: "partial", counts: countOf(normalized.occurrences) }
+        } else if (normalized.unnameableCount > 0) {
+          // A test beneath a bundle node with no usable name. It cannot be
+          // identified, so it cannot be published — and the count is therefore
+          // a lower bound, which `partial` is exactly the word for. Reporting
+          // it as complete would be reporting a number that is short.
+          setDefect("resultBundleIncomplete", "a test carried no identifiable bundle", "tests")
           state.tests = { completeness: "partial", counts: countOf(normalized.occurrences) }
         } else if (normalized.missingStatusCount > 0) {
           setDefect("resultBundleIncomplete", "a recognized test carried no status", "tests")
@@ -470,6 +482,7 @@ function publish(
 
   const attestation = attestScope(request.requestedScope, gathered.occurrences, {
     testingReached: gathered.testingReached,
+    unidentifiable: gathered.unidentifiable,
   })
 
   const { diagnostics: testFailures, fullMessages: failureMessages } = buildTestFailures(
