@@ -16,6 +16,7 @@ import {
   FOCUSED_ACTIVITY_NODE_CAP,
   FOCUSED_MESSAGE_CHAR_CAP,
   RESPONSE_BYTE_CAP,
+  STACK_FRAME_TEXT_CHAR_CAP,
 } from "../../src/domain/limits.ts"
 import type { ActivityNode, DiagnosticSummary } from "../../src/domain/inspection.ts"
 import { extractFrames } from "../../src/interpreter/frames.ts"
@@ -251,5 +252,86 @@ describe("the response cap", () => {
     expect(focused.attachments.length).toBeLessThan(oversized.attachments.length)
     expect(focused.id).toBe("diag-1")
     expect(focused.message.length).toBeGreaterThan(0)
+  })
+})
+
+describe("a stack frame whose path is longer than the display budget", () => {
+  /** A trace whose one source frame names a pathologically deep file. */
+  function traceWithPath(path: string): string {
+    return ["XCTAssertEqual failed", `    at ${path}:42:9`].join("\n")
+  }
+
+  // Inside the trusted root, because a path outside it is reduced to its
+  // basename before this rule is ever reached — the long ones that survive
+  // are repository paths, which is exactly the case that matters.
+  const ENORMOUS = `${ROOT}/Sources/${"Nested/".repeat(400)}Login.swift`
+
+  test("loses the location rather than being cut into a different file", () => {
+    // A path cut to a length names nothing. The reader who follows it learns
+    // only that this tool is wrong about where things are — and unlike a
+    // missing location, they have no way to tell that is what happened.
+    const view = focusedDiagnostic(indexWith(traceWithPath(ENORMOUS)), DIAGNOSTIC, ROOT, undefined)
+
+    const frames = view.focused?.stackFrames ?? []
+    expect(frames).toHaveLength(1)
+    expect(frames[0]?.location).toBeUndefined()
+  })
+
+  test("says a collection was cut, so the loss is not silent", () => {
+    // The frame survives without its location — "we were here in the stack"
+    // is a smaller answer than "at this line of this file" and a true one —
+    // but a caller reading a frame with no location must be able to tell it
+    // from a frame that never had one.
+    const view = focusedDiagnostic(indexWith(traceWithPath(ENORMOUS)), DIAGNOSTIC, ROOT, undefined)
+
+    expect(view.truncation.collectionTruncated).toBe(true)
+  })
+
+  test("keeps a path that fits exactly as it was recorded", () => {
+    // The other direction, so the rule above cannot be satisfied by dropping
+    // every location: an ordinary path comes back whole, numbers and all.
+    const view = focusedDiagnostic(
+      indexWith(traceWithPath(`${ROOT}/Sources/App/Login.swift`)),
+      DIAGNOSTIC,
+      ROOT,
+      undefined,
+    )
+
+    expect(view.focused?.stackFrames[0]?.location).toEqual({
+      path: "Sources/App/Login.swift",
+      line: 42,
+      column: 9,
+    })
+  })
+
+  test("stays within the response cap however many oversized paths there are", () => {
+    // The frames are bounded in number and each is now either whole or
+    // absent, so nothing here can push a response past the one bound the
+    // contract fixes.
+    const lines = ["XCTAssertEqual failed"]
+    for (let index = 0; index < 50; index += 1) lines.push(`    at ${ENORMOUS}${index}:1`)
+
+    const view = focusedDiagnostic(indexWith(lines.join("\n")), DIAGNOSTIC, ROOT, undefined)
+    const response = { status: "incomplete", data: view.focused, truncation: view.truncation }
+
+    expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+      RESPONSE_BYTE_CAP,
+    )
+  })
+
+  test("still reports the symbol and module a frame carries", () => {
+    // Those are display text: shortened, they are the same symbol and the
+    // same module. Only the path has the property that cutting it changes
+    // what it names.
+    const long = "s".repeat(STACK_FRAME_TEXT_CHAR_CAP * 2)
+    const trace = ["XCTAssertEqual failed", `0   AppTests    0x0000000104a2b1c4 ${long} + 132`].join(
+      "\n",
+    )
+
+    const view = focusedDiagnostic(indexWith(trace), DIAGNOSTIC, ROOT, undefined)
+    const frame = view.focused?.stackFrames[0]
+
+    expect(frame?.module).toBe("AppTests")
+    expect(frame?.symbol?.length).toBe(STACK_FRAME_TEXT_CHAR_CAP)
   })
 })

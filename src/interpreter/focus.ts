@@ -114,7 +114,15 @@ export function focusedDiagnostic(
   const message = capTo(full, FOCUSED_MESSAGE_CHAR_CAP)
 
   const extracted = extractFrames(full, trustedRoot)
-  const frames = capCollection(extracted.frames.map(capFrame), FOCUSED_STACK_FRAME_CAP)
+  const capped = extracted.frames.map(capFrame)
+  const frames = capCollection(
+    capped.map((frame) => frame.value),
+    FOCUSED_STACK_FRAME_CAP,
+  )
+  // A frame that lost its location is a frame that lost evidence, and the
+  // response says so rather than presenting a symbol-only frame as all there
+  // ever was.
+  const locationDropped = capped.some((frame) => frame.truncated)
   const activities = capActivities(lazy?.activities ?? [])
   const attachments = capCollection(
     (lazy?.attachments ?? []).map(capAttachment),
@@ -139,7 +147,11 @@ export function focusedDiagnostic(
     // fill, and #8 requires saying so rather than presenting an empty stack
     // as a complete one.
     collectionTruncated:
-      frames.truncated || activities.truncated || attachments.truncated || !extracted.recognized,
+      frames.truncated ||
+      locationDropped ||
+      activities.truncated ||
+      attachments.truncated ||
+      !extracted.recognized,
   })
 }
 
@@ -287,21 +299,45 @@ function capCollection<T>(items: T[], cap: number): Capped<T[]> {
     : { value: items.slice(0, cap), truncated: true }
 }
 
-function capFrame(frame: StackFrame): StackFrame {
+/**
+ * Bound a stack frame for display, and report what that cost.
+ *
+ * A symbol and a module are display text: shortened, they are still the same
+ * symbol and the same module, recognisable and shorter. A **path is not**. It
+ * is somewhere to go and look, and a path cut to a length is a different file
+ * name — one that names nothing, and that a reader who follows it learns
+ * nothing from except that this tool is wrong about where things are.
+ *
+ * So the location goes whole or it does not go. The frame survives without it:
+ * "we were in `foo()`, in this module" is a smaller answer than "at this line
+ * of this file", and it is a true one.
+ *
+ * This is the same rule the response cap enforces for `path` — the difference
+ * is that the cap never saw these, because the display budget had already cut
+ * them by the time it looked.
+ */
+function capFrame(frame: StackFrame): Capped<StackFrame> {
+  const location = frame.location
+  const dropped = location !== undefined && location.path.length > STACK_FRAME_TEXT_CHAR_CAP
+
   return {
-    ...(frame.symbol === undefined
-      ? {}
-      : { symbol: capTo(frame.symbol, STACK_FRAME_TEXT_CHAR_CAP).value }),
-    ...(frame.module === undefined
-      ? {}
-      : { module: capTo(frame.module, STACK_FRAME_TEXT_CHAR_CAP).value }),
-    ...(frame.location === undefined ? {} : { location: capLocation(frame.location) }),
+    value: {
+      ...(frame.symbol === undefined
+        ? {}
+        : { symbol: capTo(frame.symbol, STACK_FRAME_TEXT_CHAR_CAP).value }),
+      ...(frame.module === undefined
+        ? {}
+        : { module: capTo(frame.module, STACK_FRAME_TEXT_CHAR_CAP).value }),
+      ...(location === undefined || dropped ? {} : { location: keepLocation(location) }),
+    },
+    truncated: dropped,
   }
 }
 
-function capLocation(location: SafeLocation): SafeLocation {
+/** Kept exactly as recorded. Only the numbers beside it are optional. */
+function keepLocation(location: SafeLocation): SafeLocation {
   return {
-    path: capTo(location.path, STACK_FRAME_TEXT_CHAR_CAP).value,
+    path: location.path,
     ...(location.line === undefined ? {} : { line: location.line }),
     ...(location.column === undefined ? {} : { column: location.column }),
   }

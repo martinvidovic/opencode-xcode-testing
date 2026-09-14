@@ -56,7 +56,13 @@ export const ATTACHMENT_METADATA_CAP = 100
 /** Characters of an attachment name or media type. */
 export const ATTACHMENT_TEXT_CHAR_CAP = 500
 
-/** Characters of a stack-frame symbol, module, or displayed path. */
+/**
+ * Characters of a stack-frame symbol or module.
+ *
+ * Display text only. A path is measured against this too, but never cut to it:
+ * a symbol shortened is the same symbol, and a path shortened is a different
+ * file. One over the bound is dropped whole instead.
+ */
 export const STACK_FRAME_TEXT_CHAR_CAP = 1_000
 
 /** Source-log bytes returned by a log chunk when no size is requested. */
