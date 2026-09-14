@@ -17,6 +17,10 @@
  * also keeps the deadline meaningful: a blocking read cannot be interrupted
  * when it expires.
  *
+ * The reading-back half lives in `staged-decode.ts`: getting bytes out of a
+ * subprocess and turning a file into a payload fail in different ways and are
+ * bounded by different things, so they are reasoned about separately.
+ *
  * Staging it on disk rather than in an array of chunks is what makes the bound
  * honest. Accumulating means holding the payload once as chunks, again as one
  * buffer, again as a string, and once more as objects — four copies of
@@ -31,13 +35,14 @@
 
 import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { createWriteStream, existsSync, openSync, readFileSync, rmSync } from "node:fs"
+import { createWriteStream, existsSync, openSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 import type { XcresultCommand } from "./anomalies.ts"
-import type { ToolchainIdentity, XcresultResponse, XcresultTool } from "./ports.ts"
+import { TIMED_OUT, type ToolchainIdentity, type XcresultResponse, type XcresultTool } from "./ports.ts"
 import { monotonicNow } from "../domain/clock.ts"
 import { MAX_STAGED_PAYLOAD_BYTES } from "../domain/limits.ts"
+import { decodeStaged } from "./staged-decode.ts"
 import { REQUESTED_SCHEMA_VERSION } from "./schema.ts"
 
 /**
@@ -116,13 +121,6 @@ export function createXcresultTool(input: {
       })
     }
   }
-}
-
-/** The one wording for an expired read, used wherever the deadline is checked. */
-const TIMED_OUT: XcresultResponse = {
-  ok: false,
-  failure: "timedOut",
-  message: "the structured read exceeded its remaining budget",
 }
 
 /** How long a structured read has to stop politely before it is killed. */
@@ -275,62 +273,4 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       sink.end(() => finish(decodeStaged(staged, deadline)))
     })
   })
-}
-
-/**
- * Turn a staged file into a payload, or into the reason it could not be one.
- *
- * The deadline is checked three times, and the third is the one that makes it
- * a bound rather than a gesture.
- *
- * *Before* the read, because a decode that starts with no budget left should
- * not start. *Before* the parse, because reading hundreds of megabytes off a
- * disk is itself work the budget was meant to cover. And *after* the parse,
- * because a synchronous parse cannot be interrupted once it has begun —
- * nothing else runs while it is on the stack, timers included — so the only
- * honest thing left to do about one that overran is to decline to report its
- * result as an answer arrived at in time.
- *
- * That last check is what stops a successful decode outliving its budget. The
- * caller asked for an answer within a deadline; an answer produced after it is
- * not that answer, and returning it anyway would make every deadline here
- * advisory. The work was wasted either way — the difference is whether the
- * caller is told so.
- *
- * Exported for its own tests. Driving it through `run` cannot reach these
- * checks deterministically: a budget small enough to expire during the decode
- * expires during the wait instead, and the timer answers first — so a test
- * written that way passes whether or not these checks exist at all.
- */
-export function decodeStaged(staged: string, deadline: number): XcresultResponse {
-  const expired = () => monotonicNow() >= deadline
-  if (expired()) return TIMED_OUT
-
-  let text: string
-  try {
-    text = readFileSync(staged, "utf8")
-  } catch {
-    return {
-      ok: false,
-      failure: "commandFailed",
-      message: "the staged structured output could not be read back",
-    }
-  }
-
-  if (expired()) return TIMED_OUT
-
-  let payload: unknown
-  try {
-    payload = JSON.parse(text)
-  } catch {
-    return {
-      ok: false,
-      failure: "unsupported",
-      message: "the structured output could not be parsed as JSON",
-    }
-  }
-
-  // Decided last, and deliberately after a successful parse: an overrun is a
-  // fact about the read, not about the payload.
-  return expired() ? TIMED_OUT : { ok: true, payload }
 }

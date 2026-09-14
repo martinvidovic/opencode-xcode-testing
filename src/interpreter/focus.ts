@@ -67,7 +67,16 @@ export type LazyOutcome =
   | { status: "unsupported"; detail?: undefined }
 
 /** A focused view and the truncation it had to apply to fit. */
-export type Focused<T> = { focused: T; truncation: TruncationState }
+/**
+ * A focused view, or the absence of one it could not honestly produce.
+ *
+ * `focused` is optional because the cap is absolute and a focused record can
+ * be oversized on its own. Everything sheddable goes first, and what is left
+ * is the identity and the safe location — which a caller acts on and which are
+ * never shortened. When that alone does not fit there is nothing honest left
+ * to return, so nothing is.
+ */
+export type Focused<T> = { focused?: T; truncation: TruncationState }
 
 const UNTRUNCATED: TruncationState = {
   fieldTruncated: false,
@@ -199,25 +208,25 @@ function fit<T extends { message?: string }>(view: T, truncation: TruncationStat
     }
   }
 
-  // Everything sheddable is gone and it still does not fit. What is left is
-  // the identity and the location, which are what a caller acts on and are
-  // never shortened — so the view goes back over the cap rather than back
-  // wrong. Saying so is the least that is owed: a response reporting nothing
-  // truncated while exceeding the one bound the contract fixes would be
-  // inaccurate in the direction a caller cannot check.
+  // Everything sheddable is gone. If it still does not fit, what remains is
+  // the identity and the location — the parts a caller acts on, and the parts
+  // that cannot be shortened without becoming a different answer. Returning
+  // them over the cap would break the one bound the contract fixes; returning
+  // them halved would hand back an identifier that addresses nothing. So the
+  // view is not returned at all, and the response says so.
   const overCap = !fits(current)
 
-  return {
-    focused: current as T,
-    truncation: {
-      ...truncation,
-      // Each fact reported as itself. Saying a collection was cut when a
-      // string was shortened is not a smaller inaccuracy than saying nothing.
-      fieldTruncated: truncation.fieldTruncated || shortenedField,
-      collectionTruncated: truncation.collectionTruncated || shedCollection,
-      responseTruncated: shedCollection || shortenedField || overCap,
-    },
+  const state: TruncationState = {
+    ...truncation,
+    // Each fact reported as itself. Saying a collection was cut when a string
+    // was shortened is not a smaller inaccuracy than saying nothing.
+    fieldTruncated: truncation.fieldTruncated || shortenedField,
+    collectionTruncated: truncation.collectionTruncated || shedCollection,
+    responseTruncated: shedCollection || shortenedField || overCap,
+    ...(overCap ? { recordsOmitted: 1 } : {}),
   }
+
+  return overCap ? { truncation: state } : { focused: current as T, truncation: state }
 }
 
 function fits(view: unknown): boolean {

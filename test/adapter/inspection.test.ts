@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { createTestToolService, INDEX_ARTIFACT, type ServiceEnvironment } from "../../src/adapter/service.ts"
-import { RESPONSE_BYTE_CAP } from "../../src/domain/limits.ts"
+import { RESPONSE_BYTE_CAP, RESPONSE_ENVELOPE_BYTES } from "../../src/domain/limits.ts"
 import type { InspectRunRequest, InspectionResponse } from "../../src/domain/inspection.ts"
 import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { RUN_ARTIFACTS, createRunDirectory, runDirectory } from "../../src/runner/paths.ts"
@@ -585,3 +585,173 @@ describe("bundle-backed detail", () => {
     })
   })
 })
+
+describe("a focused view that cannot fit the cap", () => {
+  /** An occurrence whose identity alone is larger than any response may be. */
+  const enormousIdentity = {
+    id: "occ-1",
+    identity: {
+      bundle: "AppTests",
+      suite: "LoginTests",
+      test: `testSignsIn${"x".repeat(200_000)}()`,
+      canonical: `AppTests/LoginTests/testSignsIn${"x".repeat(200_000)}()`,
+    },
+    identityComplete: true,
+    status: "failed" as const,
+    position: "0",
+    attempts: [],
+    failures: [],
+  }
+
+  /** A diagnostic whose *location* is what makes it oversized. */
+  const enormousLocation = {
+    id: "diag-1",
+    kind: "testFailure" as const,
+    message: "XCTAssertEqual failed",
+    testId: "occ-1",
+    location: { path: `Sources/App/${"Nested/".repeat(20_000)}Login.swift`, line: 42 },
+    inspectionAvailable: true,
+  }
+
+  test("is omitted rather than returned over the cap, when the identity is what is oversized", async () => {
+    // Shedding runs out: attachments, activities, frames, attempts and the
+    // message are all gone, and what is left is the identity — which a caller
+    // acts on and which is never shortened.
+    await retained(
+      indexWith({ occurrences: [enormousIdentity] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests", testId: "occ-1" })
+
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+        expect(response.status).toBe("incomplete")
+        if (response.status !== "incomplete") return
+        expect((response.data as { view: string }).view).toBe("omitted")
+        expect(response.truncation.recordsOmitted).toBe(1)
+      },
+    )
+  })
+
+  test("is omitted rather than returned over the cap, when the location is what is oversized", async () => {
+    // A safe location is somewhere to go and look. Halving the path names a
+    // file that does not exist, which is worse than saying nothing.
+    await retained(
+      indexWith({
+        testFailures: [enormousLocation] as NormalizedIndex["testFailures"],
+        occurrences: [
+          {
+            ...enormousIdentity,
+            identity: {
+              bundle: "AppTests",
+              suite: "LoginTests",
+              test: "testSignsIn()",
+              canonical: "AppTests/LoginTests/testSignsIn()",
+            },
+          },
+        ] as NormalizedIndex["occurrences"],
+      }),
+      async (inspect) => {
+        const response = await inspect({ facet: "failures", diagnosticId: "diag-1" })
+
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+        expect(response.status).toBe("incomplete")
+        if (response.status !== "incomplete") return
+        expect((response.data as { view: string }).view).toBe("omitted")
+      },
+    )
+  })
+
+  test("says the record exists and will not fit, not that it has no detail", async () => {
+    // The distinction the view exists for. An empty focused body says the
+    // test recorded nothing; this says it recorded plenty and none of it can
+    // be sent without altering something a caller addresses it by.
+    await retained(
+      indexWith({ occurrences: [enormousIdentity] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests", testId: "occ-1" })
+        if (response.status !== "incomplete") throw new Error("expected an incomplete response")
+
+        expect(response.annotation).toContain("cannot be returned within the response cap")
+        expect((response.data as { reason: string }).reason).toContain("identifier")
+      },
+    )
+  })
+
+  test("still returns a focused view that does fit", async () => {
+    // The other direction, so the tests above cannot pass by refusing
+    // everything: an ordinary record comes back focused.
+    await retained(
+      indexWith({
+        occurrences: [
+          {
+            ...enormousIdentity,
+            identity: {
+              bundle: "AppTests",
+              suite: "LoginTests",
+              test: "testSignsIn()",
+              canonical: "AppTests/LoginTests/testSignsIn()",
+            },
+          },
+        ] as NormalizedIndex["occurrences"],
+      }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests", testId: "occ-1" })
+        const data = response.status === "available" || response.status === "incomplete"
+          ? (response.data as { view: string })
+          : undefined
+
+        expect(data?.view).toBe("focused")
+      },
+    )
+  })
+})
+
+describe("the room a response reserves for everything but its data", () => {
+  test("is enough for the largest envelope this contract can produce", () => {
+    // `fits` measures the view and subtracts a flat RESPONSE_ENVELOPE_BYTES
+    // for the rest — the status, the facet, the truncation state, the cursor
+    // and the annotation. That makes the cap a guarantee only while the rest
+    // really does fit in that allowance, and nothing else checks it: the
+    // annotation is assembled after the view has been fitted, so a long one
+    // would push an already-fitted response over the bound it was fitted to.
+    const largest = {
+      status: "incomplete",
+      completeness: "partial",
+      truncation: {
+        fieldTruncated: true,
+        collectionTruncated: true,
+        responseTruncated: true,
+        hasMore: true,
+        recordsOmitted: 1,
+        // A cursor is the longest variable-length thing in an envelope, and
+        // this is comfortably longer than one the tool issues.
+        nextCursor: "x".repeat(256),
+      },
+      data: { view: "omitted", facet: "buildErrors", reason: OMITTED_REASON },
+      annotation: LONGEST_ANNOTATION,
+    }
+
+    expect(Buffer.byteLength(JSON.stringify(largest), "utf8")).toBeLessThanOrEqual(
+      RESPONSE_ENVELOPE_BYTES,
+    )
+  })
+})
+
+/** The wording a withheld focused view carries, as `paging.ts` writes it. */
+const OMITTED_REASON =
+  "this record cannot be returned within the response cap without altering an identifier"
+
+/**
+ * The longest annotation any inspection response can carry.
+ *
+ * Every one is a fixed literal chosen by this repository — no caller text and
+ * no message from a tool reaches an annotation — so the longest of them is a
+ * fact that can be written down and checked.
+ */
+const LONGEST_ANNOTATION =
+  "the retained evidence for this Test Run is not trustworthy; " +
+  "detail could not be associated to exactly one occurrence; " +
+  "1 record(s) could not be returned within the response cap"

@@ -48,6 +48,16 @@ export type FacetPage =
   | { view: "log"; facet: "log"; chunk: LogChunk }
   | { view: "focused"; facet: "failures" | "buildErrors"; focused: FocusedDiagnostic }
   | { view: "focused"; facet: "tests"; focused: FocusedTest }
+  /**
+   * The record was found and cannot be returned within the response cap.
+   *
+   * A distinct view rather than a focused one with an empty body, because the
+   * two mean opposite things: an empty focused view says the record had
+   * nothing in it, and this says the record had too much and none of what is
+   * left may be altered. A caller that cannot tell those apart reads "no
+   * detail" from a test that has plenty.
+   */
+  | { view: "omitted"; facet: InspectionFacet; reason: string }
 
 export function inspectIndex(
   index: NormalizedIndex,
@@ -370,12 +380,11 @@ function focusDiagnostic(
 
   if (lazy.status === "unsupported") return { status: "unsupported", facet: "failures" }
 
+  const facet = failure !== undefined ? "failures" : "buildErrors"
   const view = focusedDiagnostic(index, diagnostic, trustedRoot, lazy.detail)
-  return focusedResponse(
-    { view: "focused", facet: failure !== undefined ? "failures" : "buildErrors", focused: view.focused },
-    view.truncation,
-    lazy,
-  )
+  if (view.focused === undefined) return omittedResponse(facet, view.truncation)
+
+  return focusedResponse({ view: "focused", facet, focused: view.focused }, view.truncation, lazy)
 }
 
 function focusTest(
@@ -388,6 +397,8 @@ function focusTest(
   if (lazy.status === "unsupported") return { status: "unsupported", facet: "tests" }
 
   const view = focusedTest(index, occurrence, lazy.detail)
+  if (view.focused === undefined) return omittedResponse("tests", view.truncation)
+
   return focusedResponse({ view: "focused", facet: "tests", focused: view.focused }, view.truncation, lazy)
 }
 
@@ -415,6 +426,27 @@ function focusedResponse(
     }
   }
   return { status: "available", completeness: "complete", data, truncation }
+}
+
+/**
+ * A record that exists and cannot be shown within the cap.
+ *
+ * `incomplete`, never `available`: `available` promises that what is absent
+ * from a response was absent from the run, and here it is absent from the
+ * response only. The annotation says which, because "no detail" and "detail
+ * too large to send" ask completely different things of a caller.
+ */
+function omittedResponse(
+  facet: InspectionFacet,
+  truncation: TruncationState,
+): InspectionResponse<FacetPage> {
+  const reason = "this record cannot be returned within the response cap without altering an identifier"
+  return {
+    status: "incomplete",
+    data: { view: "omitted", facet, reason },
+    truncation,
+    annotation: reason,
+  }
 }
 
 function single(data: FacetPage): InspectionResponse<FacetPage> {
