@@ -25,12 +25,14 @@ import {
   asSuite,
   newObservations,
   reportFrom,
+  rosterDrift,
   scenarioSink,
   UNOBSERVED_TOOLCHAIN,
   type Observations,
 } from "../../scripts/gate/observations.ts"
 import { compare, render, runFreshnessCheck } from "../../scripts/freshness-check.ts"
 import { reportPathFor, writeReport, type RunReport } from "../../scripts/gate/report.ts"
+import { SUITE_ROSTER } from "../../scripts/gate/roster.ts"
 
 const STARTED_AT = "2026-09-14T01:00:00.000Z"
 
@@ -280,7 +282,7 @@ describe("a suite that throws part-way through", () => {
 
     // layer4 was entered and did not finish: everything after `buildFailed`
     // is work nobody did.
-    expect(report.suites).toEqual([{ suite: "layer4", entered: true, completed: false }])
+    expect(report.suites).toMatchObject([{ suite: "layer4", entered: true, completed: false }])
 
     // b2 was selected and never entered at all, which is a different fact
     // from a b2 that ran and found nothing.
@@ -297,7 +299,7 @@ describe("a suite that throws part-way through", () => {
       record({ name: "b1 tool ids register", kind: "gating", status: "passed", detail: "" })
     })
 
-    expect(reportFrom(observed, "passed").suites).toEqual([
+    expect(reportFrom(observed, "passed").suites).toMatchObject([
       { suite: "b1", entered: true, completed: true },
     ])
   })
@@ -351,5 +353,212 @@ describe("a freshness check that begins and cannot finish", () => {
 
     expect(render(comparison)).toContain("the bundle was not examined")
     expect(render({ ...comparison, stage: "complete" })).not.toContain("not examined")
+  })
+})
+
+describe("scenarios a failed gate never reached", () => {
+  test("are named, not left to be inferred from a short list", () => {
+    // Four results from a suite that runs eight and four from a suite that
+    // runs four look identical in a list of four, and a reader of a failed
+    // report is asking precisely which of those happened.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    record({ name: "b1 tool ids register", kind: "gating", status: "passed", detail: "" })
+    record({ name: "b1 tool descriptions", kind: "gating", status: "failed", detail: "drifted" })
+
+    const report = reportFrom(observed, "failed", "Error: boom")
+
+    expect(report.unreached).toEqual([
+      "b1 parameter schemas",
+      "b1 enablement marker gates registration",
+      "b1 restricted agents",
+      "b1 documented installation path",
+    ])
+  })
+
+  test("cover a suite that was selected and never entered at all", () => {
+    // Both ways of not arriving are the same fact from the report's point of
+    // view: this was going to be checked, and it was not.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1", "b2"]
+
+    expect(reportFrom(observed, "failed", "boom").unreached).toEqual([
+      ...SUITE_ROSTER.b1,
+      ...SUITE_ROSTER.b2,
+    ])
+  })
+
+  test("are absent from a run that reached everything", () => {
+    // The other direction: a report that always carried this field would be a
+    // report where the field meant nothing.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+    for (const name of SUITE_ROSTER.b1) {
+      record({ name, kind: "gating", status: "passed", detail: "" })
+    }
+
+    expect(reportFrom(observed, "passed").unreached).toBeUndefined()
+  })
+
+  test("distinguish completed, failed and unreached together", () => {
+    // All three states in one report, which is what the criterion asks for:
+    // a reader should not have to reconstruct any of them.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    record({ name: "b1 tool ids register", kind: "gating", status: "passed", detail: "" })
+    record({ name: "b1 tool descriptions", kind: "gating", status: "failed", detail: "drifted" })
+
+    const report = reportFrom(observed, "failed", "Error: boom")
+
+    expect(report.scenarios.filter((s) => s.status === "passed").map((s) => s.name)).toEqual([
+      "b1 tool ids register",
+    ])
+    expect(report.scenarios.filter((s) => s.status === "failed").map((s) => s.name)).toEqual([
+      "b1 tool descriptions",
+    ])
+    expect(report.unreached).toContain("b1 restricted agents")
+  })
+})
+
+describe("the roster that makes unreached legible", () => {
+  test("is checked against what a completed suite actually produced", () => {
+    // A stale roster is worse than none: it would report scenarios that no
+    // longer exist as unreached, on every failed run, and nothing else would
+    // notice — the roster is only consulted once something has gone wrong.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+    observed.suites.push({ suite: "b1", entered: true, completed: true, from: 0, to: SUITE_ROSTER.b1.length })
+    for (const name of SUITE_ROSTER.b1) {
+      record({ name, kind: "gating", status: "passed", detail: "" })
+    }
+
+    expect(rosterDrift(observed)).toEqual([])
+
+    observed.scenarios.pop()
+    expect(rosterDrift(observed)).toEqual(["b1 documented installation path"])
+  })
+
+  test("says nothing when the run recorded a failure of its own", () => {
+    // A suite that completed having failed is missing scenarios for a reason
+    // it already stated. Calling that drift would raise a false alarm on every
+    // genuinely failing run — the runs whose reports matter most.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+    observed.suites.push({ suite: "b1", entered: true, completed: true, from: 0, to: 2 })
+
+    record({ name: "b1 tool ids register", kind: "gating", status: "passed", detail: "" })
+    record({ name: "b1 host registration", kind: "gating", status: "failed", detail: "no host" })
+
+    expect(rosterDrift(observed)).toEqual([])
+  })
+
+  test("says nothing about a suite that did not complete", () => {
+    // An interrupted suite is missing scenarios by definition. Reporting that
+    // as roster drift would raise a false alarm on exactly the runs the roster
+    // exists to describe.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    observed.suites.push({ suite: "b1", entered: true, completed: false, from: 0, to: 0 })
+
+    expect(rosterDrift(observed)).toEqual([])
+  })
+})
+
+describe("a registration suite interrupted between its checks", () => {
+  test("keeps the check that had already been decided", async () => {
+    // `tool.list` is a second round trip to a host that is still booting, and
+    // it sits between the first check and the last two. Collecting all three
+    // and returning them meant that if it did not answer, the first — already
+    // decided, already true — went with it.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await expect(
+      asSuite(observed, "b1", async () => {
+        record({
+          name: "b1 tool ids register",
+          kind: "gating",
+          status: "passed",
+          detail: "all present",
+        })
+        throw new Error("the host stopped answering")
+      }),
+    ).rejects.toThrow()
+
+    const report = reportFrom(observed, "failed", "Error: the host stopped answering")
+
+    // Kept.
+    expect(report.scenarios.map((s) => s.name)).toEqual(["b1 tool ids register"])
+    expect(report.scenarios[0]?.status).toBe("passed")
+
+    // And everything it never got to is named rather than merely missing.
+    expect(report.unreached).toEqual([
+      "b1 tool descriptions",
+      "b1 parameter schemas",
+      "b1 enablement marker gates registration",
+      "b1 restricted agents",
+      "b1 documented installation path",
+    ])
+
+    // The suite is marked entered and unfinished, so the two facts agree.
+    expect(report.suites).toMatchObject([{ suite: "b1", entered: true, completed: false }])
+  })
+})
+
+describe("roster drift asked of one suite at a time", () => {
+  test("is not hidden by a different suite failing", () => {
+    // The case this exists to catch, and the one a whole-run check would miss:
+    // layer4 genuinely fails, b1 runs cleanly, and b1's roster is stale. Asking
+    // the question of the run instead of the suite would let the failure hide
+    // the drift — on precisely the runs where the report is read most closely.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["layer4", "b1"]
+    const record = scenarioSink(observed)
+
+    await_layer4: {
+      observed.suites.push({ suite: "layer4", entered: true, completed: true, from: 0, to: 1 })
+      record({ name: "passing run", kind: "gating", status: "failed", detail: "it failed" })
+    }
+
+    const from = observed.scenarios.length
+    for (const name of SUITE_ROSTER.b1.slice(0, -1)) {
+      record({ name, kind: "gating", status: "passed", detail: "" })
+    }
+    observed.suites.push({
+      suite: "b1",
+      entered: true,
+      completed: true,
+      from,
+      to: observed.scenarios.length,
+    })
+
+    expect(rosterDrift(observed)).toEqual(["b1 documented installation path"])
+  })
+
+  test("attributes scenarios by when they were recorded, not by their names", () => {
+    // Names would mean consulting the roster to decide which suite a scenario
+    // belonged to — and the roster is the thing being checked, so the check
+    // would agree with itself.
+    const observed = newObservations(STARTED_AT)
+    const record = scenarioSink(observed)
+
+    const outcome = asSuite(observed, "b1", async () => {
+      for (const name of SUITE_ROSTER.b1) {
+        record({ name, kind: "gating", status: "passed", detail: "" })
+      }
+    })
+
+    return outcome.then(() => {
+      expect(observed.suites[0]).toMatchObject({ from: 0, to: SUITE_ROSTER.b1.length })
+      expect(rosterDrift(observed)).toEqual([])
+    })
   })
 })

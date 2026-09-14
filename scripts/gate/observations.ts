@@ -20,6 +20,7 @@
  */
 
 import type { Suite } from "./options.ts"
+import { expectedScenarios, SUITE_ROSTER } from "./roster.ts"
 import type { RunReport, ScenarioResult } from "./report.ts"
 
 /**
@@ -69,7 +70,26 @@ export type Observations = {
    * and everything it would have done after its last recorded scenario is
    * work nobody did.
    */
-  suites: Array<{ suite: Suite; entered: true; completed: boolean }>
+  suites: SuiteRun[]
+}
+
+/**
+ * One suite's run, and the span of the report it accounts for.
+ *
+ * `from` is recorded before the suite can do anything and `to` only once it has
+ * finished, so the scenarios between them are exactly the ones it produced.
+ * Attributing them by name instead would mean consulting the roster to decide
+ * which suite a scenario belonged to — and the roster is the thing being
+ * checked, which would make the check agree with itself.
+ */
+export type SuiteRun = {
+  suite: Suite
+  entered: true
+  completed: boolean
+  /** Index into `scenarios` where this suite's results begin. */
+  from: number
+  /** Index one past its last result. Only meaningful once `completed`. */
+  to: number
 }
 
 export function newObservations(startedAt: string): Observations {
@@ -87,10 +107,19 @@ export async function asSuite<T>(
   suite: Suite,
   work: () => Promise<T>,
 ): Promise<T> {
-  const entry = { suite, entered: true as const, completed: false }
+  const entry: SuiteRun = {
+    suite,
+    entered: true,
+    completed: false,
+    from: observed.scenarios.length,
+    to: observed.scenarios.length,
+  }
   observed.suites.push(entry)
+
   const result = await work()
+
   entry.completed = true
+  entry.to = observed.scenarios.length
   return result
 }
 
@@ -128,12 +157,15 @@ export function reportFrom(
   outcome: "passed" | "failed",
   diagnostic?: string,
 ): RunReport {
+  const unreached = unreachedScenarios(observed)
+
   return {
     schemaVersion: 1,
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
     selected: observed.selected,
     suites: observed.suites.map((entry) => ({ ...entry })),
+    ...(unreached.length === 0 ? {} : { unreached }),
     ...(observed.project === true ? { project: true } : {}),
     // Copied, never aliased. A shared object handed to every report is one
     // any reader could edit for all of them.
@@ -152,4 +184,52 @@ export function reportFrom(
     outcome,
     ...(diagnostic === undefined ? {} : { diagnostic }),
   }
+}
+
+/**
+ * Scenarios the selected suites set out to run and did not.
+ *
+ * Named rather than left absent, which is the whole of it: four results from a
+ * suite that ran eight scenarios and four from a suite that ran four look the
+ * same in a list of four, and a reader of a failed report is asking precisely
+ * which of those happened.
+ *
+ * A scenario is unreached when the roster expects it and nothing recorded it.
+ * That covers both ways of not arriving — a suite that threw part-way, and one
+ * that was never entered at all — because from the report's point of view they
+ * are the same fact: this was going to be checked, and it was not.
+ */
+export function unreachedScenarios(observed: Observations): string[] {
+  const recorded = new Set(observed.scenarios.map((scenario) => scenario.name))
+  return expectedScenarios(observed.selected).filter((name) => !recorded.has(name))
+}
+
+/**
+ * Roster entries a suite that ran cleanly to the end did not produce.
+ *
+ * The check that keeps the roster honest. A stale roster is worse than none —
+ * it would report scenarios that no longer exist as unreached, on every failed
+ * run — and nothing else would notice, because a roster is only consulted when
+ * something has already gone wrong.
+ *
+ * Asked per suite, and only of clean ones. A suite that completed *having
+ * recorded a failure* is missing scenarios for a reason it already stated, so
+ * reporting that as drift would raise a false alarm on exactly the runs whose
+ * reports matter most. Asking the question of the whole run instead would be
+ * the same mistake one size up: one failing layer4 scenario would hide a
+ * genuinely stale b1 roster, which is the case this exists to catch.
+ */
+export function rosterDrift(observed: Observations): string[] {
+  return observed.suites.filter((entry) => entry.completed).flatMap((entry) => {
+    const produced = observed.scenarios.slice(entry.from, entry.to)
+
+    // Gating failures only. `real cancellation` and `timeout escalation` are
+    // report-only precisely because they are timing-sensitive, and letting one
+    // flaky report-only result silence this check would mean the roster stops
+    // being verified on whichever runs happen to be slow.
+    if (produced.some((s) => s.kind === "gating" && s.status === "failed")) return []
+
+    const names = new Set(produced.map((scenario) => scenario.name))
+    return SUITE_ROSTER[entry.suite].filter((name) => !names.has(name))
+  })
 }

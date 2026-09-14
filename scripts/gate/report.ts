@@ -48,6 +48,16 @@ export type RunReport = {
    */
   suites?: Array<{ suite: Suite; entered: true; completed: boolean }>
   /**
+   * Scenarios the selected suites set out to run and did not reach.
+   *
+   * Stated rather than left to inference. `scenarios` says what happened and
+   * `selected` says what was asked for; neither says which of the checks a
+   * suite intended never got to run, and on an interrupted gate that is the
+   * question a reader has. Additive, so it needs no `schemaVersion` bump, and
+   * absent on a run that reached everything.
+   */
+  unreached?: string[]
+  /**
    * Whether a real project was supplied. Deliberately a boolean: a project
    * path is a private fact about someone's machine, and the report says that
    * the standing gate was not what ran without naming where it ran instead.
@@ -137,6 +147,12 @@ export function renderReport(report: RunReport, path: string): string {
     const duration = scenario.durationMs === undefined ? "" : ` ${scenario.durationMs}ms`
     lines.push(`  ${mark} ${scenario.name}${suffix}${duration}`)
     if (scenario.detail.length > 0) lines.push(`       ${scenario.detail}`)
+  }
+
+  if (report.unreached !== undefined && report.unreached.length > 0) {
+    // Listed, not counted. "3 not reached" leaves a reader to work out which,
+    // and the which is the point.
+    lines.push("", `not reached   ${report.unreached.join(", ")}`)
   }
 
   // The reason, when there is one. It is already redacted of anything
