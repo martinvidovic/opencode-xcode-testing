@@ -25,16 +25,21 @@ import { resolveToolchain } from "../src/runner/toolchain.ts"
 import { runFreshnessCheck, type BundleExamination } from "./freshness-check.ts"
 import { discoverDestination, type DestinationDiscovery } from "./gate/destination.ts"
 import { safeDiagnostic } from "./gate/diagnostic.ts"
-import { parseOptions, usage, type Suite } from "./gate/options.ts"
+import { parseOptions, usage } from "./gate/options.ts"
 import { runLayer4 } from "./gate/layer4.ts"
 import { runInstallationGate } from "./gate/installation.ts"
 import { runRegistrationGate } from "./gate/registration.ts"
 import { runExecutionGate } from "./gate/execution.ts"
-import { renderReport, writeReport, type RunReport, type ScenarioResult } from "./gate/report.ts"
+import { newObservations, reportFrom, type Observations } from "./gate/observations.ts"
+import { renderReport, writeReport } from "./gate/report.ts"
 
-async function main(argv: string[]): Promise<number> {
+/**
+ * Exported so the report-writing paths can be exercised without a simulator.
+ * The suites themselves are gated elsewhere; what is testable here is that a
+ * run records what it established as it establishes it.
+ */
+export async function main(argv: string[], observed: Observations): Promise<number> {
   const parsed = parseOptions(argv)
-  const startedAt = new Date().toISOString()
 
   if (parsed.status === "rejected") {
     // A refused command line still leaves a record. Someone reading the
@@ -42,49 +47,48 @@ async function main(argv: string[]): Promise<number> {
     // verified", and an invocation that verified nothing because it was
     // mistyped is part of that answer.
     process.stderr.write(`acceptance gate: ${parsed.message}\n\n${usage()}\n`)
-    writeReport({
-      ...unobservedReport(startedAt, []),
-      destination: { unavailable: parsed.message },
-    })
+    writeReport(reportFrom(observed, "failed", parsed.message))
     return 2
   }
 
   const { suites, project } = parsed.options
-  const scenarios: ScenarioResult[] = []
+
+  // Recorded the moment it is known, like every fact below it. Nothing here
+  // waits until the end to be written down, because the end is exactly what a
+  // failing run does not reach.
+  observed.selected = suites
+  // Recorded on selection rather than on completion, deliberately. The flag is
+  // a caveat — "this was not the standing gate" — and a report that under-warns
+  // is read as a claim the run did not earn, while one that over-warns is only
+  // ever discounted.
+  if (project !== undefined && suites.includes("layer4")) observed.project = true
+  observed.hostVersion = observedHostVersion()
+
+  // Held by reference, so a scenario pushed here is a scenario the report has
+  // — including a report written from a `catch` three suites later.
+  const scenarios = observed.scenarios
 
   // Every path from here writes a report, including the ones that fail before
   // a single scenario runs. A gate invocation that left no durable trace is
   // one nobody can check afterwards, and "it failed to start" is exactly the
   // outcome most worth having a record of.
-  const finish = (
-    outcome: "passed" | "failed",
-    facts: Partial<RunReport> & { diagnostic?: string },
-  ): number => {
-    const report: RunReport = {
-      ...unobservedReport(startedAt, suites),
-      // Claimed only when a layer that uses it actually ran: otherwise the
-      // line says something the run did not do.
-      ...(project !== undefined && suites.includes("layer4") ? { project: true } : {}),
-      hostVersion: observedHostVersion(),
-      destination: { unavailable: "not required by the selected suites" },
-      scenarios,
-      outcome,
-      ...facts,
-    }
+  //
+  // It takes no facts of its own. Everything it reports was written down when
+  // it was observed, which is what makes the exceptional path's report equal
+  // to this one minus whatever had not happened yet.
+  const finish = (outcome: "passed" | "failed", diagnostic?: string): number => {
+    const report = reportFrom(observed, outcome, diagnostic)
 
     const path = writeReport(report)
     process.stdout.write(renderReport(report, path))
-    if (facts.diagnostic !== undefined) {
-      process.stderr.write(`acceptance gate: ${facts.diagnostic}\n`)
-    }
+    if (diagnostic !== undefined) process.stderr.write(`acceptance gate: ${diagnostic}\n`)
     return outcome === "passed" ? 0 : 1
   }
 
   const toolchain = resolveToolchain()
-  if (toolchain.status !== "resolved") {
-    return finish("failed", { diagnostic: toolchain.message })
-  }
-  const toolchainFacts = {
+  if (toolchain.status !== "resolved") return finish("failed", toolchain.message)
+
+  observed.toolchain = {
     xcodeVersion: toolchain.identity.xcodeVersion,
     xcodeBuild: toolchain.identity.xcodeBuild,
     xcresulttoolVersion: toolchain.identity.xcresulttoolVersion,
@@ -99,10 +103,9 @@ async function main(argv: string[]): Promise<number> {
     ...(pathCandidate === undefined ? {} : { pathCandidate }),
     probe: probeRuntimeCandidate,
   })
-  if (runtime.status !== "resolved") {
-    return finish("failed", { toolchain: toolchainFacts, diagnostic: runtime.message })
-  }
-  const runtimeFacts = {
+  if (runtime.status !== "resolved") return finish("failed", runtime.message)
+
+  observed.runtime = {
     path: runtime.path,
     ...(runtime.version === undefined ? {} : { version: runtime.version }),
     source: runtime.source,
@@ -116,18 +119,26 @@ async function main(argv: string[]): Promise<number> {
     status: "none",
     diagnostic: "not required by the selected suites",
   }
+
+  // Recorded now only when it is already true. Writing it before discovery
+  // runs would mean a throw inside discovery produced a report claiming no
+  // destination was needed — by a run that selected the suites that need one.
+  if (!needsDestination) observed.destination = { unavailable: destination.diagnostic }
+
   if (needsDestination) {
     destination = discoverDestination()
-    if (destination.status !== "found") {
-      // Never a silent skip: a gate that passes because it found nothing to
-      // run on reports green on a machine where nothing was verified.
-      return finish("failed", {
-        toolchain: toolchainFacts,
-        runtime: runtimeFacts,
-        destination: { unavailable: destination.diagnostic },
-        diagnostic: destination.diagnostic,
-      })
-    }
+    observed.destination =
+      destination.status === "found"
+        ? {
+            deviceName: destination.deviceName,
+            runtime: destination.runtime,
+            id: destination.destination.kind === "id" ? destination.destination.id : "",
+          }
+        : { unavailable: destination.diagnostic }
+
+    // Never a silent skip: a gate that passes because it found nothing to run
+    // on reports green on a machine where nothing was verified.
+    if (destination.status !== "found") return finish("failed", destination.diagnostic)
   }
 
   const context =
@@ -163,38 +174,15 @@ async function main(argv: string[]): Promise<number> {
   // whole file exists to prevent.
   const gating = scenarios.filter((scenario) => scenario.kind === "gating")
   if (gating.length === 0) {
-    return finish("failed", {
-      toolchain: toolchainFacts,
-      runtime: runtimeFacts,
-      diagnostic: "no gating scenario ran, so nothing was verified",
-    })
+    return finish("failed", "no gating scenario ran, so nothing was verified")
   }
 
-  return finish(gating.some((scenario) => scenario.status === "failed") ? "failed" : "passed", {
-    toolchain: toolchainFacts,
-    runtime: runtimeFacts,
-    destination:
-      destination.status === "found"
-        ? {
-            deviceName: destination.deviceName,
-            runtime: destination.runtime,
-            id: destination.destination.kind === "id" ? destination.destination.id : "",
-          }
-        : { unavailable: destination.diagnostic },
-    // Drift is surfaced in the report and never fails the gate. It examines
-    // the bundle the scenarios just produced, so the check is against a real
-    // payload rather than against version strings alone.
-    freshness: runFreshnessCheck(bundle === undefined ? { produce: true } : { bundle }),
-  })
-}
+  // Drift is surfaced in the report and never fails the gate. It examines the
+  // bundle the scenarios just produced, so the check is against a real payload
+  // rather than against version strings alone.
+  observed.freshness = runFreshnessCheck(bundle === undefined ? { produce: true } : { bundle })
 
-/** Stated as unobserved rather than blank, so a report never implies a fact. */
-const UNOBSERVED_TOOLCHAIN = {
-  xcodeVersion: "unobserved",
-  xcodeBuild: "unobserved",
-  xcresulttoolVersion: "unobserved",
-  schemaVersion: "unobserved",
-  developerDirectory: "unobserved",
+  return finish(gating.some((scenario) => scenario.status === "failed") ? "failed" : "passed")
 }
 
 /**
@@ -207,58 +195,53 @@ function observedHostVersion(): string {
   return result.status === 0 && version.length > 0 ? version : "unknown"
 }
 
-if (import.meta.main) {
-  const startedAt = new Date().toISOString()
+/**
+ * Record a run that ended by throwing.
+ *
+ * The path nobody plans for, and the one most worth a record. A gate that
+ * threw two minutes in has usually established a great deal — a toolchain, a
+ * simulator, a dozen scenarios — and a report calling all of it unobserved
+ * would be indistinguishable from one for a run that never started.
+ *
+ * It reads `observed` rather than anything the throw carried, which is the
+ * whole point: a throw returns nothing, so the only account of what the run
+ * got to is the one it wrote down as it went.
+ *
+ * Separate from the `catch` that calls it so it can be exercised. A handler
+ * that only exists inside `if (import.meta.main)` is a handler no test can
+ * reach, which is an unfortunate property for the code that runs when
+ * everything else has gone wrong.
+ */
+export function recordUncaughtFailure(
+  observed: Observations,
+  error: unknown,
+  homeDir?: string,
+): void {
+  const diagnostic = safeDiagnostic(error)
+  process.stderr.write(`acceptance gate: ${diagnostic}\n`)
 
-  main(process.argv.slice(2))
+  try {
+    const report = reportFrom(observed, "failed", diagnostic)
+    const path = homeDir === undefined ? writeReport(report) : writeReport(report, homeDir)
+    process.stdout.write(`report         ${basename(path)}\n`)
+  } catch (failure) {
+    // The report is required, so failing to write one is itself worth saying
+    // out loud rather than swallowing behind the original error.
+    process.stderr.write(
+      `acceptance gate: no report could be written: ${safeDiagnostic(failure)}\n`,
+    )
+  }
+}
+
+if (import.meta.main) {
+  const observed = newObservations(new Date().toISOString())
+
+  main(process.argv.slice(2), observed)
     .then((code) => {
       process.exitCode = code
     })
     .catch((error: unknown) => {
-      // The path nobody plans for, and the one most worth a record: a gate
-      // that threw left no trace of having run at all, which is
-      // indistinguishable from never having been invoked.
-      const diagnostic = safeDiagnostic(error)
-      process.stderr.write(`acceptance gate: ${diagnostic}\n`)
-
-      try {
-        // What this invocation *selected* is knowable even now, and a report
-        // that omitted it could not be told from one that selected nothing.
-        const parsed = parseOptions(process.argv.slice(2))
-        const path = writeReport({
-          ...unobservedReport(startedAt, parsed.status === "parsed" ? parsed.options.suites : []),
-          destination: { unavailable: diagnostic },
-        })
-        process.stdout.write(`report         ${basename(path)}\n`)
-      } catch (failure) {
-        // The report is required, so failing to write one is itself worth
-        // saying out loud rather than swallowing behind the original error.
-        process.stderr.write(`acceptance gate: no report could be written: ${safeDiagnostic(failure)}\n`)
-      }
+      recordUncaughtFailure(observed, error)
       process.exitCode = 1
     })
-}
-
-/**
- * The baseline every report starts from: a run that established nothing.
- *
- * Every fact is stated as unobserved rather than left blank or defaulted,
- * because a report saying "Xcode 0.0" would be a report lying about having
- * looked. Callers overwrite what they actually observed, so a fact that
- * survives is one nobody established.
- */
-function unobservedReport(startedAt: string, selected: Suite[]): RunReport {
-  return {
-    schemaVersion: 1,
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    selected,
-    toolchain: UNOBSERVED_TOOLCHAIN,
-    hostVersion: "unobserved",
-    runtime: { path: "", source: "unresolved" },
-    destination: { unavailable: "unobserved" },
-    freshness: { status: "unavailable", observed: {}, drift: [], fixturesChecked: 0 },
-    scenarios: [],
-    outcome: "failed",
-  }
 }
