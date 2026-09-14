@@ -266,25 +266,28 @@ describe("a stack frame whose path is longer than the display budget", () => {
   // are repository paths, which is exactly the case that matters.
   const ENORMOUS = `${ROOT}/Sources/${"Nested/".repeat(400)}Login.swift`
 
-  test("loses the location rather than being cut into a different file", () => {
+  test("is dropped rather than cut into a different file", () => {
     // A path cut to a length names nothing. The reader who follows it learns
     // only that this tool is wrong about where things are — and unlike a
-    // missing location, they have no way to tell that is what happened.
+    // missing frame, they have no way to tell that is what happened.
+    //
+    // The whole frame goes, not just its location. A source-line frame is
+    // *only* a location, so stripping one leaves an object with no fields —
+    // a slot in a bounded collection and bytes in a bounded response, saying
+    // nothing.
     const view = focusedDiagnostic(indexWith(traceWithPath(ENORMOUS)), DIAGNOSTIC, ROOT, undefined)
 
-    const frames = view.focused?.stackFrames ?? []
-    expect(frames).toHaveLength(1)
-    expect(frames[0]?.location).toBeUndefined()
+    expect(view.focused?.stackFrames).toEqual([])
   })
 
-  test("says a collection was cut, so the loss is not silent", () => {
-    // The frame survives without its location — "we were here in the stack"
-    // is a smaller answer than "at this line of this file" and a true one —
-    // but a caller reading a frame with no location must be able to tell it
-    // from a frame that never had one.
+  test("says a collection was cut, which is exactly what happened", () => {
+    // The flag has to match the loss. A frame removed is a collection that
+    // lost an element; reporting a field truncation would be describing a
+    // different event, and this contract has a word for each.
     const view = focusedDiagnostic(indexWith(traceWithPath(ENORMOUS)), DIAGNOSTIC, ROOT, undefined)
 
     expect(view.truncation.collectionTruncated).toBe(true)
+    expect(view.truncation.fieldTruncated).toBe(false)
   })
 
   test("keeps a path that fits exactly as it was recorded", () => {
@@ -305,21 +308,35 @@ describe("a stack frame whose path is longer than the display budget", () => {
   })
 
   test("stays within the response cap however many oversized paths there are", () => {
-    // The frames are bounded in number and each is now either whole or
-    // absent, so nothing here can push a response past the one bound the
-    // contract fixes.
+    // Each frame is now either whole or absent, so no number of pathological
+    // paths can push a response past the one bound the contract fixes. This
+    // measures what the code produced rather than a response shape the test
+    // wrote for itself.
     const lines = ["XCTAssertEqual failed"]
     for (let index = 0; index < 50; index += 1) lines.push(`    at ${ENORMOUS}${index}:1`)
 
     const view = focusedDiagnostic(indexWith(lines.join("\n")), DIAGNOSTIC, ROOT, undefined)
-    const response = { status: "incomplete", data: view.focused, truncation: view.truncation }
 
-    expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
-      RESPONSE_BYTE_CAP,
-    )
+    expect(Buffer.byteLength(JSON.stringify(view), "utf8")).toBeLessThanOrEqual(RESPONSE_BYTE_CAP)
+    expect(view.focused?.stackFrames).toEqual([])
+    expect(view.truncation.collectionTruncated).toBe(true)
   })
 
-  test("still reports the symbol and module a frame carries", () => {
+  test("reports a symbol cut to its bound, rather than cutting it quietly", () => {
+    // Display text is shortened, which is allowed — and said. A symbol at
+    // exactly the cap is not the symbol that was recorded, and a caller
+    // comparing it against a build log needs to know that.
+    const long = "s".repeat(STACK_FRAME_TEXT_CHAR_CAP * 2)
+    const trace = ["XCTAssertEqual failed", `0   AppTests    0x0000000104a2b1c4 ${long} + 132`].join(
+      "\n",
+    )
+
+    const view = focusedDiagnostic(indexWith(trace), DIAGNOSTIC, ROOT, undefined)
+
+    expect(view.truncation.fieldTruncated).toBe(true)
+  })
+
+  test("still returns the symbol and module a frame carries", () => {
     // Those are display text: shortened, they are the same symbol and the
     // same module. Only the path has the property that cutting it changes
     // what it names.
