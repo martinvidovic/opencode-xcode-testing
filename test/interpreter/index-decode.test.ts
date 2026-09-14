@@ -187,3 +187,111 @@ describe("nested collections", () => {
     expect(isNormalizedIndex(index({ fullMessages: { "diag-1": 42 } }))).toBe(false)
   })
 })
+
+describe("numbers that are not numbers", () => {
+  // `typeof value === "number"` is true of all of these, and every one of them
+  // reaches a caller — as a count, a duration, or a place to go and look.
+
+  test("a count that is not a whole non-negative number is not a count", () => {
+    expect(isNormalizedIndex(index({ requestedSelectionCount: -1 }))).toBe(false)
+    expect(isNormalizedIndex(index({ requestedSelectionCount: 1.5 }))).toBe(false)
+    expect(isNormalizedIndex(index({ observedOutsideScope: Number.NaN }))).toBe(false)
+    expect(isNormalizedIndex(index({ observedOutsideScope: Number.POSITIVE_INFINITY }))).toBe(false)
+  })
+
+  test("counts that do not add up are not this tool's counts", () => {
+    // `counts.failed` decides whether the run is reported as having failed
+    // tests, so a set that disagrees with itself does not render oddly — it
+    // changes what the tool says happened.
+    const inconsistent = {
+      completeness: "complete",
+      counts: { total: 2, passed: 1, failed: 1, skipped: 0, expectedFailure: 0, unknown: 0 },
+    }
+    expect(isNormalizedIndex(index({ tests: inconsistent }))).toBe(true)
+
+    const wrong = { ...inconsistent, counts: { ...inconsistent.counts, total: 9 } }
+    expect(isNormalizedIndex(index({ tests: wrong }))).toBe(false)
+  })
+
+  test("a NaN count is refused, though it passes every threshold by failing it", () => {
+    const counts = {
+      completeness: "complete",
+      counts: {
+        total: Number.NaN,
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        expectedFailure: 0,
+        unknown: 0,
+      },
+    }
+    expect(isNormalizedIndex(index({ tests: counts }))).toBe(false)
+  })
+
+  test("a line number below one is not a line number", () => {
+    const failure = {
+      id: "diag-1",
+      kind: "testFailure",
+      message: "it failed",
+      inspectionAvailable: true,
+      location: { path: "Sources/App/Login.swift", line: 0 },
+    }
+    expect(isNormalizedIndex(index({ testFailures: [failure] }))).toBe(false)
+
+    const negative = { ...failure, location: { path: "Sources/App/Login.swift", column: -4 } }
+    expect(isNormalizedIndex(index({ testFailures: [negative] }))).toBe(false)
+  })
+
+  test("a duration that ran backwards is not a duration", () => {
+    const occurrence = {
+      id: "occ-1",
+      identity: { canonical: "AppTests/T/test()" },
+      status: "passed",
+      position: "0",
+      failures: [],
+      attempts: [],
+      durationMs: -1,
+    }
+    expect(isNormalizedIndex(index({ occurrences: [occurrence] }))).toBe(false)
+  })
+
+  test("an attempt numbered from zero is not an attempt", () => {
+    const occurrence = {
+      id: "occ-1",
+      identity: { canonical: "AppTests/T/test()" },
+      status: "passed",
+      position: "0",
+      failures: [],
+      attempts: [{ ordinal: 0, status: "passed" }],
+    }
+    expect(isNormalizedIndex(index({ occurrences: [occurrence] }))).toBe(false)
+  })
+})
+
+describe("the selection an attestation is about", () => {
+  test("is checked, because it is what a caller compares against their request", () => {
+    // The verdict beside it reads as authoritative either way. A selection
+    // naming no bundle, or a bundle that is a number, is how a zero-match run
+    // gets reported as a run of something.
+    expect(isNormalizedIndex(index({ attestations: [{ verdict: "matched", selection: {} }] }))).toBe(
+      false,
+    )
+    expect(
+      isNormalizedIndex(index({ attestations: [{ verdict: "matched", selection: { bundle: 7 } }] })),
+    ).toBe(false)
+    expect(
+      isNormalizedIndex(
+        index({ attestations: [{ verdict: "matched", selection: { bundle: "AppTests" } }] }),
+      ),
+    ).toBe(true)
+  })
+
+  test("carries a matched count that is a count", () => {
+    const attestation = {
+      verdict: "matched",
+      selection: { bundle: "AppTests" },
+      matchedTestCount: -3,
+    }
+    expect(isNormalizedIndex(index({ attestations: [attestation] }))).toBe(false)
+  })
+})

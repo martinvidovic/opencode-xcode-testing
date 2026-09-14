@@ -17,12 +17,17 @@ import {
   type DiagnosticSummary,
   type FacetAvailability,
 } from "../domain/inspection.ts"
-import { EVIDENCE_COMPLETENESS, EVIDENCE_FACTS, TEST_STATUSES } from "../domain/evidence.ts"
+import {
+  countsAreConsistent,
+  EVIDENCE_COMPLETENESS,
+  EVIDENCE_FACTS,
+  TEST_STATUSES,
+} from "../domain/evidence.ts"
 import { staysInside } from "./locations.ts"
 import { SCOPE_VERDICTS } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { ScopeAttestation, ScopeVerdict } from "../domain/scope.ts"
-import { isArrayOf, isRecord, oneOf } from "../domain/json.ts"
+import { isArrayOf, isCount, isMeasurement, isPosition, isRecord, oneOf } from "../domain/json.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
 
 /**
@@ -115,7 +120,7 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
   return (
     index.indexVersion === INDEX_VERSION &&
     typeof index.runId === "string" &&
-    typeof index.decoderVersion === "number" &&
+    isCount(index.decoderVersion) &&
     typeof index.schemaVersion === "string" &&
     isArrayOf(index.occurrences, isIndexedOccurrence) &&
     isArrayOf(index.testFailures, isDiagnosticSummary) &&
@@ -123,10 +128,11 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
     isArrayOf(index.attestations, isAttestation) &&
     oneOf(index.scopeVerdict, SCOPE_VERDICTS) &&
     typeof index.scopeDigest === "string" &&
-    typeof index.requestedSelectionCount === "number" &&
-    typeof index.observedOutsideScope === "number" &&
-    isFacet(index.build) &&
-    isFacet(index.tests) &&
+    isCount(index.requestedSelectionCount) &&
+    isCount(index.observedOutsideScope) &&
+    isCounts(index.counts) &&
+    isBuildEvidence(index.build) &&
+    isTestEvidence(index.tests) &&
     isFacet(index.diagnostics) &&
     isMessageMap(index.fullMessages) &&
     isToolchainIdentity(index.toolchain) &&
@@ -178,7 +184,7 @@ function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
     typeof value.position === "string" &&
     isArrayOf(value.failures, isNormalizedFailure) &&
     isArrayOf(value.attempts, isAttempt) &&
-    (value.durationMs === undefined || typeof value.durationMs === "number")
+    (value.durationMs === undefined || isMeasurement(value.durationMs))
   )
 }
 
@@ -207,9 +213,11 @@ function isNormalizedFailure(value: unknown): boolean {
 function isAttempt(value: unknown): boolean {
   if (!isRecord(value)) return false
   return (
-    typeof value.ordinal === "number" &&
+    // Attempts are ordered and shown by ordinal, so a zeroth or a `NaN`th
+    // attempt is one a caller cannot ask about again.
+    isPosition(value.ordinal) &&
     oneOf(value.status, TEST_STATUSES) &&
-    (value.durationMs === undefined || typeof value.durationMs === "number")
+    (value.durationMs === undefined || isMeasurement(value.durationMs))
   )
 }
 
@@ -240,18 +248,81 @@ function isSafeLocation(value: unknown): boolean {
   if (!isRecord(value)) return false
   if (typeof value.path !== "string" || !staysInside(value.path)) return false
   return (
-    (value.line === undefined || typeof value.line === "number") &&
-    (value.column === undefined || typeof value.column === "number")
+    (value.line === undefined || isPosition(value.line)) &&
+    (value.column === undefined || isPosition(value.column))
   )
 }
 
+/**
+ * A scope attestation, including the selection it is about.
+ *
+ * The selection is the part a caller acts on: it is what the attestation says
+ * a verdict is *for*, and a reader comparing it against what they asked to run
+ * is the whole mechanism by which a zero-match run is caught. A selection
+ * checked only for being an object could name a bundle that is a number, or
+ * carry no bundle at all, and the verdict beside it would still read as
+ * authoritative.
+ */
 function isAttestation(value: unknown): value is ScopeAttestation {
   if (!isRecord(value)) return false
-  return oneOf(value.verdict, SCOPE_VERDICTS) && isRecord(value.selection)
+  return (
+    oneOf(value.verdict, SCOPE_VERDICTS) &&
+    isTestSelection(value.selection) &&
+    (value.matchedTestCount === undefined || isCount(value.matchedTestCount))
+  )
+}
+
+function isTestSelection(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  if (typeof value.bundle !== "string" || value.bundle.length === 0) return false
+  return ["suite", "test"].every(
+    (field) => value[field] === undefined || typeof value[field] === "string",
+  )
 }
 
 function isFacet(value: unknown): boolean {
   return isRecord(value) && oneOf(value.completeness, EVIDENCE_COMPLETENESS)
+}
+
+/**
+ * Build evidence, including the count a caller is shown.
+ *
+ * `errorCount` is optional by contract — absent unless the build was observed
+ * — so its absence is fine and its presence has to be a count.
+ */
+function isBuildEvidence(value: unknown): boolean {
+  if (!isFacet(value)) return false
+  const build = value as Record<string, unknown>
+  return build.errorCount === undefined || isCount(build.errorCount)
+}
+
+/**
+ * Test evidence, including the counts classification reads.
+ *
+ * These are not display numbers. `counts.failed` decides whether a run is
+ * reported as having failed tests, `counts.unknown` raises an anomaly, and
+ * `counts.total` is what a zero-match check turns on — so a retained index
+ * carrying `NaN` here does not merely render oddly, it changes what the tool
+ * says happened. `NaN` in particular compares false against every threshold,
+ * so it passes each check by failing it.
+ *
+ * Consistency is required, not merely the shape: the domain defines `total` as
+ * the sum of the rest, and a set of counts that does not add up is one this
+ * tool did not write.
+ */
+function isTestEvidence(value: unknown): boolean {
+  if (!isFacet(value)) return false
+  return isCounts((value as Record<string, unknown>).counts)
+}
+
+/** Absent, or a whole consistent set. Never a partly-shaped one. */
+function isCounts(value: unknown): boolean {
+  if (value === undefined) return true
+  if (!isRecord(value)) return false
+
+  const fields = ["total", "passed", "failed", "skipped", "expectedFailure", "unknown"]
+  if (!fields.every((field) => isCount(value[field]))) return false
+  return countsAreConsistent(value as unknown as TestCounts)
 }
 
 function isLogFacet(value: unknown): boolean {
@@ -259,7 +330,7 @@ function isLogFacet(value: unknown): boolean {
   return (
     oneOf(value.availability, FACET_AVAILABILITIES) &&
     typeof value.retainedBytesExact === "boolean" &&
-    (value.retainedBytes === undefined || typeof value.retainedBytes === "number")
+    (value.retainedBytes === undefined || isMeasurement(value.retainedBytes))
   )
 }
 

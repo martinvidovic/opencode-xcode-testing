@@ -358,11 +358,20 @@ function truncationLines(truncation: {
   hasMore: boolean
   nextCursor?: string
   responseTruncated: boolean
+  recordsOmitted?: number
 }): string[] {
   const lines: string[] = []
   if (truncation.hasMore) lines.push("", field("more", "yes"))
   if (truncation.nextCursor !== undefined) lines.push(field("cursor", truncation.nextCursor))
   if (truncation.responseTruncated) lines.push(field("truncated", "yes"))
+
+  // Said separately from `truncated`, because a reader can act on the
+  // difference: a truncated page continues at the cursor, and an omitted
+  // record is one that paging will never deliver. Without this line the two
+  // are the same line, and the second reads as the first.
+  if (truncation.recordsOmitted !== undefined) {
+    lines.push(field("omitted", `${truncation.recordsOmitted} record(s) too large to return`))
+  }
   return lines
 }
 

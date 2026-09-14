@@ -259,7 +259,13 @@ function page(
   // detect from the outside.
   const capped = capRecords(asked)
   const slice = capped.records
-  const nextPosition = position + slice.length
+
+  // By what the page *accounted for*, not by what it returned. A record too
+  // large to represent is passed over rather than corrupted, and a cursor that
+  // advanced only past returned records would come back to it on every
+  // subsequent request — an empty page, forever, at the one position the
+  // caller cannot get past.
+  const nextPosition = position + capped.consumed
   const hasMore = nextPosition < all.length
 
   const cursor = nextCursor(secret, index, facet, hasMore ? nextPosition : undefined)
@@ -273,8 +279,12 @@ function page(
     // a different fact from records being dropped and both can be true.
     fieldTruncated: capped.fieldTruncated,
     collectionTruncated: hasMore,
-    responseTruncated: capped.dropped > 0 || capped.fieldTruncated,
+    responseTruncated: capped.dropped > 0 || capped.fieldTruncated || capped.omitted > 0,
     hasMore,
+    // Stated separately because it is the one kind of loss paging cannot undo.
+    // Dropped records arrive on the next page; an omitted one never arrives,
+    // and a caller counting records needs to know the difference.
+    ...(capped.omitted === 0 ? {} : { recordsOmitted: capped.omitted }),
     ...(cursor === undefined ? {} : { nextCursor: cursor }),
   }
 

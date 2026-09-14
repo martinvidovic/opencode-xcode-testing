@@ -271,11 +271,11 @@ describe("the response cap", () => {
     )
   })
 
-  test("holds even when the oversized field is one a caller acts on", async () => {
-    // A canonical identity is an identifier, and identifiers are the last
-    // thing to give — but the cap is not a preference. A record whose
-    // *identifier* is what makes it oversized has to give somewhere, or the
-    // response goes over the one bound that exists to never be crossed.
+  test("omits a record rather than shortening the identifier that makes it oversized", async () => {
+    // The cap is not a preference, and neither is an identifier. A halved
+    // canonical name still looks like a name: a caller would ask about a test
+    // that does not exist and be told, correctly and uselessly, that it is not
+    // there. Absence is the honest answer, and the page says so.
     const occurrence = {
       id: "occ-1",
       identity: { canonical: `AppTests/Suite/test${"x".repeat(200_000)}()` },
@@ -295,8 +295,47 @@ describe("the response cap", () => {
         expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
           RESPONSE_BYTE_CAP,
         )
-        expect((response.data as { records: unknown[] }).records).toHaveLength(1)
-        expect(response.truncation.fieldTruncated).toBe(true)
+        expect((response.data as { records: unknown[] }).records).toHaveLength(0)
+        expect(response.truncation.recordsOmitted).toBe(1)
+        expect(response.truncation.responseTruncated).toBe(true)
+
+        // And the cursor has moved past it: there is nothing after it here, so
+        // the page is the last one rather than an empty one repeating forever.
+        expect(response.truncation.hasMore).toBe(false)
+      },
+    )
+  })
+
+  test("keeps the fields a caller acts on when only the display strings are oversized", async () => {
+    // The reduction, rather than the omission: everything shortenable has been
+    // shortened and it still does not fit, so what survives is exactly what a
+    // caller addresses the record by — whole, never halved.
+    const occurrence = {
+      id: "occ-1",
+      identity: { canonical: "AppTests/Suite/testThing()" },
+      identityComplete: true,
+      status: "failed" as const,
+      position: "0",
+      attempts: [],
+      failures: Array.from({ length: 400 }, (_, index) => ({
+        message: "x".repeat(400),
+        position: String(index),
+      })),
+    }
+
+    await retained(
+      indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests" })
+        if (response.status !== "available") throw new Error("expected a page")
+
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+        const records = (response.data as { records: Array<Record<string, unknown>> }).records
+        expect(records).toHaveLength(1)
+        expect(records[0]?.id).toBe("occ-1")
+        expect(records[0]?.status).toBe("failed")
       },
     )
   })

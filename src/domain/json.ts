@@ -32,3 +32,39 @@ export function oneOf<T extends string>(value: unknown, allowed: readonly T[]): 
 export function isArrayOf<T>(value: unknown, check: (entry: unknown) => entry is T): value is T[] {
   return Array.isArray(value) && value.every(check)
 }
+
+/**
+ * A count: an integer, not negative, and small enough to still be exact.
+ *
+ * `typeof value === "number"` admits `NaN`, `Infinity`, `-1` and `1e308`, and
+ * every one of them reaches a caller as a count. `NaN` is the worst of them,
+ * because it compares false against everything — a page that asks whether it
+ * has returned all of them would answer "no" forever — but a negative count
+ * or one past `Number.MAX_SAFE_INTEGER` is a number that has stopped meaning
+ * what its name says.
+ */
+export function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+}
+
+/**
+ * A measurement: finite, not negative, and not necessarily whole.
+ *
+ * Durations and byte counts are the two here. Unlike a count they may be
+ * fractional, but a duration of `NaN` renders as "NaN ms" and a negative one
+ * describes a test that finished before it started.
+ */
+export function isMeasurement(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+}
+
+/**
+ * A position within a source file: an integer, and at least one.
+ *
+ * Editors count from one, so a zero or a negative line is not a location a
+ * caller can act on — it is a number that will send someone to the wrong
+ * place, or to no place at all.
+ */
+export function isPosition(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
+}

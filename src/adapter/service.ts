@@ -1182,7 +1182,13 @@ async function inspectRetained(
     // different facts, and reporting the second as the first would hide the
     // only signal anyone gets that the storage was tampered with.
     if (error instanceof UnsafeArtifactError) {
-      return { status: "invalid", message: "the retained index for this Test Run is not trustworthy" }
+      // `incomplete`, not `invalid`. `invalid` is the contract's answer to a
+      // malformed *request*, and the request here is fine — a caller told
+      // `invalid` would reasonably go and change what they asked for, when
+      // nothing they can ask will help. What went wrong is on this machine,
+      // and it is the evidence that cannot be trusted, so it is reported at
+      // the level the evidence lives at.
+      return untrustworthyIndex()
     }
     // A tombstone distinguishes "deleted" from "never known"; without one, the
     // run is genuinely unknown within this trusted root's namespace.
@@ -1218,7 +1224,9 @@ async function inspectRetained(
   // The index names the run it was published for. A file that disagrees is not
   // this run's evidence, whatever directory it was found in.
   if (parsed.runId !== request.runId) {
-    return { status: "invalid", message: "the retained index does not belong to this Test Run" }
+    // Also evidence rather than request: the run id asked for is a perfectly
+    // good one, and what is wrong is the file found under it.
+    return untrustworthyIndex()
   }
 
   if (request.facet === "log") {
@@ -1443,6 +1451,21 @@ function readLogWindow(path: string, window: LogWindow): { bytes: Buffer; totalB
  * tool did not write and cannot vouch for, and quoting it would be quoting
  * whatever wrote it.
  */
+/**
+ * Retained evidence that is present and must not be trusted.
+ *
+ * Separate from `corruptedIndex` in wording only, and deliberately so: damage
+ * and tampering are different things to have found, and a reader deciding
+ * whether to look at their machine needs to know which. Both are `incomplete`,
+ * because both are facts about evidence rather than about a request.
+ */
+function untrustworthyIndex(): InspectionResponse<unknown> {
+  return {
+    ...corruptedIndex(),
+    annotation: "the retained evidence for this Test Run is not trustworthy",
+  }
+}
+
 function corruptedIndex(): InspectionResponse<unknown> {
   return {
     status: "incomplete",
