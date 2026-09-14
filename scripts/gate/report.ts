@@ -58,6 +58,15 @@ export type RunReport = {
   freshness: unknown
   scenarios: ScenarioResult[]
   outcome: "passed" | "failed"
+  /**
+   * Why the run ended as it did, when there is something to say — redacted of
+   * anything path-shaped before it gets here.
+   *
+   * Absent on a pass. Present on every failure that has a reason beyond "a
+   * scenario failed", including the exceptional path, where it is the only
+   * account of what happened.
+   */
+  diagnostic?: string
 }
 
 /** The `reports` directory inside the tool-managed storage root. */
