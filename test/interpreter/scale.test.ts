@@ -9,11 +9,24 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createXcresultTool } from "../../src/interpreter/xcresulttool.ts"
+import {
+  createXcresultTool,
+  decodeStaged,
+  ESCALATION_GRACE_MS,
+} from "../../src/interpreter/xcresulttool.ts"
+import { monotonicNow } from "../../src/domain/clock.ts"
 import { decodeTestResults } from "../../src/interpreter/decode.ts"
 import { identityFor, loadFixture } from "./harness.ts"
 import { withJumpingWallClock } from "../wall-clock.ts"
@@ -213,3 +226,112 @@ describe("a wall clock that jumps while a read is in flight", () => {
     }
   }, 60_000)
 })
+
+describe("a decode that outlives its budget", () => {
+  /**
+   * Run `work` against a staged file big enough that reading and parsing it
+   * takes real time — which is the only timing assumption any of these make.
+   */
+  function withStagedFile<T>(work: (path: string) => T): T {
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-decode-"))
+    try {
+      const path = join(directory, ".xcresult-read-test.json")
+      writeFileSync(path, JSON.stringify({ rows: Array.from({ length: 200_000 }, (_, n) => ({ n })) }))
+      return work(path)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }
+
+  test("is reported as timed out, not as an answer that arrived late", async () => {
+    // The check that did not exist: the deadline was consulted before the
+    // decode and never again, so a read that arrived in time and then spent
+    // real time being parsed came back `ok`. The caller asked for an answer
+    // within a budget; one produced after it is not that answer.
+    // One millisecond: not yet expired when the decode starts, and long gone
+    // by the time several megabytes have been read and parsed.
+    withStagedFile((path) => {
+      expect(decodeStaged(path, monotonicNow() + 1)).toMatchObject({
+        ok: false,
+        failure: "timedOut",
+      })
+    })
+  }, 30_000)
+
+  test("declines to start one it has no budget for", async () => {
+    withStagedFile((path) => {
+      expect(decodeStaged(path, monotonicNow() - 1)).toMatchObject({
+        ok: false,
+        failure: "timedOut",
+      })
+    })
+  }, 30_000)
+
+  test("returns the payload when the budget covers the whole decode", async () => {
+    // The other direction, so the tests above cannot pass by refusing
+    // everything: a generous budget decodes and answers.
+    withStagedFile((path) => {
+      const response = decodeStaged(path, monotonicNow() + 30_000)
+
+      expect(response.ok).toBe(true)
+      if (!response.ok) return
+      expect((response.payload as { rows: unknown[] }).rows).toHaveLength(200_000)
+    })
+  }, 30_000)
+})
+
+describe("a read that has to be stopped", () => {
+  test("takes the helpers it spawned with it, not just the process it started", async () => {
+    // `xcresulttool` spawns helpers, and signalling only the parent leaves
+    // them behind holding the bundle open. The read therefore runs in its own
+    // process group and the group is what gets signalled — which is a claim
+    // about processes this test has to actually check, because a leaked
+    // grandchild leaves no trace in the response or in the staging directory.
+    //
+    // The stub stands in for that shape: a parent that emits, and a detached
+    // grandchild that appends to a file forever. If the group died, the file
+    // stops growing; if only the parent was signalled, it does not.
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-group-"))
+    const bundle = join(directory, "result.xcresult")
+    mkdirSync(bundle, { recursive: true })
+
+    const alive = join(directory, "grandchild-alive")
+    const script = join(directory, "xcresulttool")
+    writeFileSync(
+      script,
+      [
+        "#!/bin/sh",
+        `( while true; do echo tick >> "${alive}"; sleep 0.05; done ) &`,
+        "while true; do echo '{}'; sleep 0.05; done",
+      ].join("\n") + "\n",
+    )
+    chmodSync(script, 0o700)
+
+    try {
+      const identity = { ...identityFor(loadFixture("passed")), xcresulttoolPath: script }
+      const tool = createXcresultTool({ identity, bundlePath: bundle })
+
+      const response = await tool.run("get test-results tests", 300)
+      expect(response).toMatchObject({ ok: false, failure: "timedOut" })
+
+      // Past the SIGTERM/SIGKILL escalation, then look twice with a gap.
+      await Bun.sleep(ESCALATION_GRACE_MS + 500)
+      const first = sizeOf(alive)
+      await Bun.sleep(400)
+
+      expect(sizeOf(alive)).toBe(first)
+      expect(first).toBeGreaterThan(0)
+      expect(stagedFiles(directory)).toEqual([])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
+})
+
+function sizeOf(path: string): number {
+  try {
+    return statSync(path).size
+  } catch {
+    return 0
+  }
+}

@@ -1272,7 +1272,9 @@ async function lazyDetailFor(
 ): Promise<LazyOutcome> {
   // One fixed monotonic deadline covering toolchain verification, digest
   // verification and extraction together, per #8. Checked between steps, so a
-  // step that finishes late cannot spend the next one's budget.
+  // step that finishes late cannot spend the next one's budget — and after the
+  // last one, so a read that finished everything late is not reported as one
+  // that finished in time.
   const deadline = environment.now() + LAZY_DEADLINE_MS
   const expired = () => environment.now() >= deadline
 
@@ -1313,6 +1315,13 @@ async function lazyDetailFor(
 
   const decoded = decodeTestDetails(response.payload)
   if (!decoded.ok) return { status: "incomplete", annotation: decoded.message }
+
+  // The last check, and the one that makes the deadline cover everything
+  // rather than everything except the part that reshapes the payload.
+  // Decoding is real work over a structure whose size nothing here controls,
+  // and a lazy read that finished it past its budget did not finish in time —
+  // reporting it as `available` would make the deadline advisory.
+  if (expired()) return TIMED_OUT
 
   return {
     status: "available",
