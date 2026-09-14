@@ -134,8 +134,10 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
 
     if (record.state === "completed") {
       // A run that recorded its own quarantine and then crashed before
-      // publishing it is exactly the window the quarantine exists to cover.
-      if (record.quarantined === true && state.quarantine === undefined) {
+      // publishing it is exactly the window the quarantine exists to cover —
+      // but only while something is still attributable to it. The flag records
+      // why the root was held, not whether it must go on being held.
+      if (record.quarantined === true && stillAttributable(environment, record)) {
         report.quarantined.push(runId)
       }
       if (reclaimIsolatedDerivedData(storage, record)) report.derivedDataCleaned.push(runId)
@@ -242,9 +244,18 @@ function classify(environment: RecoveryEnvironment, record: RunRecord): RunOutco
 }
 
 /**
- * Quarantine clears only when every condition holds at once: recorded
- * identities gone or mismatched, no active supervisor, durable state
- * consistent, and no identity-validated group member still attributable.
+ * Quarantine clears once nothing is attributable to the run that caused it and
+ * that run is durably finished.
+ *
+ * Deliberately **not** conditioned on the record's own `quarantined` flag. That
+ * flag says why the root was held — the lifecycle could not be confirmed at the
+ * time — and a run that was never confirmed is exactly the kind that ends up
+ * quarantined. Refusing to clear while it is set means the root is held for as
+ * long as the artifacts exist, which is the same practical outcome as a tool
+ * that stopped working, with no way out but deleting state by hand.
+ *
+ * What replaces it is a fresh answer to the only question that matters now: is
+ * anything still running that belongs to this run?
  */
 function canClearQuarantine(environment: RecoveryEnvironment, runId: string): boolean {
   const record = readRunRecord(environment.storage, runId)
@@ -255,14 +266,29 @@ function canClearQuarantine(environment: RecoveryEnvironment, runId: string): bo
     // unreadable is corruption, and keeps the root held.
     return !existsSync(runDirectory(environment.storage, runId))
   }
-  if (record.quarantined === true) return false
+  // An unfinished run is not cleared by this path: it is either finalizable,
+  // and the caller has to publish its summary first, or uncertain, and it is
+  // already holding the root on its own account.
   if (record.state !== "completed") return false
-  if (record.child !== undefined) {
-    if (signallingIsSafe(environment.probe, { pgid: record.child.pgid, processes: [record.child] })) {
-      return false
-    }
+  return !stillAttributable(environment, record)
+}
+
+/**
+ * Whether any process this run recorded is still live and still itself.
+ *
+ * Both halves are identity-safe. A group member counts only if it validates
+ * against the identity that was recorded for it, and a supervisor counts only
+ * if its start time still matches — so a reused PID number, which is ordinary
+ * on a busy machine, never keeps a root held on its own.
+ */
+function stillAttributable(environment: RecoveryEnvironment, record: RunRecord): boolean {
+  if (
+    record.child !== undefined &&
+    signallingIsSafe(environment.probe, { pgid: record.child.pgid, processes: [record.child] })
+  ) {
+    return true
   }
-  return allIdentitiesGone(environment.probe, recordedIdentities(record))
+  return !allIdentitiesGone(environment.probe, recordedIdentities(record))
 }
 
 function recordedIdentities(record: RunRecord): ProcessIdentity[] {

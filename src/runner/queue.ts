@@ -259,9 +259,18 @@ export function releaseSlot(
 ): void {
   withLock(storage.rootLock, () => {
     const state = readQueue(storage)
-    if (state.activeRunId !== runId) return
+    const holdsSlot = state.activeRunId === runId
+
+    // A quarantine is published even when the slot has already gone. The two
+    // are separate facts, and they are written by different processes at
+    // different moments: a recovery pass that released a stale slot must not
+    // make the owner's later "this run could not be accounted for" disappear.
+    // Dropping it here would release a root that nobody has established is
+    // safe, which is the one thing quarantine exists to prevent.
+    if (!holdsSlot && quarantine === undefined) return
+
     const next: QueueState = { ...state, tickets: state.tickets }
-    delete next.activeRunId
+    if (holdsSlot) delete next.activeRunId
     if (quarantine !== undefined) next.quarantine = { runId, ...quarantine }
     writeQueue(storage, next)
   })
