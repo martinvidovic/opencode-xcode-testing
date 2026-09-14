@@ -34,6 +34,7 @@ import {
   asSuite,
   newObservations,
   reportFrom,
+  rosterDrift,
   scenarioSink,
   type Observations,
 } from "./gate/observations.ts"
@@ -189,6 +190,21 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   const gating = scenarios.filter((scenario) => scenario.kind === "gating")
   if (gating.length === 0) {
     return finish("failed", "no gating scenario ran, so nothing was verified")
+  }
+
+  // A roster that has fallen behind would report scenarios that no longer
+  // exist as unreached, on every failed run, and nothing else would notice —
+  // the roster is only consulted once something has already gone wrong.
+  // Reported, never gating: this is bookkeeping about the gate, not evidence
+  // about the tool.
+  const drift = rosterDrift(observed)
+  if (drift.length > 0) {
+    record({
+      name: "scenario roster",
+      kind: "report-only",
+      status: "failed",
+      detail: `a completed suite did not produce: ${drift.join(", ")}`,
+    })
   }
 
   // Drift is surfaced in the report and never fails the gate. It examines the

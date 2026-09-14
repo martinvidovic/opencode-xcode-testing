@@ -93,7 +93,7 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
       // Sequential and recorded one at a time. Written as one array literal
       // these evaluate in the same order but reach the report only if every
       // one of them returns — and the last two boot host machinery.
-      for (const scenario of await registrationScenarios(client, marked)) record(scenario)
+      await registrationScenarios(client, marked, record)
       record(await markerScenario(client, unmarked))
       record(await agentScenario(client, marked))
     } finally {
@@ -115,10 +115,19 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
   }
 }
 
+/**
+ * The registration checks, each published the moment it is decided.
+ *
+ * `tool.list` is a second round trip to a host process that is still booting,
+ * and it is between the two checks. Collecting both and returning them meant
+ * that if it did not answer, the first check — already decided, already true —
+ * went with it.
+ */
 async function registrationScenarios(
   client: OpencodeClient,
   directory: string,
-): Promise<ScenarioResult[]> {
+  record: ScenarioSink,
+): Promise<void> {
   // The factory runs at instance bootstrap, so an instance has to exist first.
   await bounded(
     "session.create",
@@ -130,11 +139,11 @@ async function registrationScenarios(
   )
   const missing = TOOL_IDS.filter((id) => !ids.has(id))
 
-  const results: ScenarioResult[] = [
+  record(
     missing.length === 0
       ? pass("b1 tool ids register", `${TOOL_IDS.join(", ")} all present, credential-free`)
       : fail("b1 tool ids register", `missing from the host: ${missing.join(", ")}`),
-  ]
+  )
 
   // This endpoint filters by model, so the model id is chosen deliberately
   // rather than left to whatever happens to be configured.
@@ -146,9 +155,8 @@ async function registrationScenarios(
   )
   const byId = new Map((listed.data ?? []).map((entry) => [entry.id, entry]))
 
-  results.push(descriptionScenario(byId))
-  results.push(parameterScenario(byId))
-  return results
+  record(descriptionScenario(byId))
+  record(parameterScenario(byId))
 }
 
 function descriptionScenario(

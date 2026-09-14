@@ -20,6 +20,7 @@
  */
 
 import type { Suite } from "./options.ts"
+import { expectedScenarios, SUITE_ROSTER } from "./roster.ts"
 import type { RunReport, ScenarioResult } from "./report.ts"
 
 /**
@@ -129,6 +130,9 @@ export function reportFrom(
   diagnostic?: string,
 ): RunReport {
   return {
+    ...(unreachedScenarios(observed).length === 0
+      ? {}
+      : { unreached: unreachedScenarios(observed) }),
     schemaVersion: 1,
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
@@ -152,4 +156,46 @@ export function reportFrom(
     outcome,
     ...(diagnostic === undefined ? {} : { diagnostic }),
   }
+}
+
+/**
+ * Scenarios the selected suites set out to run and did not.
+ *
+ * Named rather than left absent, which is the whole of it: four results from a
+ * suite that ran eight scenarios and four from a suite that ran four look the
+ * same in a list of four, and a reader of a failed report is asking precisely
+ * which of those happened.
+ *
+ * A scenario is unreached when the roster expects it and nothing recorded it.
+ * That covers both ways of not arriving — a suite that threw part-way, and one
+ * that was never entered at all — because from the report's point of view they
+ * are the same fact: this was going to be checked, and it was not.
+ */
+export function unreachedScenarios(observed: Observations): string[] {
+  const recorded = new Set(observed.scenarios.map((scenario) => scenario.name))
+  return expectedScenarios(observed.selected).filter((name) => !recorded.has(name))
+}
+
+/**
+ * Roster entries a suite that ran cleanly to the end did not produce.
+ *
+ * The check that keeps the roster honest. A stale roster is worse than none —
+ * it would report scenarios that no longer exist as unreached, on every failed
+ * run — and nothing else would notice, because a roster is only consulted when
+ * something has already gone wrong.
+ *
+ * Only clean suites are asked. A suite that completed *having recorded a
+ * failure* is missing scenarios for a reason it already stated, and reporting
+ * that as drift would raise a false alarm on every genuinely failing run —
+ * which is to say, on exactly the runs whose reports matter most.
+ */
+export function rosterDrift(observed: Observations): string[] {
+  const recorded = new Set(observed.scenarios.map((scenario) => scenario.name))
+  const failed = observed.scenarios.some((scenario) => scenario.status === "failed")
+  if (failed) return []
+
+  return observed.suites
+    .filter((entry) => entry.completed)
+    .flatMap((entry) => [...SUITE_ROSTER[entry.suite]])
+    .filter((name) => !recorded.has(name))
 }
