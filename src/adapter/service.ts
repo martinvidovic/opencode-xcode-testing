@@ -1314,6 +1314,13 @@ async function lazyDetailFor(
   const decoded = decodeTestDetails(response.payload)
   if (!decoded.ok) return { status: "incomplete", annotation: decoded.message }
 
+  // The last check, and the one that makes the deadline cover everything
+  // rather than everything except the part that reshapes the payload.
+  // Decoding is real work over a structure whose size nothing here controls,
+  // and a lazy read that finished it past its budget did not finish in time —
+  // reporting it as `available` would make the deadline advisory.
+  if (expired()) return TIMED_OUT
+
   return {
     status: "available",
     detail: {

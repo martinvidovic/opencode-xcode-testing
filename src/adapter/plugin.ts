@@ -19,37 +19,20 @@ import { fileURLToPath } from "node:url"
 
 import { tool, type Plugin, type PluginModule, type ToolDefinition } from "@opencode-ai/plugin"
 
-import {
-  prepareStorage,
-  storageFor,
-  storageForRootKey,
-  type Storage,
-} from "../runner/paths.ts"
+import { storageFor, type Storage } from "../runner/paths.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
-import { noteRootSeen, runHousekeeping } from "../runner/housekeeping.ts"
-import { systemProbe } from "../runner/identity.ts"
 import { resolveToolchain } from "../runner/toolchain.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { monotonicNow } from "../domain/clock.ts"
 import { readOutputLimits, resolveBudget } from "./budget.ts"
 import { descriptionFor, DESCRIPTION_FILES } from "./descriptions.ts"
-import {
-  cachedRuntime,
-  rememberRuntime,
-  resolveRuntime,
-  type RuntimeResolution,
-} from "./runtime.ts"
-import { reconcileRootBounded } from "./reconciliation.ts"
+import type { RuntimeResolution } from "./runtime.ts"
 import { createTestToolService, unavailableService } from "./service.ts"
 import { inspectArguments, recoverArguments, testArguments, type ZodNamespace } from "./schema.ts"
+import { startupPortsFor } from "./startup-ports.ts"
 import { hostVersionDiagnostic, runStartup, HOST_VERSION_BUDGET_MS } from "./startup.ts"
 import { executeInspect, executeRecover, executeTest, type ToolDeps } from "./tools.ts"
-import {
-  enablementMarkerExists,
-  readProjectConfiguration,
-  resolveTrustedRoot,
-} from "./trusted-root.ts"
-import { probeRuntimeCandidate, bunOnPath } from "./probe.ts"
+import { readProjectConfiguration, resolveTrustedRoot } from "./trusted-root.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SUPERVISOR_ENTRYPOINT = join(HERE, "..", "runner", "supervisor-entry.ts")
@@ -65,70 +48,20 @@ export const server: Plugin = async (input) => {
   let runtime: RuntimeResolution | undefined
   const configuration = readProjectConfiguration(trustedRoot)
 
-  const outcome = await runStartup({
-    markerExists: () => enablementMarkerExists(trustedRoot),
-    requiredFiles: () => [SUPERVISOR_ENTRYPOINT, ...DESCRIPTION_FILES],
-    regularFileExists: (path) => isRegularFile(path),
-
-    async probeRuntime() {
-      const configured =
-        configuration.status === "loaded" ? configuration.configuration.runtime : undefined
-
-      // The cache answers only where discovery would have run anyway. A
-      // configured runtime is probed every time: ADR 0002 makes a set-but-
-      // unusable value a hard error, and a cache answering on its behalf would
-      // turn that into a silent fallback to some other binary.
-      const cached = configured === undefined ? cachedRuntime(storage) : undefined
-      if (cached !== undefined) {
-        runtime = cached
-        return runtime
-      }
-
-      const pathCandidate = await bunOnPath()
-      runtime = await resolveRuntime({
-        trustedRoot,
-        ...(configured === undefined ? {} : { configured }),
-        hostExecutable: process.execPath,
-        ...(pathCandidate === undefined ? {} : { pathCandidate }),
-        probe: probeRuntimeCandidate,
-      })
-      // Only a discovered runtime is worth remembering; a configured one is
-      // deliberately re-probed.
-      if (configured === undefined && runtime.status === "resolved") {
-        rememberRuntime(storage, runtime)
-      }
-      return runtime
-    },
-
-    readHostVersion: () => readHostVersion(input.serverUrl),
-
-    async reconcileRoot(deadlineMs: number) {
-      prepareStorage(storage)
-      noteRootSeen(storage, Date.now())
-
-      // `deadlineMs` was built from `now` below, and `reconcileRootBounded`
-      // reads the same clock. Handing it to something that measured against
-      // the wall clock instead would not make the pass late — it would make it
-      // cancelled before it began, on every start.
-      reconcileRootBounded({
-        storage,
-        probe: systemProbe,
-        deadlineMs,
-        timestamp: () => new Date().toISOString(),
-      })
-    },
-
-    async runHousekeeping() {
-      runHousekeeping({
-        storage,
-        now: () => Date.now(),
-        storageForRootKey: (rootKey) => storageForRootKey(homeDir, rootKey),
-      })
-    },
-
-    now: monotonicNow,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  })
+  const outcome = await runStartup(
+    startupPortsFor({
+      trustedRoot,
+      homeDir,
+      storage,
+      configuration,
+      requiredFiles: [SUPERVISOR_ENTRYPOINT, ...DESCRIPTION_FILES],
+      regularFileExists: isRegularFile,
+      readHostVersion: () => readHostVersion(input.serverUrl),
+      onRuntime: (resolved) => {
+        runtime = resolved
+      },
+    }),
+  )
 
   if (outcome.status === "disabled") return {}
   if (outcome.status === "structuralFailure") {

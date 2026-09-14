@@ -13,7 +13,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync }
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createXcresultTool } from "../../src/interpreter/xcresulttool.ts"
+import { createXcresultTool, decodeStaged } from "../../src/interpreter/xcresulttool.ts"
+import { monotonicNow } from "../../src/domain/clock.ts"
 import { decodeTestResults } from "../../src/interpreter/decode.ts"
 import { identityFor, loadFixture } from "./harness.ts"
 import { withJumpingWallClock } from "../wall-clock.ts"
@@ -212,4 +213,87 @@ describe("a wall clock that jumps while a read is in flight", () => {
       dispose()
     }
   }, 60_000)
+})
+
+describe("a decode that outlives its budget", () => {
+  /** A staged file big enough that reading and parsing it takes real time. */
+  function staged(directory: string): string {
+    const path = join(directory, ".xcresult-read-test.json")
+    writeFileSync(path, JSON.stringify({ rows: Array.from({ length: 200_000 }, (_, n) => ({ n })) }))
+    return path
+  }
+
+  test("is reported as timed out, not as an answer that arrived late", async () => {
+    // The check that did not exist: the deadline was consulted before the
+    // decode and never again, so a read that arrived in time and then spent
+    // real time being parsed came back `ok`. The caller asked for an answer
+    // within a budget; one produced after it is not that answer.
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-decode-"))
+    try {
+      const path = staged(directory)
+
+      // One millisecond: not yet expired when the decode starts, and long
+      // gone by the time several megabytes have been read and parsed. There
+      // is no timing assumption here beyond "this takes more than a
+      // millisecond", which reading and parsing megabytes always does.
+      expect(decodeStaged(path, monotonicNow() + 1)).toMatchObject({
+        ok: false,
+        failure: "timedOut",
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test("declines to start one it has no budget for", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-decode-"))
+    try {
+      expect(decodeStaged(staged(directory), monotonicNow() - 1)).toMatchObject({
+        ok: false,
+        failure: "timedOut",
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test("returns the payload when the budget covers the whole decode", async () => {
+    // The other direction, so the tests above cannot pass by refusing
+    // everything: a generous budget decodes and answers.
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-decode-"))
+    try {
+      const response = decodeStaged(staged(directory), monotonicNow() + 30_000)
+
+      expect(response.ok).toBe(true)
+      if (!response.ok) return
+      expect((response.payload as { rows: unknown[] }).rows).toHaveLength(200_000)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test("leaves nothing staged and no process group behind when a read is killed", async () => {
+    // A timeout is not an excuse to skip cleanup. The staged file is scratch
+    // that must not outlive the read, and `xcresulttool` spawns helpers that
+    // hold the bundle open.
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-slow-"))
+    const bundle = join(directory, "result.xcresult")
+    mkdirSync(bundle, { recursive: true })
+
+    const script = join(directory, "xcresulttool")
+    writeFileSync(script, "#!/bin/sh\nwhile true; do echo '{}'; sleep 0.05; done\n")
+    chmodSync(script, 0o700)
+
+    try {
+      const identity = { ...identityFor(loadFixture("passed")), xcresulttoolPath: script }
+      const tool = createXcresultTool({ identity, bundlePath: bundle })
+
+      const response = await tool.run("get test-results tests", 200)
+
+      expect(response).toMatchObject({ ok: false, failure: "timedOut" })
+      expect(stagedFiles(directory)).toEqual([])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
 })

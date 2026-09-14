@@ -280,18 +280,31 @@ function read(input: StagedRead): Promise<XcresultResponse> {
 /**
  * Turn a staged file into a payload, or into the reason it could not be one.
  *
- * The deadline is checked here rather than only around the wait, because
- * decoding is real work: a read that spent its whole budget arriving must not
- * then start a decode it has no time for.
+ * The deadline is checked three times, and the third is the one that makes it
+ * a bound rather than a gesture.
  *
- * It is checked *before* that decode and not during it, and the difference is
- * worth naming. A synchronous parse cannot be interrupted once it has begun —
- * nothing else runs while it is on the stack, timers included — so what bounds
- * the decode itself is `MAX_STAGED_PAYLOAD_BYTES`, a bound on size rather than
- * on time. The deadline's job here is to refuse to start, not to cut short.
+ * *Before* the read, because a decode that starts with no budget left should
+ * not start. *Before* the parse, because reading hundreds of megabytes off a
+ * disk is itself work the budget was meant to cover. And *after* the parse,
+ * because a synchronous parse cannot be interrupted once it has begun —
+ * nothing else runs while it is on the stack, timers included — so the only
+ * honest thing left to do about one that overran is to decline to report its
+ * result as an answer arrived at in time.
+ *
+ * That last check is what stops a successful decode outliving its budget. The
+ * caller asked for an answer within a deadline; an answer produced after it is
+ * not that answer, and returning it anyway would make every deadline here
+ * advisory. The work was wasted either way — the difference is whether the
+ * caller is told so.
+ *
+ * Exported for its own tests. Driving it through `run` cannot reach these
+ * checks deterministically: a budget small enough to expire during the decode
+ * expires during the wait instead, and the timer answers first — so a test
+ * written that way passes whether or not these checks exist at all.
  */
-function decodeStaged(staged: string, deadline: number): XcresultResponse {
-  if (monotonicNow() >= deadline) return TIMED_OUT
+export function decodeStaged(staged: string, deadline: number): XcresultResponse {
+  const expired = () => monotonicNow() >= deadline
+  if (expired()) return TIMED_OUT
 
   let text: string
   try {
@@ -304,8 +317,11 @@ function decodeStaged(staged: string, deadline: number): XcresultResponse {
     }
   }
 
+  if (expired()) return TIMED_OUT
+
+  let payload: unknown
   try {
-    return { ok: true, payload: JSON.parse(text) }
+    payload = JSON.parse(text)
   } catch {
     return {
       ok: false,
@@ -313,4 +329,8 @@ function decodeStaged(staged: string, deadline: number): XcresultResponse {
       message: "the structured output could not be parsed as JSON",
     }
   }
+
+  // Decided last, and deliberately after a successful parse: an overrun is a
+  // fact about the read, not about the payload.
+  return expired() ? TIMED_OUT : { ok: true, payload }
 }
