@@ -46,7 +46,15 @@ export type StartupPorts = {
   probeRuntime(): Promise<unknown>
   /** Bounded read of `/global/health`; failure degrades to `unknown`. */
   readHostVersion(): Promise<string>
-  reconcileRoot(): Promise<void>
+  /**
+   * Reconcile this root, giving up at `deadlineMs`.
+   *
+   * The deadline is passed in rather than enforced around the call because the
+   * pass is synchronous filesystem work: nothing outside it can interrupt it
+   * once it has started, so the only bound that can hold is one it checks
+   * between runs itself.
+   */
+  reconcileRoot(deadlineMs: number): Promise<void>
   runHousekeeping(): Promise<void>
   /** Monotonic. */
   now(): number
@@ -75,15 +83,23 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   const bounded = async <T>(
     name: string,
     budgetMs: number,
-    work: Promise<T>,
+    start: () => Promise<T>,
   ): Promise<T | undefined> => {
     const remaining = Math.min(budgetMs, deadline - ports.now())
     if (remaining <= 0) {
       incomplete.push(name)
       return undefined
     }
+
+    // The work is started *here*, after the budget is known and the expiry
+    // timer exists. Taking an already-created promise would mean the caller
+    // had begun it at the call site — and anything synchronous inside it would
+    // already have run to completion before this function was entered.
     const expiry = ports.sleep(remaining).then(() => EXPIRED)
-    const outcome = await Promise.race([work.catch(() => FAILED), expiry])
+    const outcome = await Promise.race([
+      (async () => start())().catch(() => FAILED),
+      expiry,
+    ])
     if (outcome === EXPIRED || outcome === FAILED) {
       incomplete.push(name)
       return undefined
@@ -105,7 +121,9 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   // deliberately **not** gated on enablement: it exists for roots whose
   // repositories moved, disappeared, or were de-marked, and gating it on the
   // marker would mean exactly those roots are never reclaimed.
-  const housekeeping = bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, ports.runHousekeeping())
+  const housekeeping = bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, () =>
+    ports.runHousekeeping(),
+  )
 
   if (!marked) {
     await housekeeping
@@ -127,9 +145,11 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   // filesystem passes. Running them concurrently is what keeps the expected
   // cost near the longest one rather than the sum.
   const [runtime, hostVersion] = await Promise.all([
-    bounded("runtimeProbe", RUNTIME_PROBE_BUDGET_MS, ports.probeRuntime()),
-    bounded("hostVersion", HOST_VERSION_BUDGET_MS, ports.readHostVersion()),
-    bounded("reconciliation", RECONCILIATION_BUDGET_MS, ports.reconcileRoot()),
+    bounded("runtimeProbe", RUNTIME_PROBE_BUDGET_MS, () => ports.probeRuntime()),
+    bounded("hostVersion", HOST_VERSION_BUDGET_MS, () => ports.readHostVersion()),
+    bounded("reconciliation", RECONCILIATION_BUDGET_MS, () =>
+      ports.reconcileRoot(ports.now() + RECONCILIATION_BUDGET_MS),
+    ),
     housekeeping,
   ])
 

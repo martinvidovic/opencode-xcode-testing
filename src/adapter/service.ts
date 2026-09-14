@@ -78,7 +78,11 @@ import {
   writePrivateFileAtomic,
   type Storage,
 } from "../runner/paths.ts"
-import { reclaimIsolatedDerivedData, reconcileRoot } from "../runner/recovery.ts"
+import {
+  reclaimIsolatedDerivedData,
+  reconcileRoot,
+  type RecoveryReport,
+} from "../runner/recovery.ts"
 import { resolveTestRun, type ConfigurationOutcome } from "../runner/resolution.ts"
 import {
   advance,
@@ -197,16 +201,31 @@ export function createTestToolService(environment: ServiceEnvironment): TestTool
 
     async recover() {
       const report = await reconcile(environment)
+      const message = recoveryMessage(report)
       return {
         status: report.status,
-        ...(report.uncertain.length === 0
-          ? {}
-          : {
-              message: `${report.uncertain.length} run(s) could not be accounted for and still hold the execution slot.`,
-            }),
+        ...(message === undefined ? {} : { message }),
       }
     },
   }
+}
+
+/**
+ * What to say about a recovery pass beyond its status.
+ *
+ * `deferred` needs one most: on its own it is a word for "nothing happened",
+ * and without a reason a caller cannot tell it from "nothing needed to
+ * happen" — which would make retrying look pointless when it is exactly what
+ * to do.
+ */
+function recoveryMessage(report: RecoveryReport): string | undefined {
+  if (report.status === "deferred") {
+    return "another OpenCode instance is reconciling this project right now. Nothing was examined; try again in a moment."
+  }
+  if (report.uncertain.length > 0) {
+    return `${report.uncertain.length} run(s) could not be accounted for and still hold the execution slot.`
+  }
+  return undefined
 }
 
 function startRun(

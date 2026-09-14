@@ -20,6 +20,7 @@ import type { ExecutionContext } from "./context.ts"
 import type { TestToolResult } from "../../src/domain/result.ts"
 import type { ToolchainIdentity } from "../../src/domain/toolchain.ts"
 import { isTestRunSummary } from "../../src/domain/result.ts"
+import type { TestToolOutcome } from "../../src/domain/outcome.ts"
 import { createTestToolService } from "../../src/adapter/service.ts"
 import { readProjectConfiguration } from "../../src/adapter/trusted-root.ts"
 import { prepareStorage, runDirectory, storageFor, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
@@ -321,17 +322,39 @@ async function projectScenarios(
     const service = serviceFor(project, homeDir, { ...options, configured: undefined })
     const result = await service.start({ requestedScope: { kind: "all" } }, noop).result
 
-    // A classified outcome is the bar. Which outcome a real project reaches —
-    // passing, failing, failing to build — is the project's business and not
-    // evidence about this tool.
+    // Reaching *a* classified outcome is not the bar. An
+    // `infrastructureFailed` run reached one and says the tool did not work,
+    // which is exactly what this scenario exists to find out — and a gate that
+    // counted it as a pass would report green on the one result that matters.
+    //
+    // What is *not* judged is the project: passing, failing, and failing to
+    // build are all the tool working, and which of them a real repository
+    // reaches is its own business.
+    if (!isTestRunSummary(result)) {
+      return [scenario("failed", `reached no Test Run: ${describe(result)}`)]
+    }
     return [
-      isTestRunSummary(result)
+      isHealthyOutcome(result.outcome)
         ? scenario("passed", `${describe(result)}; ${result.tests.counts?.total ?? 0} test(s) observed`)
-        : scenario("failed", `reached no Test Run: ${describe(result)}`),
+        : scenario("failed", `the tool did not complete the run: ${describe(result)}`),
     ]
   } catch (error) {
     return [scenario("failed", `the run could not be driven: ${safeDiagnostic(error)}`)]
   }
+}
+
+/**
+ * Outcomes that mean the tool did its job, whatever the project's code did.
+ *
+ * The other outcomes — `infrastructureFailed`, `timedOut`, `cancelled`,
+ * `invalid` — are not answers about the project at all. They say this tool
+ * could not produce one, which on a real repository is the finding a
+ * `--project` run exists to surface.
+ */
+const HEALTHY_OUTCOMES: readonly TestToolOutcome[] = ["passed", "testFailed", "buildFailed"]
+
+export function isHealthyOutcome(outcome: TestToolOutcome): boolean {
+  return HEALTHY_OUTCOMES.includes(outcome)
 }
 
 /**

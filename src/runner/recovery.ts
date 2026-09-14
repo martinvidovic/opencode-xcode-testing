@@ -28,7 +28,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 
 import { allIdentitiesGone, signallingIsSafe, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
-import { withLock } from "./locks.ts"
+import { withLock, withTryLock } from "./locks.ts"
 import { isRunId, RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue, type QueueState } from "./queue.ts"
 import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
@@ -37,6 +37,7 @@ export type RecoveryStatus =
   | "recovered"
   | "alreadyHealthy"
   | "busy"
+  | "deferred"
   | "stillQuarantined"
   | "cancelled"
   | "failed"
@@ -45,6 +46,12 @@ export type RecoveryEnvironment = {
   storage: Storage
   probe: ProcessProbe
   timestamp(): string
+  /**
+   * Stops the pass between runs. It covers both cancellation and an expiring
+   * budget, because a synchronous scan cannot be interrupted from outside: a
+   * timer cannot fire while the work it bounds is still on the stack, so the
+   * only deadline that can hold is one the scan checks itself.
+   */
   signal?: { aborted: boolean }
   /**
    * The process that will finalize whatever this pass adopts. Recorded onto
@@ -81,12 +88,29 @@ export type RecoveryReport = {
  * something it does not own.
  */
 export function reconcileRoot(environment: RecoveryEnvironment): RecoveryReport {
-  return withLock(environment.storage.rootLock, () => reconcileLocked(environment))
+  const report = withTryLock(environment.storage.rootLock, () => reconcileLocked(environment))
+
+// A held root lock means a live instance is already doing exactly this, and
+  // the answer for this one is to get out of its way. ADR 0002 requires it:
+  // "Both reconciliation passes try the lock without waiting."
+  //
+  // `deferred`, not `busy`. They sound alike and mean opposite things: `busy`
+  // is something this pass *found* — a live run owning the slot — and
+  // `deferred` is the absence of any finding at all, because nothing was
+  // examined. A caller told `busy` has been told about the root; a caller told
+  // `deferred` has been told about this attempt.
+  return report ?? { ...emptyReport(), status: "deferred" }
 }
 
-function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
-  const { storage } = environment
-  const report: RecoveryReport = {
+/**
+ * A fresh report with nothing in it.
+ *
+ * A function rather than a constant because every field but one is an array,
+ * and a shared constant spread into each pass would hand them all the same
+ * arrays to push into.
+ */
+function emptyReport(): RecoveryReport {
+  return {
     status: "alreadyHealthy",
     needsFinalization: [],
     uncertain: [],
@@ -95,6 +119,11 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
     derivedDataCleaned: [],
     quarantineCleared: false,
   }
+}
+
+function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
+  const { storage } = environment
+  const report: RecoveryReport = emptyReport()
 
   if (environment.signal?.aborted === true) return { ...report, status: "cancelled" }
 

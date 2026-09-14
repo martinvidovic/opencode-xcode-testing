@@ -196,4 +196,30 @@ describe("the startup ceiling", () => {
   test("is a ten-second defect guard, not an expected cost", () => {
     expect(STARTUP_DEADLINE_MS).toBe(10_000)
   })
+
+  test("starts the clock before the work, not after it", async () => {
+    const trace: Trace = []
+    let deadline: number | undefined
+
+    await runStartup(
+      ports(
+        {
+          // Synchronous work inside an `async` port runs to completion the
+          // moment it is invoked. If the budget were applied to an
+          // already-created promise, the caller would have started it at the
+          // call site and the deadline could never have applied at all.
+          reconcileRoot: async (deadlineMs: number) => {
+            deadline = deadlineMs
+            trace.push("reconcile")
+          },
+        },
+        trace,
+      ),
+    )
+
+    // The pass is handed a deadline rather than raced against one, because
+    // nothing outside synchronous filesystem work can interrupt it.
+    expect(deadline).toBeGreaterThan(0)
+    expect(trace).toContain("reconcile")
+  })
 })

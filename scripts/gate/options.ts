@@ -11,7 +11,7 @@
  */
 
 import { isAbsolute, resolve } from "node:path"
-import { lstatSync } from "node:fs"
+import { lstatSync, realpathSync } from "node:fs"
 
 /** The scenario groups a run may select. */
 export const SUITES = ["layer4", "b1", "b2"] as const
@@ -96,7 +96,11 @@ function isSuite(name: string): name is Suite {
 function canonicalProject(value: string): string | undefined {
   const absolute = isAbsolute(value) ? value : resolve(process.cwd(), value)
   try {
-    return lstatSync(absolute).isDirectory() ? absolute : undefined
+    // `realpath`, not merely absolute: every containment rule beneath this is
+    // stated against a canonical path, and a trusted root reached through a
+    // symlink would be compared against something it does not equal.
+    const canonical = realpathSync(absolute)
+    return lstatSync(canonical).isDirectory() ? canonical : undefined
   } catch {
     return undefined
   }

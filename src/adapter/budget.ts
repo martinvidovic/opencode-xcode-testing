@@ -51,9 +51,13 @@ export async function readOutputLimits(client: {
 export type Budget = { maxLines: number; maxBytes: number }
 
 /**
- * Resolve the effective budget once, at startup — the host's configuration is
- * not hot-reloaded, so re-reading it per call would only invent the possibility
- * of two calls in one session disagreeing.
+ * Resolve the effective budget once per session — the host's configuration is
+ * not hot-reloaded, so re-reading it per call could only invent the
+ * possibility of two calls in one session disagreeing.
+ *
+ * Once, but not at startup: the plugin factory runs inside the host's own
+ * bootstrap, and asking the host for its configuration from there deadlocks it.
+ * ADR 0002 records the amendment and why it is unavoidable.
  */
 export function resolveBudget(limits: HostOutputLimits): Budget {
   const hostLines = limits?.max_lines ?? HOST_DEFAULT_MAX_LINES

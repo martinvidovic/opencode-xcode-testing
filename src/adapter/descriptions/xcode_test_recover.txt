@@ -15,6 +15,8 @@ It returns one of:
   recovered         work was reconciled and the slot is usable again
   alreadyHealthy    nothing needed doing
   busy              a live run still owns the slot; wait for it
+  deferred          another instance is reconciling right now; nothing was
+                    examined, so try again in a moment
   stillQuarantined  the previous run's state remains unresolved
   cancelled         recovery was cancelled partway
   failed            recovery could not complete

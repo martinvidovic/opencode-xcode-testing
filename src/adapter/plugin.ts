@@ -101,13 +101,21 @@ export const server: Plugin = async (input) => {
 
     readHostVersion: () => readHostVersion(input.serverUrl),
 
-    async reconcileRoot() {
+    async reconcileRoot(deadlineMs: number) {
       prepareStorage(storage)
       noteRootSeen(storage, Date.now())
       reconcileRoot({
         storage,
         probe: systemProbe,
         timestamp: () => new Date().toISOString(),
+        // A getter, read afresh between runs. The pass is synchronous, so a
+        // timer outside it can never fire while it is on the stack — the only
+        // deadline that can hold is one the scan asks about itself.
+        signal: {
+          get aborted() {
+            return Date.now() >= deadlineMs
+          },
+        },
       })
     },
 
