@@ -73,15 +73,11 @@ export const STANDING = {
  *   suite's standing scenarios are separately reported as unreached.
  * - `supplied project run` is what `--project` adds. The standing gate must
  *   run from committed files, so this can never be a standing check.
- * - `scenario registry` is this mechanism reporting on itself. A registry that
- *   expected its own consistency check would name that check as unreached on
- *   every clean run.
  */
 export const CONDITIONAL = [
   "b1 host registration",
   "b2 execution",
   "supplied project run",
-  "scenario registry",
 ] as const
 
 /**
@@ -99,6 +95,11 @@ export type ScenarioName =
 const STANDING_NAMES: readonly string[] = Object.values(STANDING).flat()
 
 export const ALL_SCENARIOS: readonly string[] = [...STANDING_NAMES, ...CONDITIONAL]
+
+/** Whether this name is reported only when something specific happens. */
+export function isConditional(name: string): boolean {
+  return (CONDITIONAL as readonly string[]).includes(name)
+}
 
 /** Whether this name is one the registry knows about at all. */
 export function isRegistered(name: string): boolean {

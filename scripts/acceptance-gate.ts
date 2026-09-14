@@ -33,13 +33,11 @@ import { runExecutionGate } from "./gate/execution.ts"
 import {
   asSuite,
   newObservations,
-  registryDisagreements,
   reportFrom,
   scenarioSink,
   type Observations,
 } from "./gate/observations.ts"
 import { renderReport, writeReport } from "./gate/report.ts"
-import { registryProblems, SCENARIO } from "./gate/scenarios.ts"
 
 /**
  * Exported so the report-writing paths can be exercised without a simulator.
@@ -191,18 +189,6 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   const gating = scenarios.filter((scenario) => scenario.kind === "gating")
   if (gating.length === 0) {
     return finish("failed", "no gating scenario ran, so nothing was verified")
-  }
-
-  // Reported, never gating: a registry is bookkeeping about the gate, not
-  // evidence about the tool. `registryDisagreements` says why it is checked.
-  const disagreements = [...registryProblems(), ...registryDisagreements(observed)]
-  if (disagreements.length > 0) {
-    record({
-      name: SCENARIO["scenario registry"],
-      kind: "report-only",
-      status: "failed",
-      detail: disagreements.join("; "),
-    })
   }
 
   // Drift is surfaced in the report and never fails the gate. It examines the

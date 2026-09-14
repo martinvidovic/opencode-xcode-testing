@@ -58,6 +58,24 @@ describe("the registry itself", () => {
 })
 
 describe("a scenario the registry has never heard of", () => {
+  test("is surfaced in the report itself, on whatever path the run took", () => {
+    // Including the paths that end early. The check used to run only after
+    // every suite had finished, so a run that threw — or returned before the
+    // suites ran at all — wrote the unregistered name into the report with
+    // nothing to say so. Those are exactly the runs where it happens.
+    const observed = newObservations(STARTED_AT)
+    scenarioSink(observed)({
+      name: "a check nobody registered",
+      kind: "gating",
+      status: "passed",
+      detail: "",
+    })
+
+    expect(reportFrom(observed, "failed", "it threw").registryProblems).toEqual([
+      "`a check nobody registered` was reported but is not in the registry",
+    ])
+  })
+
   test("is surfaced rather than quietly reported alongside the rest", () => {
     // It would appear among the results and never among the expectations, so
     // a reader comparing the two is missing a row and cannot tell.
@@ -150,6 +168,63 @@ describe("a conditional scenario", () => {
     expect(report.scenarios.map((s) => s.name)).toEqual(["b1 host registration"])
     expect(report.unreached).toEqual([...STANDING.b1])
     expect(report.unreached).not.toContain("b1 host registration")
+
+    // And it is not *also* reported as a registry disagreement. This suite
+    // catches its own failure and returns, so it completes having run almost
+    // nothing — asking it what it missed would name every standing check it
+    // has, on every machine without a host, saying twice what `unreached`
+    // already said once.
+    expect(report.registryProblems).toBeUndefined()
+  })
+
+  test("that passed does not excuse a suite from its standing checks", async () => {
+    // `supplied project run` is conditional and succeeds. Only a conditional
+    // *failure* means a suite could not proceed; a conditional pass is just an
+    // extra check, and the standing ones are still owed.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      record({
+        name: SCENARIO["b1 host registration"],
+        kind: "gating",
+        status: "passed",
+        detail: "",
+      })
+    })
+
+    expect(registryDisagreements(observed).length).toBe(STANDING.b1.length)
+  })
+})
+
+describe("a suite that ran everything and failed one of them", () => {
+  test("is complete: nothing unreached, and no disagreement", async () => {
+    // An ordinary failure. The suite did everything the registry says it
+    // does, and one of the answers was bad news about the tool — which is a
+    // result, not a gap. Suppressing the registry check whenever anything
+    // failed was the previous mistake; treating an ordinary failure as a gap
+    // would be the mirror image of it.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      for (const [index, name] of STANDING.b1.entries()) {
+        record({
+          name,
+          kind: "gating",
+          status: index === 2 ? "failed" : "passed",
+          detail: index === 2 ? "the schema drifted" : "",
+        })
+      }
+    })
+
+    const report = reportFrom(observed, "failed")
+
+    expect(report.unreached).toBeUndefined()
+    expect(report.registryProblems).toBeUndefined()
+    expect(report.scenarios.filter((s) => s.status === "failed")).toHaveLength(1)
   })
 })
 

@@ -20,7 +20,13 @@
  */
 
 import type { Suite } from "./options.ts"
-import { isRegistered, STANDING, standingFor } from "./scenarios.ts"
+import {
+  isConditional,
+  isRegistered,
+  registryProblems,
+  STANDING,
+  standingFor,
+} from "./scenarios.ts"
 import type { RunReport, ScenarioResult } from "./report.ts"
 
 /**
@@ -158,6 +164,7 @@ export function reportFrom(
   diagnostic?: string,
 ): RunReport {
   const unreached = unreachedScenarios(observed)
+  const problems = [...registryProblems(), ...registryDisagreements(observed)]
 
   return {
     schemaVersion: 1,
@@ -174,6 +181,7 @@ export function reportFrom(
       completed: entry.completed,
     })),
     ...(unreached.length === 0 ? {} : { unreached }),
+    ...(problems.length === 0 ? {} : { registryProblems: problems }),
     ...(observed.project === true ? { project: true } : {}),
     // Copied, never aliased. A shared object handed to every report is one
     // any reader could edit for all of them.
@@ -223,16 +231,24 @@ export function unreachedScenarios(observed: Observations): string[] {
  * comparing the two is quietly missing a row. Emitters take their names from
  * the registry, so reaching this means someone bypassed it.
  *
- * A standing scenario **registered but not emitted by a suite that finished**
- * is the other half: the suite ran to the end and did not do what the registry
- * says it does. Either the registry is stale or a check silently stopped
- * running, and both matter.
+ * A standing scenario **registered but not emitted by a suite that ran
+ * normally** is the other half: the suite got to the end and did not do what
+ * the registry says it does. Either the registry is stale or a check silently
+ * stopped running, and both matter.
  *
- * Unlike the one-directional check this replaces, nothing is suppressed
- * because something failed. A failing suite is exactly when a stale registry
- * does its damage — it is the run whose report gets read — and a suite that
- * did not complete is simply not asked, because an interrupted suite is
- * missing scenarios by definition.
+ * "Ran normally" is doing real work in that sentence. Two suites catch their
+ * own failures and report them as a conditional scenario — a host that will
+ * not start, an SDK that is not installed — and then return, so they
+ * *complete* having run almost nothing. Asking them what they missed would
+ * name every standing check they have, on every machine without a host, and
+ * say the same thing `unreached` already says, twice and as noise. A suite
+ * that reported a conditional failure has explained its own incompleteness
+ * and is not asked again.
+ *
+ * Nothing else is suppressed. Unlike the one-directional check this replaces,
+ * an *ordinary* scenario failure does not silence anything: a failing run is
+ * exactly when a stale registry does its damage, because it is the run whose
+ * report gets read.
  */
 export function registryDisagreements(observed: Observations): string[] {
   const problems: string[] = []
@@ -246,9 +262,12 @@ export function registryDisagreements(observed: Observations): string[] {
   for (const entry of observed.suites) {
     if (!entry.completed) continue
 
-    const produced = new Set(
-      observed.scenarios.slice(entry.from, entry.to).map((scenario) => scenario.name),
-    )
+    const results = observed.scenarios.slice(entry.from, entry.to)
+    // A conditional scenario that failed is a suite saying why it could not
+    // proceed. It has accounted for itself; the rest is `unreached`'s job.
+    if (results.some((s) => s.status === "failed" && isConditional(s.name))) continue
+
+    const produced = new Set(results.map((scenario) => scenario.name))
     for (const name of STANDING[entry.suite]) {
       if (!produced.has(name)) {
         problems.push(`\`${name}\` is a standing ${entry.suite} check and was not reported`)
