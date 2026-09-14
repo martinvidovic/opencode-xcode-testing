@@ -110,7 +110,12 @@ export const server: Plugin = async (input) => {
       // reads the same clock. Handing it to something that measured against
       // the wall clock instead would not make the pass late — it would make it
       // cancelled before it began, on every start.
-      reconcileRootBounded({ storage, probe: systemProbe, deadlineMs })
+      reconcileRootBounded({
+        storage,
+        probe: systemProbe,
+        deadlineMs,
+        timestamp: () => new Date().toISOString(),
+      })
     },
 
     async runHousekeeping() {

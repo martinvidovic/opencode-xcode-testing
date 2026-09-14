@@ -18,14 +18,12 @@ import type { ProcessProbe } from "../runner/identity.ts"
 import type { Storage } from "../runner/paths.ts"
 import { reconcileRoot, type RecoveryReport } from "../runner/recovery.ts"
 
-export type BoundedReconciliation = {
+export type ReconciliationPorts = {
   storage: Storage
   probe: ProcessProbe
-  /** An instant on the same clock `now` reads. */
+  /** An instant on the monotonic clock, and the only clock this pass reads. */
   deadlineMs: number
-  /** Injectable only so a test can place the deadline where it wants it. */
-  now?: () => number
-  timestamp?: () => string
+  timestamp(): string
 }
 
 /**
@@ -37,19 +35,19 @@ export type BoundedReconciliation = {
  * around the call would only ever be observed after the call it was meant to
  * cut short had already finished.
  */
-export function reconcileRootBounded(input: BoundedReconciliation): RecoveryReport {
-  const now = input.now ?? monotonicNow
-
+export function reconcileRootBounded(input: ReconciliationPorts): RecoveryReport {
   return reconcileRoot({
     storage: input.storage,
     probe: input.probe,
-    timestamp: input.timestamp ?? (() => new Date().toISOString()),
-    // A getter, read afresh between runs. `now` is the caller's clock, and
-    // `deadlineMs` must be an instant on it — the two are supplied together
-    // for exactly that reason.
+    timestamp: input.timestamp,
+    // A getter, read afresh between runs, and the only place a deadline is
+    // compared to a clock. There is nothing to inject: `monotonicNow` is the
+    // clock every caller's `deadlineMs` is already built from, so naming it
+    // here is what makes "one clock domain" true by construction rather than
+    // by agreement between two files.
     signal: {
       get aborted() {
-        return now() >= input.deadlineMs
+        return monotonicNow() >= input.deadlineMs
       },
     },
   })

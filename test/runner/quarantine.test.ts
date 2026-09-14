@@ -278,6 +278,62 @@ describe("a root quarantined by a run something still belongs to", () => {
     })
   })
 
+  test("stays held while its gated child is alive, whatever the owner is doing", async () => {
+    await withSandbox((box) => {
+      // The child is the process that leads the group `xcodebuild` runs in.
+      // It is alive and it is the one recorded, so the run really is still
+      // writing to the DerivedData a second admission would share.
+      seedQuarantined(box, {
+        runId: RUN,
+        owner: { pid: 900, startedAt: "owner-start" },
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+        child: { pid: 4243, startedAt: "child-start", pgid: 4243 },
+      })
+      holdRoot(box)
+
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({
+          processes: { 900: "owner-start", 4243: "child-start" },
+          groups: { 4243: [4243] },
+        }),
+        timestamp: () => TIMESTAMP,
+      })
+
+      expect(report.quarantineCleared).toBe(false)
+      expect(published(box)).toBe(true)
+    })
+  })
+
+  test("stays held while unrecorded descendants still answer, whatever the owner is doing", async () => {
+    await withSandbox((box) => {
+      // The hard case: everything recorded has gone, the run never confirmed
+      // its descendants exited, and the group number is free of a leader but
+      // not of members. A group number cannot be reassigned while the group
+      // has members, so whatever is answering there is ours.
+      seedQuarantined(box, {
+        runId: RUN,
+        owner: { pid: 900, startedAt: "owner-start" },
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+        child: { pid: 4243, startedAt: "child-start", pgid: 4243 },
+        descendantsConfirmedExited: "unknown",
+      })
+      holdRoot(box)
+
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({
+          processes: { 900: "owner-start" },
+          groups: { 4243: [4244, 4245] },
+        }),
+        timestamp: () => TIMESTAMP,
+      })
+
+      expect(report.quarantineCleared).toBe(false)
+      expect(published(box)).toBe(true)
+    })
+  })
+
   test("stays held while its supervisor is alive, whatever the owner is doing", async () => {
     await withSandbox((box) => {
       // The same live owner, and this time something that really does execute
