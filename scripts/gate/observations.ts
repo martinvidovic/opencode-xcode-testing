@@ -21,9 +21,9 @@
 
 import type { Suite } from "./options.ts"
 import {
-  isBootstrapFailure,
   isRegistered,
   isStanding,
+  preventedBy,
   registryProblems,
   STANDING,
   standingFor,
@@ -264,35 +264,58 @@ export function registryDisagreements(observed: Observations): string[] {
     if (!entry.completed) continue
 
     const results = observed.scenarios.slice(entry.from, entry.to)
-
-    // A bootstrap failure is a suite saying it never got started, or got no
-    // further: no host, no SDK. What it could not reach is `unreached`'s to
-    // report, and naming the same scenarios here would say it twice.
-    //
-    // *Terminal* is the test, not "did it happen". Both suites that can
-    // report one do so from a catch, beside whatever already ran — so a host
-    // that dies after the third of six checks genuinely prevented the other
-    // three, and excusing it only when nothing at all had run would turn a
-    // crash into a page of drift warnings about checks the crash explains.
-    //
-    // A standing check recorded *after* one is the case that must not be
-    // excused: the suite carried on, so the failure did not stop it, and
-    // whatever is missing is missing for some other reason.
-    const lastBootstrapFailure = results.findLastIndex(
-      (result) => result.status === "failed" && isBootstrapFailure(entry.suite, result.name),
-    )
-    const carriedOn =
-      lastBootstrapFailure !== -1 &&
-      results.slice(lastBootstrapFailure + 1).some((r) => isStanding(entry.suite, r.name))
-    if (lastBootstrapFailure !== -1 && !carriedOn) continue
+    const excused = excusedBy(entry.suite, results)
 
     const produced = new Set(results.map((scenario) => scenario.name))
     for (const name of STANDING[entry.suite]) {
-      if (!produced.has(name)) {
+      if (!produced.has(name) && !excused.has(name)) {
         problems.push(`\`${name}\` is a standing ${entry.suite} check and was not reported`)
       }
     }
   }
 
   return problems
+}
+
+/**
+ * Standing checks a suite is excused for, given what it reported.
+ *
+ * A failed conditional says what it prevented — a host that will not start
+ * prevents the registration checks and nothing else — and what it prevented is
+ * `unreached`'s to report, not this. Naming the same scenarios here would say
+ * it twice, and call a crash registry drift while doing so.
+ *
+ * Position is the other half, and it is what keeps the excuse honest. A check
+ * missing from *before* the failure was not prevented by it: the suite got
+ * past that point and simply did not report it, which is exactly the drift
+ * this exists to catch. So only what lies after the last standing check the
+ * suite managed before the failure is excused.
+ *
+ * Both halves are needed. Without the first, an independent check running
+ * afterwards — `b1` is a registration gate and an installation gate back to
+ * back — makes the failure look non-terminal and excuses nothing. Without the
+ * second, a check silently dropped early is covered by a crash that happened
+ * long after it.
+ */
+function excusedBy(suite: Suite, results: readonly ScenarioResult[]): Set<string> {
+  const order = STANDING[suite]
+  const excused = new Set<string>()
+
+  results.forEach((result, index) => {
+    if (result.status !== "failed") return
+
+    const prevents = preventedBy(suite, result.name)
+    if (prevents.length === 0) return
+
+    // How far the suite demonstrably got before this failure.
+    const reached = results
+      .slice(0, index)
+      .reduce((furthest, earlier) => Math.max(furthest, order.indexOf(earlier.name as never)), -1)
+
+    for (const name of prevents) {
+      if (order.indexOf(name as never) > reached) excused.add(name)
+    }
+  })
+
+  return excused
 }

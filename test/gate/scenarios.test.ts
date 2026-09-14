@@ -161,19 +161,27 @@ describe("a conditional scenario", () => {
         status: "failed",
         detail: "no host",
       })
+      record({
+        name: SCENARIO["b1 documented installation path"],
+        kind: "gating",
+        status: "passed",
+        detail: "",
+      })
     })
 
     const report = reportFrom(observed, "failed", "the host could not be driven")
 
-    expect(report.scenarios.map((s) => s.name)).toEqual(["b1 host registration"])
-    expect(report.unreached).toEqual([...STANDING.b1])
+    expect(report.scenarios.map((s) => s.name)).toEqual([
+      "b1 host registration",
+      "b1 documented installation path",
+    ])
+    expect(report.unreached).toEqual([...STANDING.b1.slice(0, -1)])
     expect(report.unreached).not.toContain("b1 host registration")
 
-    // And it is not *also* reported as a registry disagreement. This suite
-    // catches its own failure and returns, so it completes having run almost
-    // nothing — asking it what it missed would name every standing check it
-    // has, on every machine without a host, saying twice what `unreached`
-    // already said once.
+    // And those are not *also* reported as registry disagreements. The
+    // registration gate caught its own failure and returned, so its five
+    // checks were never runnable — saying twice what `unreached` already said
+    // once would turn an honest bootstrap failure into a page of drift.
     expect(report.registryProblems).toBeUndefined()
   })
 
@@ -319,10 +327,39 @@ describe("a conditional failure after the standing checks have run", () => {
 })
 
 describe("a suite that never started", () => {
-  test("is excused, because its standing checks were never runnable", async () => {
-    // No host, no SDK: the suite reported why and returned. Asking what it
-    // missed would name every standing check it has, on every machine without
-    // a host, saying twice what `unreached` already said once.
+  test("is excused for the checks that failure prevented, and no others", async () => {
+    // No host, no SDK: the registration gate reported why and returned. Its
+    // five checks were never runnable, and naming them would say twice what
+    // `unreached` already said once.
+    //
+    // The installation gate is a different gate and runs anyway — b1 is two
+    // gates back to back — so its check is not excused by a registration
+    // failure, and here it is reported as it would be in production.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      record({
+        name: SCENARIO["b1 host registration"],
+        kind: "gating",
+        status: "failed",
+        detail: "no host",
+      })
+      record({
+        name: SCENARIO["b1 documented installation path"],
+        kind: "gating",
+        status: "passed",
+        detail: "",
+      })
+    })
+
+    expect(registryDisagreements(observed)).toEqual([])
+  })
+
+  test("is not excused for an independent check that also went missing", async () => {
+    // The installation gate has nothing to do with whether a host started. If
+    // its check is absent too, that is a second thing wrong and it is said.
     const observed = newObservations(STARTED_AT)
     observed.selected = ["b1"]
     const record = scenarioSink(observed)
@@ -336,15 +373,17 @@ describe("a suite that never started", () => {
       })
     })
 
-    expect(registryDisagreements(observed)).toEqual([])
+    expect(registryDisagreements(observed)).toEqual([
+      "`b1 documented installation path` is a standing b1 check and was not reported",
+    ])
   })
 
   test("is excused for what it could not reach after failing part-way through", async () => {
-    // A host that dies after the third of six checks genuinely prevented the
-    // other three. Both suites that can report a bootstrap failure do so from
-    // a catch, beside whatever already ran, so this is the ordinary shape of
-    // a crash — and naming the rest here would repeat what `unreached`
-    // already says while calling a crash registry drift.
+    // A host that dies after the third registration check genuinely prevented
+    // the other two. The registration gate records its failure beside
+    // whatever already ran, so this is the ordinary shape of a crash — and
+    // naming the rest here would repeat what `unreached` already says while
+    // calling a crash registry drift.
     const observed = newObservations(STARTED_AT)
     observed.selected = ["b1"]
     const record = scenarioSink(observed)
@@ -359,9 +398,47 @@ describe("a suite that never started", () => {
         status: "failed",
         detail: "the host went away mid-suite",
       })
+      record({
+        name: SCENARIO["b1 documented installation path"],
+        kind: "gating",
+        status: "passed",
+        detail: "",
+      })
     })
 
     expect(registryDisagreements(observed)).toEqual([])
+  })
+
+  test("is still asked about a check it skipped before the failure", async () => {
+    // The position half of the rule. A check missing from *before* the
+    // failure was not prevented by it — the suite got past that point and
+    // simply did not report it, which is exactly the drift this exists to
+    // catch, and exactly what a crash must not be allowed to cover.
+    const observed = newObservations(STARTED_AT)
+    observed.selected = ["b1"]
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      // The second standing check never reports; the third does.
+      record({ name: STANDING.b1[0] as string, kind: "gating", status: "passed", detail: "" })
+      record({ name: STANDING.b1[2] as string, kind: "gating", status: "passed", detail: "" })
+      record({
+        name: SCENARIO["b1 host registration"],
+        kind: "gating",
+        status: "failed",
+        detail: "the host went away",
+      })
+      record({
+        name: SCENARIO["b1 documented installation path"],
+        kind: "gating",
+        status: "passed",
+        detail: "",
+      })
+    })
+
+    expect(registryDisagreements(observed)).toEqual([
+      "`b1 tool descriptions` is a standing b1 check and was not reported",
+    ])
   })
 
   test("is not excused by another suite's bootstrap failure", async () => {

@@ -65,43 +65,69 @@ export const STANDING = {
 /**
  * Scenarios reported when they happen, and not expected otherwise.
  *
- * Each carries the reason it is conditional rather than being listed twice in
- * two places. `stopsSuite` says whether a *failure* of it means the suite got
- * no further, and that is a property of the scenario, so it lives beside the
- * scenario. A second list of the ones that stop a suite would be a second copy
- * of a set of names — the mistake this whole file exists to remove — and it
- * could fall out of step with this one silently.
+ * Each carries what a *failure* of it prevents, rather than a flag saying
+ * whether it stops something. A suite is not always one thing: `b1` is a
+ * registration gate and an installation gate run back to back, and they fail
+ * independently. A host that will not start prevents the five registration
+ * checks and has nothing to do with whether a documented symlink registers the
+ * tool family — so "this failure stops this suite" was too coarse a claim, and
+ * it made an honest bootstrap failure look like registry drift the moment the
+ * installation check ran afterwards.
  *
- * Shaped this way, adding a conditional forces the decision where it is
- * defined. There is nowhere to forget to update.
+ * Naming what is prevented also says where the boundary is, which a boolean
+ * cannot. The list lives beside the scenario because that is where the fact
+ * belongs, and because a second list of names is a second list that drifts —
+ * the mistake this whole file exists to remove.
  *
- * - `b1 host registration` and `b2 execution` are bootstrap failures: no host,
- *   no SDK, the suite says why and gets no further. What it could not reach
- *   is `unreached`'s to report, and naming it twice helps nobody.
+ * - `b1 host registration` is the registration gate failing to start or be
+ *   driven: no host, no SDK, no resolvable plugin. It prevents that gate's
+ *   checks and only those.
+ * - `b2 execution` is the same for the execution gate, which is the whole of
+ *   b2, so it prevents all of them.
  * - `supplied project run` is what `--project` adds, and it runs *after* the
- *   standing scenarios. It can fail for reasons that say nothing about
- *   whether those ran — which is why it must not excuse them, and why one
- *   flag for every conditional failure let a failed project run conceal
- *   exactly the drift this is here to catch.
+ *   standing scenarios. It prevents nothing: failing says nothing about
+ *   whether they ran, which is why it must never excuse them.
  */
 export const CONDITIONAL = {
-  "b1 host registration": { suite: "b1", stopsSuite: true },
-  "b2 execution": { suite: "b2", stopsSuite: true },
-  "supplied project run": { suite: "layer4", stopsSuite: false },
-} as const satisfies Record<string, { suite: Suite; stopsSuite: boolean }>
+  "b1 host registration": {
+    suite: "b1",
+    prevents: [
+      "b1 tool ids register",
+      "b1 tool descriptions",
+      "b1 parameter schemas",
+      "b1 enablement marker gates registration",
+      "b1 restricted agents",
+    ],
+  },
+  "b2 execution": {
+    suite: "b2",
+    prevents: [
+      "b2 passing",
+      "b2 driven by a model turn",
+      "b2 testFailed",
+      "b2 rendered diagnostics",
+      "b2 budget invariant",
+      "b2 zero-match",
+      "b2 buildFailed",
+      "b2 inspection without rerun",
+      "b2 log facet",
+    ],
+  },
+  "supplied project run": { suite: "layer4", prevents: [] },
+} as const satisfies Record<string, { suite: Suite; prevents: readonly string[] }>
 
 export const CONDITIONAL_NAMES = Object.keys(CONDITIONAL) as Array<keyof typeof CONDITIONAL>
 
 /**
- * Whether a failure of this name, in this suite, means it got no further.
+ * What a failure of this name, in this suite, prevented from running.
  *
- * Suite-aware, because a name belongs to one suite. A `b1 host registration`
- * somehow recorded inside b2 is not b2 saying it could not start, and should
- * not excuse b2 from anything.
+ * Empty for anything that prevents nothing, and for a name recorded in a suite
+ * it does not belong to: `b1 host registration` inside b2 is not b2 saying it
+ * could not start, and should excuse b2 from nothing.
  */
-export function isBootstrapFailure(suite: Suite, name: string): boolean {
+export function preventedBy(suite: Suite, name: string): readonly string[] {
   const entry = CONDITIONAL[name as keyof typeof CONDITIONAL]
-  return entry !== undefined && entry.stopsSuite && entry.suite === suite
+  return entry !== undefined && entry.suite === suite ? entry.prevents : []
 }
 
 /**
@@ -154,6 +180,16 @@ export function registryProblems(): string[] {
   for (const name of CONDITIONAL_NAMES) {
     if (STANDING_NAMES.includes(name)) {
       problems.push(`\`${name}\` is both standing and conditional`)
+    }
+
+    // A conditional that claims to prevent something the registry does not
+    // list for its suite would excuse a check nobody expects — silently, and
+    // only on the runs where it failed.
+    const { suite, prevents } = CONDITIONAL[name]
+    for (const prevented of prevents) {
+      if (!isStanding(suite, prevented)) {
+        problems.push(`\`${name}\` claims to prevent \`${prevented}\`, which is not standing for ${suite}`)
+      }
     }
   }
 
