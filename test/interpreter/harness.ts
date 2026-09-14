@@ -83,6 +83,15 @@ export function readerFor(
     identity?: ToolchainIdentity
     failures?: Partial<Record<XcresultCommand, XcresultFailure>>
     onRun?: (command: XcresultCommand, budgetMs: number) => void
+    /**
+     * Serve this payload instead of the fixture's, for one command.
+     *
+     * Shapes a committed fixture does not carry — a malformed hierarchy, a
+     * node Xcode would only emit under an unusual configuration — are exactly
+     * the ones worth interpreting end to end, and committing a fixture for
+     * each would commit a fixture for every defect.
+     */
+    payloads?: Partial<Record<XcresultCommand, unknown>>
   } = {},
 ): XcresultTool & { calls: XcresultCommand[] } {
   const calls: XcresultCommand[] = []
@@ -94,6 +103,8 @@ export function readerFor(
       overrides.onRun?.(command, budgetMs)
       const failure = overrides.failures?.[command]
       if (failure !== undefined) return { ok: false, failure, message: `stub: ${failure}` }
+      const replaced = overrides.payloads?.[command]
+      if (replaced !== undefined) return { ok: true, payload: replaced }
       if (!(command in fixture.payloads)) {
         return { ok: false, failure: "commandFailed", message: "the fixture defines no payload" }
       }

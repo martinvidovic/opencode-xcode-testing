@@ -264,3 +264,107 @@ describe("damaged retained evidence", () => {
     expect(await inspectWith("run-real", index)).toMatchObject({ status: "incomplete" })
   })
 })
+
+describe("a retained index carrying an identity that names nothing", () => {
+  /** A published index whose single occurrence has the given identity. */
+  function indexWithIdentity(identity: unknown, identityComplete: boolean): string {
+    return JSON.stringify({
+      indexVersion: INDEX_VERSION,
+      runId: "run-real",
+      decoderVersion: 1,
+      schemaVersion: "0.1.0",
+      occurrences: [
+        {
+          id: "occ-1",
+          identity,
+          identityComplete,
+          status: "passed",
+          position: "0",
+          failures: [],
+          attempts: [],
+        },
+      ],
+      testFailures: [],
+      buildErrors: [],
+      attestations: [],
+      scopeVerdict: "matched",
+      scopeDigest: "d",
+      requestedSelectionCount: 0,
+      observedOutsideScope: 0,
+      build: { completeness: "complete" },
+      tests: { completeness: "complete" },
+      diagnostics: { completeness: "complete" },
+      fullMessages: {},
+      toolchain: {
+        developerDirectory: "/x",
+        xcodeVersion: "26.4.1",
+        xcodeBuild: "17E202",
+        xcresulttoolPath: "/x/t",
+        xcresulttoolVersion: "24757",
+        xcresulttoolDigest: "d",
+        schemaVersion: "0.1.0",
+      },
+      log: { availability: "unavailable", retainedBytesExact: false },
+      bundleDigestVerified: "unknown",
+    })
+  }
+
+  const WHOLE = {
+    bundle: "AppTests",
+    suite: "LoginTests",
+    test: "testSignsIn()",
+    canonical: "AppTests/LoginTests/testSignsIn()",
+  }
+
+  for (const complete of [true, false]) {
+    const claim = complete ? "claiming completeness" : "admitting incompleteness"
+
+    test(`is damaged evidence, not a page of malformed records — blank bundle, ${claim}`, async () => {
+      // The outcome is what matters here, not the predicate. A caller must be
+      // told the evidence cannot be read, never handed a record whose bundle
+      // is `""` — which reads as a name that matches nothing and looks like
+      // it should.
+      const response = await inspectWith("run-real", indexWithIdentity({ ...WHOLE, bundle: "" }, complete))
+
+      expect(response.status).toBe("incomplete")
+      expect(JSON.stringify(response)).not.toContain("LoginTests")
+    })
+
+    test(`is damaged evidence — missing canonical form, ${claim}`, async () => {
+      // `canonical` is the field a focused view prints, so a leak here is the
+      // one a reader would actually see.
+      const { canonical: _dropped, ...nameless } = WHOLE
+      const response = await inspectWith("run-real", indexWithIdentity(nameless, complete))
+
+      expect(response.status).toBe("incomplete")
+      expect(JSON.stringify(response)).not.toContain("LoginTests")
+    })
+
+    test(`is damaged evidence — blank optional part, ${claim}`, async () => {
+      const response = await inspectWith("run-real", indexWithIdentity({ ...WHOLE, suite: "" }, complete))
+
+      expect(response.status).toBe("incomplete")
+      expect(JSON.stringify(response)).not.toContain("testSignsIn")
+    })
+
+    test(`reads normally when the optional parts are simply absent, ${claim}`, async () => {
+      // Absent is not blank. An identity with no suite is one Xcode did not
+      // give a suite for, and refusing it would reject evidence this tool
+      // legitimately publishes.
+      const response = await inspectWith(
+        "run-real",
+        indexWithIdentity({ bundle: "AppTests", canonical: "AppTests" }, complete),
+      )
+
+      expect(response.status).toBe("available")
+    })
+  }
+
+  test("reads normally when every part of the identity names something", async () => {
+    // The other direction, so the cases above cannot pass by refusing
+    // everything a test hands them.
+    const response = await inspectWith("run-real", indexWithIdentity(WHOLE, true))
+
+    expect(response.status).toBe("available")
+  })
+})
