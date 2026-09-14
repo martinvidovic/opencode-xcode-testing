@@ -21,11 +21,8 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import {
-  createXcresultTool,
-  decodeStaged,
-  ESCALATION_GRACE_MS,
-} from "../../src/interpreter/xcresulttool.ts"
+import { createXcresultTool, ESCALATION_GRACE_MS } from "../../src/interpreter/xcresulttool.ts"
+import { decodeStaged } from "../../src/interpreter/staged-decode.ts"
 import { monotonicNow } from "../../src/domain/clock.ts"
 import { decodeTestResults } from "../../src/interpreter/decode.ts"
 import { identityFor, loadFixture } from "./harness.ts"

@@ -310,6 +310,11 @@ function recordLines(data: unknown): string[] {
       return logLines(page.chunk)
     case "focused":
       return ["focused:", `  ${JSON.stringify(page.focused)}`]
+    case "omitted":
+      // Said in words rather than left as an empty body. "There is no detail"
+      // and "the detail will not fit" are different answers, and only one of
+      // them means stop asking.
+      return [field("omitted", page.reason)]
     case "records":
       return [
         `records (${page.records.length}):`,
