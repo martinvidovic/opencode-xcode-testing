@@ -19,16 +19,26 @@
  * of them can read from.
  */
 
-import type { RunReport, ScenarioResult, Suite } from "./report.ts"
+import type { Suite } from "./options.ts"
+import type { RunReport, ScenarioResult } from "./report.ts"
+
+/**
+ * The one word for a fact nobody established.
+ *
+ * Spelled once because it is load-bearing: a reader scanning a report sorts
+ * every line into "observed" or "not", and a second spelling — `unresolved`,
+ * `unknown`, blank — reads as a third category that does not exist.
+ */
+export const UNOBSERVED = "unobserved"
 
 /** Stated as unobserved rather than blank, so a report never implies a fact. */
 export const UNOBSERVED_TOOLCHAIN = {
-  xcodeVersion: "unobserved",
-  xcodeBuild: "unobserved",
-  xcresulttoolVersion: "unobserved",
-  schemaVersion: "unobserved",
-  developerDirectory: "unobserved",
-}
+  xcodeVersion: UNOBSERVED,
+  xcodeBuild: UNOBSERVED,
+  xcresulttoolVersion: UNOBSERVED,
+  schemaVersion: UNOBSERVED,
+  developerDirectory: UNOBSERVED,
+} as const
 
 /**
  * A run's observations, mutated as it makes them.
@@ -73,14 +83,19 @@ export function reportFrom(
     finishedAt: new Date().toISOString(),
     selected: observed.selected,
     ...(observed.project === true ? { project: true } : {}),
-    toolchain: observed.toolchain ?? UNOBSERVED_TOOLCHAIN,
-    hostVersion: observed.hostVersion ?? "unobserved",
-    runtime: observed.runtime ?? { path: "", source: "unobserved" },
+    // Copied, never aliased. A shared object handed to every report is one
+    // any reader could edit for all of them.
+    toolchain: observed.toolchain ?? { ...UNOBSERVED_TOOLCHAIN },
+    hostVersion: observed.hostVersion ?? UNOBSERVED,
+    runtime: observed.runtime ?? { path: "", source: UNOBSERVED },
     // A destination is the one fact with two kinds of absence: never reached,
     // and reached and found wanting. Only the first is unobserved; the second
     // is a diagnostic the gate already recorded.
-    destination: observed.destination ?? { unavailable: "unobserved" },
-    freshness: observed.freshness ?? { status: "unobserved" },
+    destination: observed.destination ?? { unavailable: UNOBSERVED },
+    // Deliberately not the freshness checker's own "unavailable" shape. That
+    // one is a *result* — it looked and could not check — and this is the
+    // absence of a result, which is a different thing to tell a reader.
+    freshness: observed.freshness ?? { status: UNOBSERVED },
     scenarios: observed.scenarios,
     outcome,
     ...(diagnostic === undefined ? {} : { diagnostic }),

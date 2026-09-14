@@ -74,11 +74,21 @@ export function reportDirectory(homeDir = homedir()): string {
   return join(homeDir, "Library", "Application Support", TOOL_DIRECTORY, "reports")
 }
 
-export function writeReport(report: RunReport, homeDir = homedir()): string {
-  const directory = reportDirectory(homeDir)
-  mkdirSync(directory, { recursive: true, mode: 0o700 })
+/**
+ * Where a report lands, derived from when its run started.
+ *
+ * Exported so nothing has to re-derive it. A second copy of this rule is a
+ * second place for it to drift, and the only thing that reads a report back is
+ * something that guessed the name.
+ */
+export function reportPathFor(startedAt: string, homeDir = homedir()): string {
+  return join(reportDirectory(homeDir), `acceptance-${startedAt.replace(/[:.]/g, "-")}.json`)
+}
 
-  const path = join(directory, `acceptance-${report.startedAt.replace(/[:.]/g, "-")}.json`)
+export function writeReport(report: RunReport, homeDir = homedir()): string {
+  mkdirSync(reportDirectory(homeDir), { recursive: true, mode: 0o700 })
+
+  const path = reportPathFor(report.startedAt, homeDir)
   writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
   return path
 }
@@ -118,6 +128,11 @@ export function renderReport(report: RunReport, path: string): string {
     lines.push(`  ${mark} ${scenario.name}${suffix}${duration}`)
     if (scenario.detail.length > 0) lines.push(`       ${scenario.detail}`)
   }
+
+  // The reason, when there is one. It is already redacted of anything
+  // path-shaped, and leaving it out of the text meant the one line explaining
+  // a failure appeared only in the JSON nobody opens.
+  if (report.diagnostic !== undefined) lines.push("", `diagnostic     ${report.diagnostic}`)
 
   // The report's own filename, not its full path: enough to find it in the
   // reports directory, and not a line that names someone's home directory.

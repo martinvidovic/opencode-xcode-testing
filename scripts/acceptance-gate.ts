@@ -57,8 +57,10 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   // waits until the end to be written down, because the end is exactly what a
   // failing run does not reach.
   observed.selected = suites
-  // Claimed only when a layer that uses it actually ran: otherwise the line
-  // says something the run did not do.
+  // Recorded on selection rather than on completion, deliberately. The flag is
+  // a caveat — "this was not the standing gate" — and a report that under-warns
+  // is read as a claim the run did not earn, while one that over-warns is only
+  // ever discounted.
   if (project !== undefined && suites.includes("layer4")) observed.project = true
   observed.hostVersion = observedHostVersion()
 
@@ -117,7 +119,11 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     status: "none",
     diagnostic: "not required by the selected suites",
   }
-  observed.destination = { unavailable: destination.diagnostic }
+
+  // Recorded now only when it is already true. Writing it before discovery
+  // runs would mean a throw inside discovery produced a report claiming no
+  // destination was needed — by a run that selected the suites that need one.
+  if (!needsDestination) observed.destination = { unavailable: destination.diagnostic }
 
   if (needsDestination) {
     destination = discoverDestination()
@@ -189,6 +195,44 @@ function observedHostVersion(): string {
   return result.status === 0 && version.length > 0 ? version : "unknown"
 }
 
+/**
+ * Record a run that ended by throwing.
+ *
+ * The path nobody plans for, and the one most worth a record. A gate that
+ * threw two minutes in has usually established a great deal — a toolchain, a
+ * simulator, a dozen scenarios — and a report calling all of it unobserved
+ * would be indistinguishable from one for a run that never started.
+ *
+ * It reads `observed` rather than anything the throw carried, which is the
+ * whole point: a throw returns nothing, so the only account of what the run
+ * got to is the one it wrote down as it went.
+ *
+ * Separate from the `catch` that calls it so it can be exercised. A handler
+ * that only exists inside `if (import.meta.main)` is a handler no test can
+ * reach, which is an unfortunate property for the code that runs when
+ * everything else has gone wrong.
+ */
+export function recordUncaughtFailure(
+  observed: Observations,
+  error: unknown,
+  homeDir?: string,
+): void {
+  const diagnostic = safeDiagnostic(error)
+  process.stderr.write(`acceptance gate: ${diagnostic}\n`)
+
+  try {
+    const report = reportFrom(observed, "failed", diagnostic)
+    const path = homeDir === undefined ? writeReport(report) : writeReport(report, homeDir)
+    process.stdout.write(`report         ${basename(path)}\n`)
+  } catch (failure) {
+    // The report is required, so failing to write one is itself worth saying
+    // out loud rather than swallowing behind the original error.
+    process.stderr.write(
+      `acceptance gate: no report could be written: ${safeDiagnostic(failure)}\n`,
+    )
+  }
+}
+
 if (import.meta.main) {
   const observed = newObservations(new Date().toISOString())
 
@@ -197,22 +241,7 @@ if (import.meta.main) {
       process.exitCode = code
     })
     .catch((error: unknown) => {
-      // The path nobody plans for, and the one most worth a record. A gate
-      // that threw two minutes in has usually established a great deal — a
-      // toolchain, a simulator, a dozen scenarios — and a report that called
-      // all of it unobserved would be indistinguishable from one for a run
-      // that never started. Everything the run got to is here already.
-      const diagnostic = safeDiagnostic(error)
-      process.stderr.write(`acceptance gate: ${diagnostic}\n`)
-
-      try {
-        const path = writeReport(reportFrom(observed, "failed", diagnostic))
-        process.stdout.write(`report         ${basename(path)}\n`)
-      } catch (failure) {
-        // The report is required, so failing to write one is itself worth
-        // saying out loud rather than swallowing behind the original error.
-        process.stderr.write(`acceptance gate: no report could be written: ${safeDiagnostic(failure)}\n`)
-      }
+      recordUncaughtFailure(observed, error)
       process.exitCode = 1
     })
 }

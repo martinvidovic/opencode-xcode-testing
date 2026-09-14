@@ -20,14 +20,14 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { main } from "../../scripts/acceptance-gate.ts"
+import { main, recordUncaughtFailure } from "../../scripts/acceptance-gate.ts"
 import {
   newObservations,
   reportFrom,
   UNOBSERVED_TOOLCHAIN,
   type Observations,
 } from "../../scripts/gate/observations.ts"
-import { reportDirectory, writeReport, type RunReport } from "../../scripts/gate/report.ts"
+import { reportPathFor, writeReport, type RunReport } from "../../scripts/gate/report.ts"
 
 const STARTED_AT = "2026-09-14T01:00:00.000Z"
 
@@ -128,7 +128,7 @@ describe("the durable record", () => {
       const report = reportFrom(partlyObserved(), "failed", "Error: boom")
       const path = writeReport(report, homeDir)
 
-      expect(path.startsWith(reportDirectory(homeDir))).toBe(true)
+      expect(path).toBe(reportPathFor(STARTED_AT, homeDir))
       const persisted = JSON.parse(readFileSync(path, "utf8")) as RunReport
       expect(persisted).toEqual(report)
     } finally {
@@ -140,19 +140,15 @@ describe("the durable record", () => {
 describe("the gate's own wiring", () => {
   test("writes what the accumulator holds, not a separately-assembled report", async () => {
     // A refused command line is the one path that can be driven without a
-    // simulator, and it is enough to pin the wiring: `main` is handed the
-    // accumulator and every exit reads from it, so there is nowhere else a
-    // fact could come from — or fail to.
+    // simulator, and it pins the wiring: `main` is handed the accumulator and
+    // every exit reads from it, so there is nowhere else a fact could come
+    // from — or fail to.
     //
     // It writes a real report, because writing one is the behaviour under
-    // test and `os.homedir()` is fixed for the life of a process. The report
-    // is named after `startedAt`, which is this test's own constant, so it
-    // cannot collide with a real run's and is removed afterwards.
-    const observed = newObservations(STARTED_AT)
-    const written = join(
-      reportDirectory(),
-      `acceptance-${STARTED_AT.replace(/[:.]/g, "-")}.json`,
-    )
+    // test and `os.homedir()` is fixed for the life of a process. `startedAt`
+    // is unique to this run, so two of these cannot collide.
+    const observed = newObservations(new Date().toISOString())
+    const written = reportPathFor(observed.startedAt)
 
     try {
       const code = await main(["--nonsense"], observed)
@@ -168,5 +164,65 @@ describe("the gate's own wiring", () => {
     } finally {
       rmSync(written, { force: true })
     }
+  })
+})
+
+describe("the handler that runs when everything else has gone wrong", () => {
+  test("writes a report holding everything the run reached before it threw", () => {
+    // The exceptional path itself, not a stand-in for it. A throw returns
+    // nothing, so the handler's only source is what the run wrote down as it
+    // went — and this is the assertion that it actually reads it.
+    const homeDir = mkdtempSync(join(tmpdir(), "xcode-test-uncaught-"))
+    try {
+      const observed = partlyObserved()
+      recordUncaughtFailure(observed, new Error("boom in /Users/someone/checkout"), homeDir)
+
+      const persisted = JSON.parse(
+        readFileSync(reportPathFor(STARTED_AT, homeDir), "utf8"),
+      ) as RunReport
+
+      expect(persisted.toolchain.xcodeVersion).toBe("26.4.1")
+      expect(persisted.destination).toMatchObject({ deviceName: "iPhone CI" })
+      expect(persisted.scenarios).toHaveLength(2)
+      expect(persisted.selected).toEqual(["layer4", "b1"])
+      expect(persisted.outcome).toBe("failed")
+
+      // Only what it never reached.
+      expect(persisted.freshness).toEqual({ status: "unobserved" })
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+
+  test("says where the failure was without saying where this machine keeps things", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "xcode-test-uncaught-"))
+    try {
+      recordUncaughtFailure(
+        partlyObserved(),
+        new Error("boom in /Users/someone/checkout"),
+        homeDir,
+      )
+
+      const persisted = JSON.parse(
+        readFileSync(reportPathFor(STARTED_AT, homeDir), "utf8"),
+      ) as RunReport
+
+      // Reports get pasted into issues. The kind of failure is what a reader
+      // elsewhere can act on; the path is not, and it belongs to whoever ran it.
+      expect(persisted.diagnostic).toContain("Error")
+      expect(persisted.diagnostic).toContain("<path>")
+      expect(persisted.diagnostic).not.toContain("/Users/someone")
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+
+  test("still reports the original failure when no report can be written", () => {
+    // The last line of defence. A handler that threw here would replace the
+    // account of what went wrong with an account of the handler.
+    const missing = join(tmpdir(), "xcode-test-not-a-home", "\u0000")
+    expect(() =>
+      recordUncaughtFailure(partlyObserved(), new Error("boom"), missing),
+    ).not.toThrow()
   })
 })
