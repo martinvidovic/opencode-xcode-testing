@@ -27,8 +27,7 @@ import { discoverDestination, type DestinationDiscovery } from "./gate/destinati
 import { safeDiagnostic } from "./gate/diagnostic.ts"
 import { parseOptions, usage } from "./gate/options.ts"
 import { runLayer4 } from "./gate/layer4.ts"
-import { runInstallationGate } from "./gate/installation.ts"
-import { runRegistrationGate } from "./gate/registration.ts"
+import { runB1Suite } from "./gate/b1.ts"
 import { runExecutionGate } from "./gate/execution.ts"
 import {
   asSuite,
@@ -172,10 +171,7 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     )
   }
   if (suites.includes("b1")) {
-    await asSuite(observed, "b1", async () => {
-      await runRegistrationGate(record)
-      await runInstallationGate(record)
-    })
+    await asSuite(observed, "b1", () => runB1Suite(record))
   }
   if (suites.includes("b2") && context !== undefined) {
     // (b2) drives the host against generated projects with known outcomes, so

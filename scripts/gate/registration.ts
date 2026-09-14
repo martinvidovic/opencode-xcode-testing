@@ -287,4 +287,3 @@ function pass(name: string, detail: string): ScenarioResult {
 function fail(name: string, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "failed", detail }
 }
-
