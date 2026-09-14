@@ -85,15 +85,24 @@ export const LOG_CHUNK_MIN_BYTES = 4
 export const RESPONSE_ENVELOPE_BYTES = 1_024
 
 /**
- * The most structured output a single `xcresulttool` read may produce.
+ * The most structured output a single `xcresulttool` read may stage.
  *
  * The tool is given a Result Bundle this repository did not write, for a test
- * suite whose size nothing here controls. Without a bound the decoder holds the
- * whole payload in memory and then doubles it to turn it into a string — so a
- * large enough suite stops being a slow read and becomes an exhausted process.
- * Generous enough that no plausible real suite reaches it, and finite.
+ * suite whose size nothing here controls, so the read needs a bound. Staging
+ * the output in a private file rather than accumulating it is what lets the
+ * bound be this high: the old ceiling had to cover the payload held as chunks,
+ * again as one buffer, again as a string and again as objects, so it rejected
+ * suites that were merely large — as `unsupported`, which reads as "this
+ * schema is wrong" when the truth is "this suite is big".
+ *
+ * It is deliberately **not** disk-sized, though, because disk is not the
+ * binding constraint. Decoding turns the staged bytes into one JavaScript
+ * string, and a runtime will not build a string of any size; a cap above that
+ * limit would admit payloads that stage perfectly and then fail at the last
+ * step, which is a worse answer arrived at more slowly. This is the largest
+ * output that can actually be decoded, with room to spare.
  */
-export const MAX_STRUCTURED_PAYLOAD_BYTES = 256 * 1024 * 1024
+export const MAX_STAGED_PAYLOAD_BYTES = 512 * 1024 * 1024
 
 /**
  * The largest tool-managed file read whole into memory.

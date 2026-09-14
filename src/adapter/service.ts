@@ -50,6 +50,7 @@ import {
 } from "../interpreter/paging.ts"
 import type { XcresultTool } from "../interpreter/ports.ts"
 import { SUPERVISOR_STARTUP_DEADLINE_MS } from "../runner/supervisor.ts"
+import { monotonicNow } from "../domain/clock.ts"
 import { createXcresultTool } from "../interpreter/xcresulttool.ts"
 import {
   decodeMessages,
@@ -826,7 +827,16 @@ function preLaunchMessage(record: RunRecord): string {
     : "the Test Run was interrupted before its process was authorized to start the tests"
 }
 
-/** When this run was admitted, as a monotonic-comparable millisecond value. */
+/**
+ * When this run was admitted, as a monotonic-comparable millisecond value.
+ *
+ * The one place a wall clock is read on purpose. `admittedAt` is an ISO
+ * timestamp written by a process that may since have crashed, so there is no
+ * monotonic reading of it to recover — the two clocks have to be bridged
+ * somewhere, and here is where. It produces a reported duration rather than a
+ * deadline, so a clock that has moved skews a number a reader sees instead of
+ * cutting work short or letting it run unbounded.
+ */
 function admissionMs(environment: ServiceEnvironment, record: RunRecord): number {
   const admitted = Date.parse(record.admittedAt)
   return Number.isNaN(admitted) ? environment.now() : environment.now() - (Date.now() - admitted)
@@ -1564,7 +1574,12 @@ export const DIGEST_CHUNK_BYTES = 1024 * 1024
  */
 export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string | undefined {
   const hash = createHash("sha256")
-  const deadline = Date.now() + budgetMs
+
+  // Monotonic, and a *duration* from the caller rather than an instant. The
+  // caller is measuring its own remaining budget on its own clock; handing it
+  // an instant would mean two clocks in one deadline, and a wall clock would
+  // mean a deadline an NTP step can move while the walk is still running.
+  const deadline = monotonicNow() + budgetMs
   let expired = false
 
   const walk = (current: string) => {
@@ -1576,7 +1591,7 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string 
       return
     }
     for (const entry of entries) {
-      if (Date.now() >= deadline) {
+      if (monotonicNow() >= deadline) {
         expired = true
         return
       }
@@ -1615,7 +1630,7 @@ function hashFile(hash: Hash, path: string, deadline: number): boolean {
 
   try {
     while (true) {
-      if (Date.now() >= deadline) return false
+      if (monotonicNow() >= deadline) return false
       const read = readSync(fd, buffer, 0, buffer.length, null)
       if (read <= 0) return true
       hash.update(buffer.subarray(0, read))

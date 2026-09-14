@@ -9,18 +9,23 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { createXcresultTool } from "../../src/interpreter/xcresulttool.ts"
 import { decodeTestResults } from "../../src/interpreter/decode.ts"
 import { identityFor, loadFixture } from "./harness.ts"
+import { withJumpingWallClock } from "../wall-clock.ts"
 
 /** How many test cases to emit. Comfortably past a one-megabyte buffer. */
 const CASE_COUNT = 12_000
 
-function largePayloadTool(): { tool: ReturnType<typeof createXcresultTool>; dispose(): void } {
+function largePayloadTool(): {
+  tool: ReturnType<typeof createXcresultTool>
+  directory: string
+  dispose(): void
+} {
   const directory = mkdtempSync(join(tmpdir(), "xcode-test-scale-"))
   const bundle = join(directory, "result.xcresult")
   mkdirSync(bundle, { recursive: true })
@@ -60,8 +65,14 @@ function largePayloadTool(): { tool: ReturnType<typeof createXcresultTool>; disp
   const identity = { ...identityFor(loadFixture("passed")), xcresulttoolPath: script }
   return {
     tool: createXcresultTool({ identity, bundlePath: bundle }),
+    directory,
     dispose: () => rmSync(directory, { recursive: true, force: true }),
   }
+}
+
+/** What the staging directory holds besides the fixture it was built with. */
+function stagedFiles(directory: string): string[] {
+  return readdirSync(directory).filter((name) => name.startsWith(".xcresult-read-"))
 }
 
 describe("a large test hierarchy", () => {
@@ -119,4 +130,86 @@ describe("a read that outlives its budget", () => {
       rmSync(directory, { recursive: true, force: true })
     }
   }, 30_000)
+})
+
+describe("staging a read", () => {
+  test("leaves nothing behind once the payload has been decoded", async () => {
+    const { tool, directory, dispose } = largePayloadTool()
+    try {
+      const response = await tool.run("get test-results tests", 30_000)
+      expect(response.ok).toBe(true)
+
+      // The staged file is scratch, not evidence. Leaving it would put a
+      // second copy of every read beside the bundle it came from, in a
+      // directory whose whole job is holding evidence that must not grow.
+      expect(stagedFiles(directory)).toEqual([])
+    } finally {
+      dispose()
+    }
+  }, 60_000)
+
+  test("leaves nothing behind when the read is stopped at its deadline", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-staged-"))
+    const bundle = join(directory, "result.xcresult")
+    mkdirSync(bundle, { recursive: true })
+
+    // Emits steadily and never finishes, so the read is killed with output
+    // already staged — the case where a leak would actually cost something.
+    const script = join(directory, "xcresulttool")
+    writeFileSync(script, "#!/bin/sh\nwhile true; do echo '{\"a\":1}'; sleep 0.05; done\n")
+    chmodSync(script, 0o700)
+
+    try {
+      const identity = { ...identityFor(loadFixture("passed")), xcresulttoolPath: script }
+      const tool = createXcresultTool({ identity, bundlePath: bundle })
+
+      const response = await tool.run("get test-results tests", 300)
+
+      expect(response).toMatchObject({ ok: false, failure: "timedOut" })
+      expect(stagedFiles(directory)).toEqual([])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test("leaves nothing behind when the read fails before it has begun", async () => {
+    // The window an asynchronously-opened stream leaves: the read settles
+    // immediately — here because the command cannot be started at all — and
+    // cleanup runs before the file it is cleaning up has been created. The
+    // file then appears a moment later and stays forever.
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-staged-"))
+    const bundle = join(directory, "result.xcresult")
+    mkdirSync(bundle, { recursive: true })
+
+    try {
+      const identity = {
+        ...identityFor(loadFixture("passed")),
+        xcresulttoolPath: join(directory, "does-not-exist"),
+      }
+      const tool = createXcresultTool({ identity, bundlePath: bundle })
+
+      const response = await tool.run("get test-results tests", 30_000)
+
+      expect(response).toMatchObject({ ok: false, failure: "commandFailed" })
+      expect(stagedFiles(directory)).toEqual([])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30_000)
+})
+
+describe("a wall clock that jumps while a read is in flight", () => {
+  test("does not report a read that finished in time as timed out", async () => {
+    // The decode-side deadline is the one that can be wrong here: the read
+    // itself is bounded by a timer, but whether the payload is then *decoded*
+    // or discarded as late was a wall-clock question. An NTP step of an hour
+    // turns a read that took a second into a timeout.
+    const { tool, dispose } = largePayloadTool()
+    try {
+      const response = await withJumpingWallClock(() => tool.run("get test-results tests", 30_000))
+      expect(response.ok).toBe(true)
+    } finally {
+      dispose()
+    }
+  }, 60_000)
 })

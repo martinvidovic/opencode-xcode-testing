@@ -15,6 +15,7 @@ import { join } from "node:path"
 
 import { bundleDigest, DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
+import { withJumpingWallClock } from "../wall-clock.ts"
 
 /** A bundle holding one file far larger than any chunk of it. */
 function bundleWithLargeFile(box: Sandbox, bytes: number): string {
@@ -84,6 +85,23 @@ describe("digesting a large Result Bundle", () => {
       // Verification is never skipped and never guessed at: `undefined` is how
       // an incomplete one reaches the caller.
       expect(bundleDigest(bundle, 0)).toBeUndefined()
+    })
+  })
+})
+
+describe("a wall clock that moves under a digest in progress", () => {
+  test("does not expire a budget the walk has not spent", async () => {
+    await withSandbox((box) => {
+      // An NTP correction, a daylight change, a user setting the clock: the
+      // wall clock is allowed to jump, and a deadline measured against it
+      // jumps with it. Here the walk would be abandoned an hour early, and
+      // reported as an unfinished verification of a bundle that is fine.
+      const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 2)
+
+      const digest = withJumpingWallClock(() => bundleDigest(bundle, 30_000))
+
+      expect(digest).toBeDefined()
+      expect(digest).toBe(bundleDigest(bundle, 30_000))
     })
   })
 })
