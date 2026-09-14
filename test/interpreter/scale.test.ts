@@ -21,7 +21,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createXcresultTool, ESCALATION_GRACE_MS } from "../../src/interpreter/xcresulttool.ts"
+import { createXcresultTool } from "../../src/interpreter/xcresulttool.ts"
 import { decodeStaged } from "../../src/interpreter/staged-decode.ts"
 import { monotonicNow } from "../../src/domain/clock.ts"
 import { decodeTestResults } from "../../src/interpreter/decode.ts"
@@ -311,19 +311,44 @@ describe("a read that has to be stopped", () => {
       const response = await tool.run("get test-results tests", 300)
       expect(response).toMatchObject({ ok: false, failure: "timedOut" })
 
-      // Past the SIGTERM/SIGKILL escalation, then look twice with a gap.
-      await Bun.sleep(ESCALATION_GRACE_MS + 500)
-      const first = sizeOf(alive)
-      await Bun.sleep(400)
+      // Waited for rather than sampled. A fixed window has to be long enough
+      // for the slowest machine and short enough to be worth running, and a
+      // dying process's last write landing inside it is indistinguishable
+      // from one that is still alive. Quiescence is the actual property:
+      // whatever was writing has stopped, however long it took to stop.
+      const settled = await quiescent(alive)
 
-      expect(sizeOf(alive)).toBe(first)
-      expect(first).toBeGreaterThan(0)
+      // It wrote before it died, so the check is about stopping rather than
+      // about never having started.
+      expect(settled).toBeGreaterThan(0)
       expect(stagedFiles(directory)).toEqual([])
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
   }, 30_000)
 })
+
+/**
+ * Wait until the file stops growing, and return the size it stopped at.
+ *
+ * Two consecutive equal readings, because one is not evidence: a writer
+ * sleeping between appends looks stopped at any single instant. Generous
+ * overall, because the thing under test is *whether* the group died and not
+ * how fast — a slow machine should make this take longer, never fail.
+ */
+async function quiescent(path: string): Promise<number> {
+  const deadline = Date.now() + 20_000
+  let previous = -1
+
+  while (Date.now() < deadline) {
+    await Bun.sleep(250)
+    const size = sizeOf(path)
+    if (size === previous) return size
+    previous = size
+  }
+
+  throw new Error("the spawned grandchild never stopped writing")
+}
 
 function sizeOf(path: string): number {
   try {

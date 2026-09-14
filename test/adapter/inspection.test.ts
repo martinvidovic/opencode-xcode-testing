@@ -473,7 +473,7 @@ describe("bundle-backed detail", () => {
       bundleDigestVerified: digest,
       testFailures: [diagnostic],
       occurrences: [occurrence] as NormalizedIndex["occurrences"],
-      // Retained when the evidence was fresh, which is what a focused view
+      // Retained when the evidence was fresh, which is what a Focused Detail
       // exists to show past the summary's cap.
       fullMessages: { "diag-1": occurrence.failures[0]?.message ?? "" },
     })
@@ -506,7 +506,7 @@ describe("bundle-backed detail", () => {
   test("carries the identity and the safe location the diagnostic belongs to", async () => {
     await retained(focusedIndex("unknown"), async (inspect) => {
       const response = await inspect({ facet: "failures", diagnosticId: "diag-1" })
-      if (response.status !== "incomplete") throw new Error("expected a focused view")
+      if (response.status !== "incomplete") throw new Error("expected a Focused Detail")
 
       const focused = (response.data as {
         focused: { identity?: { canonical: string }; location?: { path: string } }
@@ -530,7 +530,7 @@ describe("bundle-backed detail", () => {
   test("says why it is incomplete, rather than leaving a caller to guess", async () => {
     await retained(focusedIndex("yes"), async (inspect) => {
       const response = await inspect({ facet: "failures", diagnosticId: "diag-1" })
-      if (response.status !== "incomplete") throw new Error("expected a focused view")
+      if (response.status !== "incomplete") throw new Error("expected a Focused Detail")
 
       // The bundle is gone. "Ran out of time" and "the evidence is no longer
       // there" ask different things of a caller, so the response says which.
@@ -580,13 +580,13 @@ describe("bundle-backed detail", () => {
       const service = createTestToolService(environmentFor(box))
       const response = await service.inspect({ runId: RUN, facet: "failures", diagnosticId: "diag-1" })
 
-      if (response.status !== "incomplete") throw new Error("expected a focused view")
+      if (response.status !== "incomplete") throw new Error("expected a Focused Detail")
       expect(response.annotation).toContain("more than one retained occurrence")
     })
   })
 })
 
-describe("a focused view that cannot fit the cap", () => {
+describe("a Focused Detail that cannot fit the cap", () => {
   /** An occurrence whose identity alone is larger than any response may be. */
   const enormousIdentity = {
     id: "occ-1",
@@ -680,7 +680,7 @@ describe("a focused view that cannot fit the cap", () => {
     )
   })
 
-  test("still returns a focused view that does fit", async () => {
+  test("still returns a Focused Detail that does fit", async () => {
     // The other direction, so the tests above cannot pass by refusing
     // everything: an ordinary record comes back focused.
     await retained(
@@ -740,7 +740,7 @@ describe("the room a response reserves for everything but its data", () => {
   })
 })
 
-/** The wording a withheld focused view carries, as `paging.ts` writes it. */
+/** The wording a withheld Focused Detail carries, as `paging.ts` writes it. */
 const OMITTED_REASON =
   "this record cannot be returned within the response cap without altering an identifier"
 

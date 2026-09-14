@@ -185,7 +185,7 @@ describe("a lazy read whose budget runs out while it is decoding", () => {
 
   test("answers normally when the budget covers the decode", async () => {
     // The other direction, so the test above cannot pass by refusing
-    // everything: a clock that never moves produces a focused view.
+    // everything: a clock that never moves produces a Focused Detail.
     const response = await retained(async (box) => {
       const service = createTestToolService(environmentFor(box, readerWithTimeToSpare()))
       return service.inspect({ runId: RUN, facet: "tests", testId: "occ-1" })

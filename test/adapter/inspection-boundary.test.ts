@@ -331,7 +331,7 @@ describe("a retained index carrying an identity that names nothing", () => {
     })
 
     test(`is damaged evidence — missing canonical form, ${claim}`, async () => {
-      // `canonical` is the field a focused view prints, so a leak here is the
+      // `canonical` is the field a Focused Detail prints, so a leak here is the
       // one a reader would actually see.
       const { canonical: _dropped, ...nameless } = WHOLE
       const response = await inspectWith("run-real", indexWithIdentity(nameless, complete))

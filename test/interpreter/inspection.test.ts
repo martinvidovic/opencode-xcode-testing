@@ -124,7 +124,7 @@ describe("focused records", () => {
 
     // The point of focusing is to see past the caps a page applies, so the
     // answer is a different shape, not a one-record page.
-    if (response.status !== "incomplete") throw new Error("expected an incomplete focused view")
+    if (response.status !== "incomplete") throw new Error("expected an incomplete Focused Detail")
     expect(response.data).toMatchObject({
       facet: "failures",
       focused: { id: summary?.id, kind: "testFailure", message: summary?.message },
@@ -137,7 +137,7 @@ describe("focused records", () => {
     const summary = index.testFailures[3]
     const response = inspect(index, { diagnosticId: summary?.id ?? "" })
 
-    if (response.status !== "incomplete") throw new Error("expected an incomplete focused view")
+    if (response.status !== "incomplete") throw new Error("expected an incomplete Focused Detail")
     const focused = (response.data as { focused: { identity?: { canonical: string } } }).focused
     expect(focused.identity?.canonical).toBe(
       index.occurrences.find((o) => o.id === summary?.testId)?.identity.canonical,
@@ -152,7 +152,7 @@ describe("focused records", () => {
     // `incomplete` without a lazy read: the attempts and diagnostics come
     // from the index and are here, but the activity hierarchy is
     // bundle-backed, so an empty one means nobody looked.
-    if (response.status !== "incomplete") throw new Error("expected a focused view")
+    if (response.status !== "incomplete") throw new Error("expected a Focused Detail")
     expect(response.data).toMatchObject({
       facet: "tests",
       focused: { id: occurrence?.id, status: occurrence?.status, activities: [] },
