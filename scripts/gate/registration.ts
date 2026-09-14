@@ -90,9 +90,9 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
     })
 
     try {
-      // Sequential and recorded one at a time. Written as one array literal
-      // these evaluate in the same order but reach the report only if every
-      // one of them returns — and the last two boot host machinery.
+      // Each of these reaches the report as it finishes. Collected and
+      // returned instead, none of them would arrive unless all of them did —
+      // and the last two boot host machinery.
       await registrationScenarios(client, marked, record)
       record(await markerScenario(client, unmarked))
       record(await agentScenario(client, marked))
@@ -119,11 +119,16 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
  * The registration checks, each published the moment it is decided.
  *
  * `tool.list` is a second round trip to a host process that is still booting,
- * and it is between the two checks. Collecting both and returning them meant
- * that if it did not answer, the first check — already decided, already true —
- * went with it.
+ * and it sits between the first check and the last two. Collecting all three
+ * and returning them meant that if it did not answer, the first — already
+ * decided, already true — went with it.
+ *
+ * Exported so that property can be tested against a client that fails on cue.
+ * The rest of this suite needs a real host process and belongs to Layer 4;
+ * this function needs only a client, and the thing worth pinning about it is
+ * precisely what it has already published when one stops answering.
  */
-async function registrationScenarios(
+export async function registrationScenarios(
   client: OpencodeClient,
   directory: string,
   record: ScenarioSink,

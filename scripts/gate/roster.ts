@@ -18,11 +18,17 @@
  * bookkeeping about the gate, not evidence about the tool, and the same
  * argument that keeps freshness drift report-only applies here.
  *
- * Not every scenario belongs here. `b1 host registration` and `b2 execution`
- * are failure paths that exist only when something has gone wrong, and
- * `--project` adds scenarios the standing gate does not run. Those are
- * reported as themselves when they happen and are absent the rest of the time,
- * which is correct and needs no roster entry.
+ * Not every scenario belongs here, and the exclusions are deliberate:
+ *
+ * - `b1 host registration` and `b2 execution` are failure paths that exist
+ *   only when something has already gone wrong.
+ * - `--project` adds scenarios the standing gate does not run.
+ * - `scenario roster` is this mechanism reporting on itself, and a roster that
+ *   expected its own drift check would be a roster naming it as unreached on
+ *   every clean run.
+ *
+ * Each is reported as itself when it happens and absent the rest of the time,
+ * which is correct and needs no entry.
  */
 
 import type { Suite } from "./options.ts"
