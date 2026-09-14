@@ -54,6 +54,8 @@ function indexWith(overrides: Partial<NormalizedIndex> = {}): NormalizedIndex {
     build: { completeness: "complete" },
     tests: { completeness: "complete" },
     diagnostics: { completeness: "complete" },
+    fullMessages: {},
+    toolchain: identityFor(loadFixture("passed")),
     log: { availability: "available", retainedBytes: 0, retainedBytesExact: true },
     bundleDigestVerified: "unknown",
     ...overrides,
@@ -288,6 +290,9 @@ describe("bundle-backed detail", () => {
       bundleDigestVerified: digest,
       testFailures: [diagnostic],
       occurrences: [occurrence] as NormalizedIndex["occurrences"],
+      // Retained when the evidence was fresh, which is what a focused view
+      // exists to show past the summary's cap.
+      fullMessages: { "diag-1": occurrence.failures[0]?.message ?? "" },
     })
 
   test("degrades to the indexed view when the bundle is not the one that was read", async () => {
@@ -336,6 +341,64 @@ describe("bundle-backed detail", () => {
         status: "notFound",
         subject: "diagnostic",
       })
+    })
+  })
+
+  test("says why it is incomplete, rather than leaving a caller to guess", async () => {
+    await retained(focusedIndex("yes"), async (inspect) => {
+      const response = await inspect({ facet: "failures", diagnosticId: "diag-1" })
+      if (response.status !== "incomplete") throw new Error("expected a focused view")
+
+      // The bundle is gone. "Ran out of time" and "the evidence is no longer
+      // there" ask different things of a caller, so the response says which.
+      expect(response.annotation).toContain("no longer retained")
+    })
+  })
+
+  test("is unsupported when the recorded installation is not the one reading", async () => {
+    const index = focusedIndex("yes")
+    index.toolchain = { ...index.toolchain, xcresulttoolDigest: "a-different-binary" }
+
+    await withSandbox(async (box) => {
+      createRunDirectory(box.storage, RUN)
+      seedRun(box.storage, { runId: RUN, state: "completed", bundleDigest: "d" })
+      writeFileSync(join(runDirectory(box.storage, RUN), INDEX_ARTIFACT), JSON.stringify(index), {
+        mode: 0o600,
+      })
+      // A bundle exists, so the gate that fires is the toolchain one.
+      mkdirSync(join(runDirectory(box.storage, RUN), RUN_ARTIFACTS.resultBundle))
+
+      const service = createTestToolService(environmentFor(box))
+      const response = await service.inspect({ runId: RUN, facet: "failures", diagnosticId: "diag-1" })
+
+      // #8: a path-and-version match without the binary digest is not enough,
+      // because an Xcode replaced in place keeps both and changes neither.
+      expect(response).toMatchObject({ status: "unsupported" })
+    })
+  })
+
+  test("refuses to attach detail it cannot associate to exactly one occurrence", async () => {
+    // The same test on two devices is two occurrences with one canonical
+    // identity. Attaching a sibling's detail here would be a quiet fabrication.
+    const index = focusedIndex("yes")
+    index.occurrences = [
+      { ...occurrence, id: "occ-1", deviceId: "D1" },
+      { ...occurrence, id: "occ-2", deviceId: "D1" },
+    ] as NormalizedIndex["occurrences"]
+
+    await withSandbox(async (box) => {
+      createRunDirectory(box.storage, RUN)
+      seedRun(box.storage, { runId: RUN, state: "completed", bundleDigest: "d" })
+      writeFileSync(join(runDirectory(box.storage, RUN), INDEX_ARTIFACT), JSON.stringify(index), {
+        mode: 0o600,
+      })
+      mkdirSync(join(runDirectory(box.storage, RUN), RUN_ARTIFACTS.resultBundle))
+
+      const service = createTestToolService(environmentFor(box))
+      const response = await service.inspect({ runId: RUN, facet: "failures", diagnosticId: "diag-1" })
+
+      if (response.status !== "incomplete") throw new Error("expected a focused view")
+      expect(response.annotation).toContain("more than one retained occurrence")
     })
   })
 })

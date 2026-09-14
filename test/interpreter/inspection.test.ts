@@ -149,13 +149,18 @@ describe("focused records", () => {
     const occurrence = index.occurrences[0]
     const response = inspect(index, { facet: "tests", testId: occurrence?.id ?? "" })
 
-    // A focused test never degrades: attempts and diagnostics are both
-    // indexed, so nothing here depends on reopening the Result Bundle.
-    if (response.status !== "available") throw new Error("expected an available focused view")
+    // `incomplete` without a lazy read: the attempts and diagnostics come
+    // from the index and are here, but the activity hierarchy is
+    // bundle-backed, so an empty one means nobody looked.
+    if (response.status !== "incomplete") throw new Error("expected a focused view")
     expect(response.data).toMatchObject({
       facet: "tests",
-      focused: { id: occurrence?.id, status: occurrence?.status },
+      focused: { id: occurrence?.id, status: occurrence?.status, activities: [] },
     })
+    // The diagnostics this test produced travel with it, so a caller need not
+    // page the whole failures facet looking for them.
+    const focused = (response.data as { focused: { diagnostics: Array<{ testId?: string }> } }).focused
+    expect(focused.diagnostics.every((entry) => entry.testId === occurrence?.id)).toBe(true)
   })
 
   test("report notFound without revealing which run holds the id", async () => {

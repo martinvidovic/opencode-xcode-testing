@@ -13,8 +13,7 @@
  * caller has no way to reach the rest of the evidence at all.
  */
 
-import { RESPONSE_BYTE_CAP } from "../domain/limits.ts"
-import type { TruncationState } from "../domain/inspection.ts"
+import { RESPONSE_BYTE_CAP, RESPONSE_ENVELOPE_BYTES } from "../domain/limits.ts"
 
 /** Serialized UTF-8 bytes of a value, as the contract counts them. */
 export function responseBytes(value: unknown): number {
@@ -30,12 +29,11 @@ export type CappedPage<T> = {
 /**
  * The longest prefix of `records` that fits, keeping at least one.
  *
- * `overhead` is whatever the response carries besides the records themselves —
- * the envelope, the truncation state, the cursor — measured by the caller,
- * because only the caller knows the shape it is about to build.
+ * `RESPONSE_ENVELOPE_BYTES` is the room reserved for everything else the
+ * response carries: the status, the facet tag, the truncation state, a cursor.
  */
-export function capRecords<T>(records: T[], overhead: number): CappedPage<T> {
-  let used = overhead
+export function capRecords<T>(records: T[]): CappedPage<T> {
+  let used = RESPONSE_ENVELOPE_BYTES
   const kept: T[] = []
 
   for (const record of records) {
@@ -49,27 +47,4 @@ export function capRecords<T>(records: T[], overhead: number): CappedPage<T> {
   }
 
   return { records: kept, dropped: records.length - kept.length }
-}
-
-/**
- * Fold a shrink into the truncation state the response reports.
- *
- * `responseTruncated` and `collectionTruncated` mean different things and both
- * can be true: the first says the cap cut this page, the second says more
- * records exist. A caller deciding whether to ask again needs the second; a
- * caller deciding whether the page is a faithful picture needs the first.
- */
-export function withResponseTruncation(
-  truncation: TruncationState,
-  dropped: number,
-  nextCursor: string | undefined,
-): TruncationState {
-  if (dropped === 0) return truncation
-  return {
-    ...truncation,
-    responseTruncated: true,
-    collectionTruncated: true,
-    hasMore: true,
-    ...(nextCursor === undefined ? {} : { nextCursor }),
-  }
 }

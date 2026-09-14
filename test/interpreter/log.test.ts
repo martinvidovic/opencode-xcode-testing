@@ -11,8 +11,12 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { LOG_CHUNK_DEFAULT_BYTES, LOG_CHUNK_MAX_BYTES } from "../../src/domain/limits.ts"
-import { chunkLog, logWindow, LOG_CHUNK_MIN_BYTES } from "../../src/interpreter/log.ts"
+import {
+  LOG_CHUNK_DEFAULT_BYTES,
+  LOG_CHUNK_MAX_BYTES,
+  LOG_CHUNK_MIN_BYTES,
+} from "../../src/domain/limits.ts"
+import { chunkLog, logWindow } from "../../src/interpreter/log.ts"
 
 /** Page the whole buffer the way a caller would, and rebuild the text. */
 function readAll(bytes: Buffer, windowSize: number): { text: string; pages: number; lossy: number } {
@@ -144,6 +148,15 @@ describe("chunking", () => {
     const result = chunkLog(Buffer.alloc(0), 12, 12)
     expect(result.chunk.text).toBe("")
     expect(result.chunk.byteLength).toBe(0)
+    expect(result.hasMore).toBe(false)
+  })
+
+  test("never issues a cursor identical to the one that produced it", () => {
+    // A short read, or a file that shrank between the index and now. Saying
+    // `hasMore` here would hand back the same offset and loop the caller
+    // forever, which is the one paging failure with no way out.
+    const result = chunkLog(Buffer.alloc(0), 4, 4_096)
+    expect(result.nextByteOffset).toBe(4)
     expect(result.hasMore).toBe(false)
   })
 })

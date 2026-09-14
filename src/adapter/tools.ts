@@ -22,6 +22,7 @@
  */
 
 import type { InspectionResponse, InspectRunRequest, LogChunk } from "../domain/inspection.ts"
+import type { FacetPage } from "../interpreter/paging.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
 import {
   toInspectRunRequest,
@@ -289,17 +290,22 @@ export function renderInspection(
 }
 
 function recordLines(data: unknown): string[] {
-  const chunk = (data as { chunk?: LogChunk } | undefined)?.chunk
-  if (chunk !== undefined) return logLines(chunk)
-
-  const focused = (data as { focused?: unknown } | undefined)?.focused
-  if (focused !== undefined) return [`focused:`, `  ${JSON.stringify(focused)}`]
-
-  const records = (data as { records?: unknown[] } | undefined)?.records ?? []
-  return [
-    `records (${records.length}):`,
-    ...records.map((record) => `  ${JSON.stringify(record)}`),
-  ]
+  // Dispatched on the tag the type already carries, rather than by testing
+  // which optional key happens to be present.
+  const page = data as FacetPage | undefined
+  switch (page?.view) {
+    case "log":
+      return logLines(page.chunk)
+    case "focused":
+      return ["focused:", `  ${JSON.stringify(page.focused)}`]
+    case "records":
+      return [
+        `records (${page.records.length}):`,
+        ...page.records.map((record) => `  ${JSON.stringify(record)}`),
+      ]
+    default:
+      return ["records (0):"]
+  }
 }
 
 /**

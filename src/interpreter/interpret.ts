@@ -472,15 +472,15 @@ function publish(
     testingReached: gathered.testingReached,
   })
 
-  const { diagnostics: testFailures } = buildTestFailures(
+  const { diagnostics: testFailures, fullMessages: failureMessages } = buildTestFailures(
     occurrences,
     gathered.supplementalFailures,
     { runId },
   )
-  const buildErrors = buildBuildErrors(gathered.buildIssues, {
-    runId,
-    trustedRoot: request.facts.trustedRoot,
-  })
+  const { diagnostics: buildErrors, fullMessages: buildMessages } = buildBuildErrors(
+    gathered.buildIssues,
+    { runId, trustedRoot: request.facts.trustedRoot },
+  )
 
   const normalizedScope = normalizeRequestedScope(request.requestedScope)
 
@@ -511,6 +511,8 @@ function publish(
             ? "partial"
             : "complete",
     },
+    fullMessages: { ...failureMessages, ...buildMessages },
+    toolchain: request.facts.toolchain,
     log: {
       availability: request.facts.log.retainedBytes === undefined ? "unavailable" : "available",
       ...(request.facts.log.retainedBytes === undefined

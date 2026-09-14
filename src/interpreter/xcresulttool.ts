@@ -43,7 +43,13 @@ export function argumentsFor(
     case "metadata get":
       return ["metadata", "get", ...common]
     case "get test-results test-details":
-      return schemaPinned(command.split(" "), [...common, `--test-id=${subject ?? ""}`])
+      // A missing subject is a defect in the caller, not a read of every
+      // test: an empty `--test-id=` would look like a valid argument and
+      // return something, which is the worst of both.
+      if (subject === undefined || subject.length === 0) {
+        throw new Error("a test-details read requires the test it is about")
+      }
+      return schemaPinned(command.split(" "), [...common, `--test-id=${subject}`])
     default:
       // The command *is* its argument words; splitting it apart only to
       // reassemble it would be a second place for the two to disagree.

@@ -11,52 +11,50 @@ import type {
   DiagnosticSummary,
   FocusedDiagnostic,
   FocusedTest,
+  InspectionFacet,
   InspectRunRequest,
   LogChunk,
   TestRecord,
+  TruncationState,
 } from "../domain/inspection.ts"
 import type { InspectionResponse, TruncationState } from "../domain/inspection.ts"
 import {
   INSPECTION_PAGE_DEFAULT,
   INSPECTION_PAGE_MAX,
+  LOG_CHUNK_MIN_BYTES,
   RESPONSE_BYTE_CAP,
+  RESPONSE_ENVELOPE_BYTES,
 } from "../domain/limits.ts"
 import type { ScopeAttestation } from "../domain/scope.ts"
 import { CURSOR_ORDERING_VERSION, decodeCursor, encodeCursor } from "./cursor.ts"
-import { capRecords, responseBytes, withResponseTruncation } from "./cap.ts"
-import { focusedDiagnostic, focusedTest, type LazyDetail } from "./focus.ts"
-import {
-  chunkLog,
-  logWindow,
-  LOG_CHUNK_MIN_BYTES,
-  type ChunkedLog,
-  type LogWindow,
-} from "./log.ts"
+import { capRecords, responseBytes } from "./cap.ts"
+import { focusedDiagnostic, focusedTest, type LazyOutcome } from "./focus.ts"
+import { chunkLog, logWindow, type ChunkedLog, type LogWindow } from "./log.ts"
 import type { NormalizedIndex } from "./index-model.ts"
 
 /** One page of a structured facet, tagged so a caller cannot confuse two facets. */
-export type FacetPage =
-  | { facet: "scope"; records: ScopeAttestation[] }
-  | { facet: "failures"; records: DiagnosticSummary[] }
-  | { facet: "buildErrors"; records: DiagnosticSummary[] }
-  | { facet: "tests"; records: TestRecord[] }
-  | { facet: "log"; chunk: LogChunk }
-  | { facet: "failures"; focused: FocusedDiagnostic }
-  | { facet: "buildErrors"; focused: FocusedDiagnostic }
-  | { facet: "tests"; focused: FocusedTest }
-
 /**
- * Room reserved for everything a page carries besides its records: the status,
- * the facet tag, the truncation state, and a cursor. Generous on purpose — the
- * cap is a ceiling to stay under, not a budget to spend exactly.
+ * One page of one facet.
+ *
+ * `view` discriminates, not `facet`: a focused diagnostic and a page of
+ * diagnostics are both the `failures` facet and are entirely different
+ * shapes, so the facet alone cannot tell a reader which one it is holding.
  */
-const ENVELOPE_OVERHEAD_BYTES = 1_024
+export type FacetPage =
+  | { view: "records"; facet: "scope"; records: ScopeAttestation[] }
+  | { view: "records"; facet: "failures"; records: DiagnosticSummary[] }
+  | { view: "records"; facet: "buildErrors"; records: DiagnosticSummary[] }
+  | { view: "records"; facet: "tests"; records: TestRecord[] }
+  | { view: "log"; facet: "log"; chunk: LogChunk }
+  | { view: "focused"; facet: "failures" | "buildErrors"; focused: FocusedDiagnostic }
+  | { view: "focused"; facet: "tests"; focused: FocusedTest }
 
 export function inspectIndex(
   index: NormalizedIndex,
   request: InspectRunRequest,
   secret: Buffer,
-  lazy?: LazyDetail,
+  trustedRoot: string,
+  lazy: LazyOutcome = { status: "incomplete" },
 ): InspectionResponse<FacetPage> {
   const rejection = validateRequest(index, request)
   if (rejection !== undefined) return rejection
@@ -67,8 +65,10 @@ export function inspectIndex(
     return invalid("the log facet is read by byte range, not by index position")
   }
 
-  if (request.diagnosticId !== undefined) return focusDiagnostic(index, request.diagnosticId, lazy)
-  if (request.testId !== undefined) return focusTest(index, request.testId)
+  if (request.diagnosticId !== undefined) {
+    return focusDiagnostic(index, request.diagnosticId, trustedRoot, lazy)
+  }
+  if (request.testId !== undefined) return focusTest(index, request.testId, lazy)
 
   const position = resolveCursor(index, request, secret)
   if (position.ok === false) return position.response
@@ -143,25 +143,19 @@ export function resolveLogWindow(
 export function inspectLog(
   index: NormalizedIndex,
   bytes: Buffer,
-  byteOffset: number,
+  window: LogWindow,
   totalBytes: number,
   secret: Buffer,
 ): InspectionResponse<FacetPage> {
+  const byteOffset = window.byteOffset
   // Raw bytes are not response bytes: JSON escaping turns one newline into
   // two and one control character into six, so a window sized against the cap
   // in advance would still overshoot it. The chunk is shrunk against its own
   // serialized size instead, which is the only measure the cap is about.
   const fitted = fitChunk(bytes, byteOffset, totalBytes)
-  const { chunk, hasMore, nextByteOffset } = fitted.chunked
+  const { chunk, hasMore } = fitted.chunked
 
-  const cursor = hasMore
-    ? encodeCursor(secret, {
-        runId: index.runId,
-        facet: "log",
-        orderingVersion: CURSOR_ORDERING_VERSION,
-        position: nextByteOffset,
-      })
-    : undefined
+  const cursor = nextCursor(secret, index, "log", hasMore ? fitted.chunked.nextByteOffset : undefined)
 
   const truncation: TruncationState = {
     fieldTruncated: false,
@@ -171,12 +165,32 @@ export function inspectLog(
     ...(cursor === undefined ? {} : { nextCursor: cursor }),
   }
 
-  const data: FacetPage = { facet: "log", chunk }
+  const data: FacetPage = { view: "log", facet: "log", chunk }
   // `incomplete` is the honest word for a log whose retained bytes are a lower
   // bound: an empty page does not authoritatively mean there was no output.
   return index.log.availability === "incomplete"
     ? { status: "incomplete", data, truncation }
     : { status: "available", completeness: "complete", data, truncation }
+}
+
+/**
+ * What the log facet's availability means, decided once.
+ *
+ * `undefined` is "there are bytes worth reading"; everything else is the whole
+ * answer. The caller asks before it opens anything, because a log that was
+ * never retained and one retention has since deleted look identical from the
+ * filesystem and are different answers.
+ */
+export function logAvailability(index: NormalizedIndex): InspectionResponse<FacetPage> | undefined {
+  switch (index.log.availability) {
+    case "unavailable":
+      return { status: "unsupported", facet: "log" }
+    case "expired":
+      return { status: "expired" }
+    case "available":
+    case "incomplete":
+      return undefined
+  }
 }
 
 /**
@@ -196,7 +210,7 @@ function fitChunk(
   let chunked = chunkLog(bytes, byteOffset, totalBytes)
 
   while (
-    responseBytes(chunked.chunk) + ENVELOPE_OVERHEAD_BYTES > RESPONSE_BYTE_CAP &&
+    responseBytes(chunked.chunk) + RESPONSE_ENVELOPE_BYTES > RESPONSE_BYTE_CAP &&
     length > LOG_CHUNK_MIN_BYTES
   ) {
     length = Math.max(LOG_CHUNK_MIN_BYTES, Math.floor(length / 2))
@@ -204,6 +218,29 @@ function fitChunk(
   }
 
   return { chunked, shrunk: length < bytes.length }
+}
+
+/**
+ * The cursor for the next page, or nothing when there is no next page.
+ *
+ * `position` means a record index for a structured facet and a byte offset for
+ * the log. Both are "where the next read starts", which is the only thing a
+ * cursor has ever encoded — giving them separate encodings would be two ways
+ * to say one thing.
+ */
+function nextCursor(
+  secret: Buffer,
+  index: NormalizedIndex,
+  facet: InspectionFacet,
+  position: number | undefined,
+): string | undefined {
+  if (position === undefined) return undefined
+  return encodeCursor(secret, {
+    runId: index.runId,
+    facet,
+    orderingVersion: CURSOR_ORDERING_VERSION,
+    position,
+  })
 }
 
 function page(
@@ -220,33 +257,26 @@ function page(
   // built: a cursor that pointed past records the response had to drop would
   // skip evidence silently, which is the one paging failure a caller cannot
   // detect from the outside.
-  const capped = capRecords(asked, ENVELOPE_OVERHEAD_BYTES)
+  const capped = capRecords(asked)
   const slice = capped.records
   const nextPosition = position + slice.length
   const hasMore = nextPosition < all.length
 
-  const cursor = hasMore
-    ? encodeCursor(secret, {
-        runId: index.runId,
-        facet,
-        orderingVersion: CURSOR_ORDERING_VERSION,
-        position: nextPosition,
-      })
-    : undefined
+  const cursor = nextCursor(secret, index, facet, hasMore ? nextPosition : undefined)
 
-  const truncation: TruncationState = withResponseTruncation(
-    {
-      fieldTruncated: false,
-      collectionTruncated: hasMore,
-      responseTruncated: false,
-      hasMore,
-      ...(cursor === undefined ? {} : { nextCursor: cursor }),
-    },
-    capped.dropped,
-    cursor,
-  )
+  // `responseTruncated` and `collectionTruncated` mean different things and
+  // both can be true: the first says the cap cut this page, the second says
+  // more records exist. A caller deciding whether to ask again needs the
+  // second; one deciding whether the page is a faithful picture needs the first.
+  const truncation: TruncationState = {
+    fieldTruncated: false,
+    collectionTruncated: hasMore,
+    responseTruncated: capped.dropped > 0,
+    hasMore,
+    ...(cursor === undefined ? {} : { nextCursor: cursor }),
+  }
 
-  const data = { facet, records: slice } as FacetPage
+  const data = { view: "records", facet, records: slice } as FacetPage
   const completeness = facetCompleteness(index, facet)
 
   if (completeness === "unavailable") return { status: "unsupported", facet }
@@ -301,29 +331,36 @@ function facetCompleteness(
 function focusDiagnostic(
   index: NormalizedIndex,
   id: string,
-  lazy: LazyDetail | undefined,
+  trustedRoot: string,
+  lazy: LazyOutcome,
 ): InspectionResponse<FacetPage> {
   const failure = index.testFailures.find((record) => record.id === id)
-  if (failure !== undefined) {
-    return focusedResponse({ facet: "failures", focused: focusedDiagnostic(index, failure, lazy) }, lazy)
-  }
-  const buildError = index.buildErrors.find((record) => record.id === id)
-  if (buildError !== undefined) {
-    return focusedResponse(
-      { facet: "buildErrors", focused: focusedDiagnostic(index, buildError, lazy) },
-      lazy,
-    )
-  }
+  const buildError = failure === undefined ? index.buildErrors.find((r) => r.id === id) : undefined
+  const diagnostic = failure ?? buildError
   // Deliberately does not say which run it was not found in.
-  return { status: "notFound", subject: "diagnostic" }
+  if (diagnostic === undefined) return { status: "notFound", subject: "diagnostic" }
+
+  if (lazy.status === "unsupported") return { status: "unsupported", facet: "failures" }
+
+  const view = focusedDiagnostic(index, diagnostic, trustedRoot, lazy.detail)
+  return focusedResponse(
+    { view: "focused", facet: failure !== undefined ? "failures" : "buildErrors", focused: view.focused },
+    view.truncation,
+    lazy,
+  )
 }
 
-function focusTest(index: NormalizedIndex, id: string): InspectionResponse<FacetPage> {
+function focusTest(
+  index: NormalizedIndex,
+  id: string,
+  lazy: LazyOutcome,
+): InspectionResponse<FacetPage> {
   const occurrence = index.occurrences.find((record) => record.id === id)
   if (occurrence === undefined) return { status: "notFound", subject: "test" }
-  // Nothing in a focused test is bundle-backed: attempts and diagnostics are
-  // both indexed, so this view never degrades.
-  return single({ facet: "tests", focused: focusedTest(index, occurrence) })
+  if (lazy.status === "unsupported") return { status: "unsupported", facet: "tests" }
+
+  const view = focusedTest(index, occurrence, lazy.detail)
+  return focusedResponse({ view: "focused", facet: "tests", focused: view.focused }, view.truncation, lazy)
 }
 
 /**
@@ -332,21 +369,24 @@ function focusTest(index: NormalizedIndex, id: string): InspectionResponse<Facet
  * The distinction matters to a caller in exactly one way, and it is the way
  * that counts: on an `available` response an empty `activities` list means the
  * test recorded none, and on an `incomplete` one it means nobody could look.
+ * #8 fixes which is which — `unsupported` when the recorded installation is
+ * gone or no longer identity-matched, `incomplete` when the right toolchain
+ * ran and still could not associate or extract what was asked for.
  */
-function focusedResponse(data: FacetPage, lazy: LazyDetail | undefined): InspectionResponse<FacetPage> {
-  if (lazy === undefined) {
+function focusedResponse(
+  data: FacetPage,
+  truncation: TruncationState,
+  lazy: LazyOutcome,
+): InspectionResponse<FacetPage> {
+  if (lazy.status === "incomplete") {
     return {
       status: "incomplete",
       data,
-      truncation: {
-        fieldTruncated: false,
-        collectionTruncated: false,
-        responseTruncated: false,
-        hasMore: false,
-      },
+      truncation,
+      ...(lazy.annotation === undefined ? {} : { annotation: lazy.annotation }),
     }
   }
-  return single(data)
+  return { status: "available", completeness: "complete", data, truncation }
 }
 
 function single(data: FacetPage): InspectionResponse<FacetPage> {

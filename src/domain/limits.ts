@@ -65,6 +65,25 @@ export const LOG_CHUNK_DEFAULT_BYTES = 16_384
 /** Source-log bytes a single log chunk may be asked for. */
 export const LOG_CHUNK_MAX_BYTES = 65_536
 
+/**
+ * Source-log bytes a chunk is never smaller than: one whole character.
+ *
+ * Below this a window could land entirely inside a multi-byte sequence, and
+ * the chunk would have to choose between returning nothing — which never
+ * advances the cursor — and emitting half a character, which corrupts the text
+ * for a caller reading page after page. Four is the longest sequence UTF-8
+ * defines, so at this size neither can happen.
+ */
+export const LOG_CHUNK_MIN_BYTES = 4
+
+/**
+ * Room reserved inside `RESPONSE_BYTE_CAP` for everything a response carries
+ * besides its records: the status, the facet tag, the truncation state, and a
+ * cursor. Generous on purpose — the cap is a ceiling to stay under, not a
+ * budget to spend exactly.
+ */
+export const RESPONSE_ENVELOPE_BYTES = 1_024
+
 /** Seconds a Test Run runs for when neither request nor configuration says otherwise. */
 export const DEFAULT_TIMEOUT_SECONDS = 900
 

@@ -27,12 +27,13 @@ import { interpretRun } from "../interpreter/interpret.ts"
 import { INDEX_VERSION, isNormalizedIndex, type NormalizedIndex } from "../interpreter/index-model.ts"
 import { DECODER_VERSION, REQUESTED_SCHEMA_VERSION } from "../interpreter/schema.ts"
 import { decodeTestDetails } from "../interpreter/decode.ts"
-import type { LazyDetail } from "../interpreter/focus.ts"
-import { safeLocationFromSourceURL } from "../interpreter/locations.ts"
+import type { LazyOutcome } from "../interpreter/focus.ts"
 import { toolchainIdentityMatches } from "../interpreter/ports.ts"
+import type { LogWindow } from "../interpreter/log.ts"
 import {
   inspectIndex,
   inspectLog,
+  logAvailability,
   resolveLogWindow,
   type FacetPage,
 } from "../interpreter/paging.ts"
@@ -349,7 +350,7 @@ async function superviseAndInterpret(
       environment,
       runnerFailureSummary(environment, input, supervision.message, supervision.phase),
     )
-    publishTerminal(environment, input.record, summary, emptyIndex(input.record.runId))
+    publishTerminal(environment, input.record, summary, emptyIndex(environment, input.record.runId))
     return summary
   }
 
@@ -481,7 +482,7 @@ export const INDEX_ARTIFACT = "index.json"
  * inspecting the run is told there is no retained evidence, rather than told
  * the run does not exist.
  */
-function emptyIndex(runId: string): NormalizedIndex {
+function emptyIndex(environment: ServiceEnvironment, runId: string): NormalizedIndex {
   return {
     indexVersion: INDEX_VERSION,
     runId,
@@ -498,6 +499,8 @@ function emptyIndex(runId: string): NormalizedIndex {
     build: { completeness: "unavailable" },
     tests: { completeness: "unavailable" },
     diagnostics: { completeness: "unavailable" },
+    fullMessages: {},
+    toolchain: environment.toolchain,
     log: { availability: "unavailable", retainedBytesExact: false },
     bundleDigestVerified: "unknown",
   }
@@ -585,7 +588,7 @@ export async function finalizeRecovered(
     // be written — fabricating one would look authoritative and be wrong. An
     // empty index is still published, so inspection answers "nothing retained"
     // rather than "never known", and the artifacts stay for review.
-    publishIndexOnly(environment, current, emptyIndex(runId))
+    publishIndexOnly(environment, current, emptyIndex(environment, runId))
     releaseOwnership(environment, runId)
     return
   }
@@ -936,80 +939,155 @@ async function inspectRetained(
   }
 
   const lazy =
-    request.diagnosticId === undefined
+    request.diagnosticId === undefined && request.testId === undefined
       ? undefined
-      : await lazyDetailFor(environment, parsed, request.diagnosticId)
+      : await lazyDetailFor(environment, parsed, request)
 
-  return inspectIndex(parsed, request, environment.cursorSecret, lazy) as InspectionResponse<unknown>
+  return inspectIndex(
+    parsed,
+    request,
+    environment.cursorSecret,
+    environment.trustedRoot,
+    lazy,
+  ) as InspectionResponse<unknown>
 }
 
 /**
- * Detail read from the Result Bundle, or `undefined` when it must not be.
+ * Detail read from the Result Bundle, under #8's lazy contract.
  *
- * Three gates, and any one of them closing degrades the focused view rather
- * than failing it. The index is immutable and was written when the evidence
- * was fresh, so ordinary paging is unaffected by all of this — only the part
- * that would have to go back to the bundle is.
+ * Three things can go wrong and they are three different answers, which is the
+ * whole point of returning an outcome rather than `undefined`:
  *
- * - **The digest.** A bundle that no longer matches what was recorded is not
- *   the bundle the index describes. Reading detail from it would attach that
- *   detail to a diagnostic derived from different bytes.
- * - **The toolchain.** #8's rule is that a bundle is read back with the same
- *   installation that wrote it; a different one may decode the same file
- *   differently, and silently.
- * - **The budget.** A lazy read is a subprocess, and an inspection is a
- *   question someone is waiting on. It gets a bounded share and no more.
+ * - **The installation is gone or is no longer the one that wrote the bundle.**
+ *   `unsupported`. A different Xcode may decode the same file differently and
+ *   silently, and #8's identity includes the binary digest precisely because a
+ *   path-and-version match is not enough.
+ * - **The right toolchain ran and could not finish the job.** `incomplete`,
+ *   with an annotation — an expired deadline and an ambiguous association are
+ *   both this, and they ask different things of a caller.
+ * - **It worked.** `available`.
+ *
+ * None of it can touch the published summary, counts, or outcome: the index is
+ * immutable and ordinary paging never comes here.
  */
 async function lazyDetailFor(
   environment: ServiceEnvironment,
   index: NormalizedIndex,
-  diagnosticId: string,
-): Promise<LazyDetail | undefined> {
-  if (index.bundleDigestVerified !== "yes") return undefined
-  if (index.schemaVersion !== environment.toolchain.schemaVersion) return undefined
+  request: InspectRunRequest,
+): Promise<LazyOutcome> {
+  // One fixed monotonic deadline covering toolchain verification, digest
+  // verification and extraction together, per #8. Checked between steps, so a
+  // step that finishes late cannot spend the next one's budget.
+  const deadline = environment.now() + LAZY_DEADLINE_MS
+  const expired = () => environment.now() >= deadline
 
-  // The bundle-facing identifier, not our derived one: `xcresulttool` has
-  // never heard of a run-local diagnostic id.
-  const subject = subjectFor(index, diagnosticId)
-  if (subject === undefined) return undefined
+  const occurrence = occurrenceFor(index, request)
+  if (occurrence.status !== "found") return occurrence.outcome
 
   const bundlePath = join(
     runDirectory(environment.storage, index.runId),
     RUN_ARTIFACTS.resultBundle,
   )
-  if (!existsSync(bundlePath)) return undefined
+  // Gone, not wrong: the indexed view is still entirely readable, and only
+  // the part that would have come from the bundle is missing. `unsupported`
+  // is reserved for a toolchain that must not read it.
+  if (!existsSync(bundlePath)) return INCOMPLETE_NO_BUNDLE
 
   const tool = readerFor(environment, bundlePath)
-  if (!toolchainIdentityMatches(tool.identity, environment.toolchain)) return undefined
+  // The identity recorded when the index was written, not the one this reader
+  // happens to carry. Comparing a value with itself verifies nothing.
+  if (!toolchainIdentityMatches(tool.identity, index.toolchain)) return { status: "unsupported" }
+  if (expired()) return TIMED_OUT
 
-  const response = await tool.run("get test-results test-details", LAZY_READ_BUDGET_MS, subject)
-  if (!response.ok) return undefined
+  // Re-verified now, not read off the stabilization flag: the question is
+  // whether the bundle is *still* the one the index describes. #8 is explicit
+  // that verification is never skipped, only reported as unfinished.
+  const record = readRunRecord(environment.storage, index.runId)
+  if (record?.bundleDigest === undefined) return INCOMPLETE_DIGEST
+  const digest = bundleDigest(bundlePath, Math.max(0, deadline - environment.now()))
+  if (digest === undefined) return TIMED_OUT
+  if (digest !== record.bundleDigest) return INCOMPLETE_MUTATED
+  if (expired()) return TIMED_OUT
+
+  const response = await tool.run(
+    "get test-results test-details",
+    Math.max(0, deadline - environment.now()),
+    occurrence.subject,
+  )
+  if (!response.ok) return { status: "incomplete", annotation: response.message }
 
   const decoded = decodeTestDetails(response.payload)
-  if (!decoded.ok) return undefined
+  if (!decoded.ok) return { status: "incomplete", annotation: decoded.message }
 
   return {
-    activities: decoded.value.activities,
-    attachments: decoded.value.attachments,
-    stackFrames: decoded.value.stackFrames.map((frame) => ({
-      ...(frame.symbol === undefined ? {} : { symbol: frame.symbol }),
-      ...(frame.module === undefined ? {} : { module: frame.module }),
-      ...safeFrameLocation(frame.sourceURL, environment.trustedRoot),
-    })),
+    status: "available",
+    detail: {
+      activities: decoded.value.activities,
+      attachments: decoded.value.attachments,
+    },
   }
 }
 
-/** The Xcode identifier of the test a diagnostic belongs to, if it has one. */
-function subjectFor(index: NormalizedIndex, diagnosticId: string): string | undefined {
-  const diagnostic = index.testFailures.find((entry) => entry.id === diagnosticId)
-  if (diagnostic?.testId === undefined) return undefined
-  return index.occurrences.find((entry) => entry.id === diagnostic.testId)?.identity.canonical
+const TIMED_OUT: LazyOutcome = {
+  status: "incomplete",
+  annotation: "the lazy detail deadline expired before the detail could be read",
+}
+const INCOMPLETE_NO_BUNDLE: LazyOutcome = {
+  status: "incomplete",
+  annotation: "the Result Bundle is no longer retained, so no further detail can be read from it",
+}
+const INCOMPLETE_DIGEST: LazyOutcome = {
+  status: "incomplete",
+  annotation: "no bundle digest was recorded for this Test Run, so detail cannot be trusted to describe it",
+}
+const INCOMPLETE_MUTATED: LazyOutcome = {
+  status: "incomplete",
+  annotation: "the Result Bundle no longer matches the digest recorded for this Test Run",
 }
 
-function safeFrameLocation(sourceURL: string | undefined, trustedRoot: string) {
-  const location = safeLocationFromSourceURL(sourceURL, trustedRoot)
-  return location === undefined ? {} : { location }
+/**
+ * The one occurrence a focused request is about, and the Xcode identifier that
+ * addresses it.
+ *
+ * #8 associates detail to occurrences by recorded configuration and device
+ * IDs, then by canonical identity — and requires that **exactly one** retained
+ * match attaches it. A canonical identity may repeat across occurrences (the
+ * same test on two devices is two occurrences), so an ambiguous match returns
+ * `incomplete` rather than attaching a sibling occurrence's detail to this one.
+ */
+function occurrenceFor(
+  index: NormalizedIndex,
+  request: InspectRunRequest,
+):
+  | { status: "found"; subject: string }
+  | { status: "unresolved"; outcome: LazyOutcome } {
+  const testId =
+    request.testId ??
+    index.testFailures.find((entry) => entry.id === request.diagnosticId)?.testId
+
+  const occurrence = index.occurrences.find((entry) => entry.id === testId)
+  if (occurrence === undefined) {
+    // A build error belongs to no occurrence, and nothing in the bundle's
+    // test details describes it. That is not a failure to read anything.
+    return { status: "unresolved", outcome: { status: "incomplete", annotation: NO_ASSOCIATION } }
+  }
+
+  const siblings = index.occurrences.filter(
+    (entry) =>
+      entry.identity.canonical === occurrence.identity.canonical &&
+      entry.configurationId === occurrence.configurationId &&
+      entry.deviceId === occurrence.deviceId,
+  )
+  if (siblings.length !== 1) {
+    return { status: "unresolved", outcome: { status: "incomplete", annotation: AMBIGUOUS } }
+  }
+
+  return { status: "found", subject: occurrence.identity.canonical }
 }
+
+const NO_ASSOCIATION = "this diagnostic is not associated with a retained test occurrence"
+const AMBIGUOUS =
+  "more than one retained occurrence matches this test's configuration, device and identity"
 
 /**
  * One bounded window of the retained raw log.
@@ -1032,13 +1110,11 @@ function inspectRetainedLog(
   const unavailable = logAvailability(index)
   if (unavailable !== undefined) return unavailable
 
-  const { byteOffset, maxBytes } = resolved.window
   let read: { bytes: Buffer; totalBytes: number }
   try {
     read = readLogWindow(
       join(runDirectory(environment.storage, request.runId), RUN_ARTIFACTS.rawLog),
-      byteOffset,
-      maxBytes,
+      resolved.window,
     )
   } catch (error) {
     // The index said the log was retained and it is not readable now. That is
@@ -1050,28 +1126,18 @@ function inspectRetainedLog(
     return { status: "expired" }
   }
 
-  return inspectLog(index, read.bytes, byteOffset, read.totalBytes, environment.cursorSecret)
+  return inspectLog(index, read.bytes, resolved.window, read.totalBytes, environment.cursorSecret)
 }
 
-function logAvailability(index: NormalizedIndex): InspectionResponse<FacetPage> | undefined {
-  if (index.log.availability === "unavailable") return { status: "unsupported", facet: "log" }
-  if (index.log.availability === "expired") return { status: "expired" }
-  return undefined
-}
-
-/** Read `maxBytes` at `byteOffset`, from a descriptor validated as private. */
-function readLogWindow(
-  path: string,
-  byteOffset: number,
-  maxBytes: number,
-): { bytes: Buffer; totalBytes: number } {
+/** Read the window, from a descriptor validated as private. */
+function readLogWindow(path: string, window: LogWindow): { bytes: Buffer; totalBytes: number } {
   const handle = openPrivateFile(path)
   try {
     const totalBytes = handle.size
-    if (byteOffset >= totalBytes) return { bytes: Buffer.alloc(0), totalBytes }
+    if (window.byteOffset >= totalBytes) return { bytes: Buffer.alloc(0), totalBytes }
 
-    const bytes = Buffer.alloc(Math.min(maxBytes, totalBytes - byteOffset))
-    const read = readSync(handle.fd, bytes, 0, bytes.length, byteOffset)
+    const bytes = Buffer.alloc(Math.min(window.maxBytes, totalBytes - window.byteOffset))
+    const read = readSync(handle.fd, bytes, 0, bytes.length, window.byteOffset)
     return { bytes: bytes.subarray(0, read), totalBytes }
   } finally {
     closeSync(handle.fd)
@@ -1161,13 +1227,14 @@ function stabilize(
 export const DIGEST_BUDGET_MS = 30_000
 
 /**
- * What a lazy detail read may spend.
+ * One fixed monotonic deadline per lazy detail operation, per #8.
  *
- * An inspection is a question someone is waiting on, and this is the optional
- * part of the answer: it gets a small bounded share, and a read that wants
- * more returns the indexed view instead of keeping the caller waiting.
+ * It covers toolchain verification, digest verification and extraction
+ * together rather than each separately, because the caller is waiting on the
+ * whole operation and dividing the budget would let three steps that each
+ * finished "in time" take three times as long.
  */
-export const LAZY_READ_BUDGET_MS = 5_000
+export const LAZY_DEADLINE_MS = 60_000
 
 /**
  * A deterministic content digest (#8): recursive, name-ordered, and dependent

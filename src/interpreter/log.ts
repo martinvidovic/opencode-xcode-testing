@@ -15,21 +15,14 @@
  */
 
 import type { LogChunk } from "../domain/inspection.ts"
-import { LOG_CHUNK_DEFAULT_BYTES, LOG_CHUNK_MAX_BYTES } from "../domain/limits.ts"
+import {
+  LOG_CHUNK_DEFAULT_BYTES,
+  LOG_CHUNK_MAX_BYTES,
+  LOG_CHUNK_MIN_BYTES,
+} from "../domain/limits.ts"
 
 /** What a caller asked for, after the request's own bounds are applied. */
 export type LogWindow = { byteOffset: number; maxBytes: number }
-
-/**
- * The smallest window that can hold one whole character.
- *
- * A window below this could land entirely inside a multi-byte sequence, and
- * the chunk would then have to choose between returning nothing — which never
- * advances the cursor — and emitting half a character, which corrupts the text
- * for a caller reading page after page. Four bytes is the longest sequence
- * UTF-8 defines, so at this size neither can happen.
- */
-export const LOG_CHUNK_MIN_BYTES = 4
 
 export type ChunkedLog = { chunk: LogChunk; hasMore: boolean; nextByteOffset: number }
 
@@ -58,6 +51,18 @@ export function logWindow(request: { maxBytes?: number }, byteOffset: number): L
  * with a replacement character in it.
  */
 export function chunkLog(bytes: Buffer, byteOffset: number, totalBytes: number): ChunkedLog {
+  // Nothing was read while bytes remain: a short read, a file that shrank, or
+  // an offset past the end. Reporting `hasMore` here would hand back the very
+  // cursor that produced this call, and the caller would loop forever — so
+  // this is the end of the log as far as this read is concerned.
+  if (bytes.length === 0) {
+    return {
+      chunk: { text: "", byteOffset, byteLength: 0, lossyDecoding: false },
+      hasMore: false,
+      nextByteOffset: byteOffset,
+    }
+  }
+
   const reachesEnd = byteOffset + bytes.length >= totalBytes
   const usable = reachesEnd ? bytes.length : bytes.length - trailingPartialLength(bytes)
 
