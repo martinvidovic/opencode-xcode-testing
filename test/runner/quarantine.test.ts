@@ -251,13 +251,19 @@ describe("a root quarantined by a run something still belongs to", () => {
     })
   })
 
-  test("stays held while the run's owner is still driving it", async () => {
+  test("clears even though the OpenCode that started it is still running", async () => {
     await withSandbox((box) => {
-      // The window between the supervisor exiting and the summary being
-      // published: no child, no supervisor, and the run is not finished.
+      // The owner is the editor the user is sitting in front of. It outlives
+      // the run by hours, so holding the root until it exits is holding the
+      // root until the user quits OpenCode — with the artifacts, and the
+      // quarantine, surviving the restart. The run itself is durably over:
+      // nothing that executed it is left.
       seedQuarantined(box, {
         runId: RUN,
         owner: { pid: 900, startedAt: "owner-start" },
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+        child: { pid: 4243, startedAt: "child-start", pgid: 4243 },
+        descendantsConfirmedExited: "yes",
       })
       holdRoot(box)
 
@@ -267,8 +273,55 @@ describe("a root quarantined by a run something still belongs to", () => {
         timestamp: () => TIMESTAMP,
       })
 
+      expect(report.quarantineCleared).toBe(true)
+      expect(published(box)).toBe(false)
+    })
+  })
+
+  test("stays held while its supervisor is alive, whatever the owner is doing", async () => {
+    await withSandbox((box) => {
+      // The same live owner, and this time something that really does execute
+      // the run is still there. A live owner is not what holds a root; a live
+      // supervisor is.
+      seedQuarantined(box, {
+        runId: RUN,
+        owner: { pid: 900, startedAt: "owner-start" },
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+      })
+      holdRoot(box)
+
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({ processes: { 900: "owner-start", 4242: "supervisor-start" } }),
+        timestamp: () => TIMESTAMP,
+      })
+
       expect(report.quarantineCleared).toBe(false)
       expect(published(box)).toBe(true)
+    })
+  })
+
+  test("holds an unfinished run its owner is still driving", async () => {
+    await withSandbox((box) => {
+      // The window an owner check is actually for: the supervisor has exited,
+      // the summary has not been published, and the run is not finished. That
+      // is a live run, not a completed one, and it is `classify` that says so.
+      createRunDirectory(box.storage, RUN)
+      seedRun(box.storage, {
+        runId: RUN,
+        state: "executionCompleted",
+        owner: { pid: 900, startedAt: "owner-start" },
+        supervisor: { pid: 4242, startedAt: "supervisor-start" },
+      })
+
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({ processes: { 900: "owner-start" } }),
+        timestamp: () => TIMESTAMP,
+      })
+
+      expect(report.status).toBe("busy")
+      expect(report.needsFinalization).toEqual([])
     })
   })
 

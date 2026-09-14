@@ -8,6 +8,7 @@
  * by the import lint in `test/lint/`.
  */
 
+export * from "./clock.ts"
 export * from "./evidence.ts"
 export * from "./inspection.ts"
 export * from "./limits.ts"

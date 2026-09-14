@@ -15,6 +15,7 @@
 import { createReadStream, createWriteStream } from "node:fs"
 import { join } from "node:path"
 
+import { monotonicNow } from "../domain/clock.ts"
 import { decodeMessages, encodeMessage, secretMatches, type LaunchSpec } from "./control.ts"
 import { spawnGatedChild } from "./gate.ts"
 import { systemProbe } from "./identity.ts"
@@ -157,7 +158,7 @@ export async function main(): Promise<number> {
       {
         storage,
         probe: systemProbe,
-        now: () => Number(process.hrtime.bigint() / 1_000_000n),
+        now: monotonicNow,
         timestamp: () => new Date().toISOString(),
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         spawn: () =>

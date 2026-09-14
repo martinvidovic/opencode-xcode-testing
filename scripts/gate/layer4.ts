@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { monotonicNow } from "../../src/domain/clock.ts"
 import type { TestRunRequest } from "../../src/domain/request.ts"
 import type { ExecutionContext } from "./context.ts"
 import type { TestToolResult } from "../../src/domain/result.ts"
@@ -470,7 +471,7 @@ function serviceFor(
     toolchain: options.toolchain,
     runtime: { path: options.runtimePath },
     supervisorEntrypoint: SUPERVISOR_ENTRYPOINT,
-    now: () => Number(process.hrtime.bigint() / 1_000_000n),
+    now: monotonicNow,
     timestamp: () => new Date().toISOString(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     freeBytes: () => Number.MAX_SAFE_INTEGER,
