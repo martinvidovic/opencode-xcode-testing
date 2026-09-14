@@ -250,11 +250,16 @@ describe("a failure message from a real Result Bundle", () => {
 })
 
 describe("a bundle node Xcode gave no name", () => {
-  test("does not produce an identity that claims to be complete", () => {
+  test("produces no occurrence at all, rather than one that cannot name itself", () => {
     // The producer and the decoder have to agree, and this is where they can
-    // stop agreeing: a blank bundle name yields an identity naming nothing
-    // while flagged complete, which the decoder then refuses — taking the
-    // whole index, and so every facet of a real run, down with it.
+    // stop agreeing: a blank bundle name yielded an identity naming nothing,
+    // which the decoder refuses — taking the whole index, and so every facet
+    // of a real run, down with it.
+    //
+    // Not published rather than published incomplete. A test whose bundle
+    // cannot be named is indistinguishable from the plan and launch nodes
+    // already counted as infrastructure, and an occurrence with nothing to
+    // call itself is not a less confident occurrence; it is not one.
     const { occurrences } = normalizeTestNodes(
       [
         {
@@ -274,8 +279,7 @@ describe("a bundle node Xcode gave no name", () => {
       { trustedRoot: "/repo" },
     )
 
-    expect(occurrences).toHaveLength(1)
-    expect(occurrences[0]?.identityComplete).toBe(false)
+    expect(occurrences).toEqual([])
   })
 
   test("still produces a complete identity when the bundle is named", () => {

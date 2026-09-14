@@ -375,7 +375,7 @@ describe("a retained test identity", () => {
     expect(isNormalizedIndex(withIdentity(WHOLE))).toBe(true)
   })
 
-  test("claims completeness only with a bundle to be complete about", () => {
+  test("is refused without a bundle to be about", () => {
     // A complete identity is matched against what a caller asked to run. One
     // naming no bundle is compared against every selection and agrees with
     // none, which reports a mismatch for a test that ran.
@@ -384,11 +384,34 @@ describe("a retained test identity", () => {
     expect(isNormalizedIndex(withIdentity({ ...WHOLE, bundle: "" }))).toBe(false)
   })
 
-  test("still decodes without a bundle when it admits it is incomplete", () => {
-    // This is what the interpreter writes when Xcode's ancestry gave it
-    // nothing to work with, and attestation already refuses to match on it.
-    // Refusing it here would reject an index this tool itself published.
-    expect(isNormalizedIndex(withIdentity({ ...WHOLE, bundle: "" }, false))).toBe(true)
+  test("is refused without a bundle even when it admits it is incomplete", () => {
+    // `identityComplete` says how much confidence to place in an identity —
+    // whether its components were cross-checked and agreed. That is a
+    // different question from whether the identity can be used at all, and
+    // letting the flag answer both made "incomplete" a place where `""` could
+    // legitimately live. The interpreter no longer publishes such an
+    // occurrence, so refusing it here rejects nothing this tool writes.
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, bundle: "" }, false))).toBe(false)
+    const { bundle: _dropped, ...bundleless } = WHOLE
+    expect(isNormalizedIndex(withIdentity(bundleless, false))).toBe(false)
+  })
+
+  test("is refused without a canonical form in either completeness state", () => {
+    // The canonical form is what a focused view shows and what a caller reads
+    // back. Blank, it is a test with no name in front of a model.
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, canonical: "" }, true))).toBe(false)
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, canonical: "" }, false))).toBe(false)
+  })
+
+  test("keeps its optional parts validated whatever its completeness says", () => {
+    for (const complete of [true, false]) {
+      expect(isNormalizedIndex(withIdentity({ ...WHOLE, suite: "" }, complete))).toBe(false)
+      expect(isNormalizedIndex(withIdentity({ ...WHOLE, test: 7 }, complete))).toBe(false)
+      expect(isNormalizedIndex(withIdentity({ ...WHOLE, sourceIdentifier: "" }, complete))).toBe(
+        false,
+      )
+      expect(isNormalizedIndex(withIdentity(WHOLE, complete))).toBe(true)
+    }
   })
 
   test("refuses a part that is present and blank", () => {

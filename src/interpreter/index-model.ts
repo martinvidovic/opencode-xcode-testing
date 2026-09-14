@@ -191,7 +191,7 @@ function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
 
   return (
     isIdentifier(value.id) &&
-    isTestIdentity(value.identity, value.identityComplete) &&
+    isTestIdentity(value.identity) &&
     oneOf(value.status, TEST_STATUSES) &&
     isIdentifier(value.position) &&
     isArrayOf(value.failures, isNormalizedFailure) &&
@@ -209,23 +209,18 @@ function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
  * reach a model as one; a `suite` that is `""` would reach it as a name that
  * matches nothing and looks like it should.
  *
- * `attestedComplete` is the occurrence's own claim about this identity, not a
- * strictness setting a caller chooses. It decides which standard the identity
- * is held to, because the two cases mean genuinely different things and the
- * decoder must accept what the interpreter legitimately writes for each.
+ * That includes the bundle and the canonical form, in **every** completeness
+ * state. `identityComplete` says how much confidence to place in an identity —
+ * whether its components were cross-checked and agreed — and that is a
+ * different question from whether the identity is structurally usable at all.
+ * Letting the flag relax the structural rule made an incomplete identity a
+ * place where `""` could legitimately live, and `""` reaches a model as a name
+ * that matches nothing and looks like it should. An occurrence with nothing to
+ * call itself is not a less confident occurrence; it is not one.
  */
-function isTestIdentity(value: unknown, attestedComplete: boolean): boolean {
+function isTestIdentity(value: unknown): boolean {
   if (!isRecord(value)) return false
-
-  // The bundle and the canonical form are held to the standard the occurrence
-  // claims for itself. An identity that admits it is incomplete may name
-  // nothing at all — that is what the flag says, and attestation already
-  // refuses to match on it. One that claims completeness has no such excuse.
-  if (attestedComplete) {
-    if (!isIdentifier(value.bundle) || !isIdentifier(value.canonical)) return false
-  } else if (typeof value.bundle !== "string" || typeof value.canonical !== "string") {
-    return false
-  }
+  if (!isIdentifier(value.bundle) || !isIdentifier(value.canonical)) return false
 
   return ["suite", "test", "sourceIdentifier"].every(
     // `sourceIdentifier` is the Result Bundle's own spelling of this test,

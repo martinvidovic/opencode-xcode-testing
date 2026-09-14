@@ -89,11 +89,12 @@ export function normalizeTestNodes(
 
   const walk = (node: RawTestNode, ancestry: Ancestry, path: string) => {
     if (node.nodeType === "Test Case") {
-      if (ancestry.bundle === undefined) {
+      const { bundle } = ancestry
+      if (bundle === undefined) {
         outcome.pseudoTestCount += 1
         return
       }
-      collectOccurrence(node, ancestry, path, options, outcome)
+      collectOccurrence(node, { ...ancestry, bundle }, path, options, outcome)
       return
     }
 
@@ -113,14 +114,25 @@ export function normalizeTestNodes(
 type Ancestry = { bundle?: string; suite?: string }
 
 function extendAncestry(node: RawTestNode, ancestry: Ancestry): Ancestry {
-  if (TEST_BUNDLE_NODE_TYPES.has(node.nodeType)) return { bundle: node.name }
-  if (node.nodeType === "Test Suite") return { ...ancestry, suite: node.name }
+  // A blank name is no name. Recording one would give every test beneath this
+  // node an identity that calls itself nothing — which the decoder refuses,
+  // taking the whole index with it, and which a model could not act on if it
+  // did not. Left undefined, these are counted as the infrastructure nodes
+  // they are indistinguishable from.
+  if (TEST_BUNDLE_NODE_TYPES.has(node.nodeType)) {
+    return isIdentifier(node.name) ? { bundle: node.name } : {}
+  }
+  if (node.nodeType === "Test Suite") {
+    return isIdentifier(node.name) ? { ...ancestry, suite: node.name } : ancestry
+  }
   return ancestry
 }
 
 function collectOccurrence(
   node: RawTestNode,
-  ancestry: Ancestry,
+  // Narrowed by the caller: a Test Case with no bundle above it never reaches
+  // here, so every occurrence published can name the bundle it came from.
+  ancestry: Ancestry & { bundle: string },
   path: string,
   options: { trustedRoot: string; configurationId?: string; deviceId?: string },
   outcome: NormalizationOutcome,
@@ -242,7 +254,7 @@ function mapStatus(result: string | undefined, outcome: NormalizationOutcome): T
  */
 function deriveIdentity(
   node: RawTestNode,
-  ancestry: Ancestry,
+  ancestry: Ancestry & { bundle: string },
 ): { identity: TestIdentity; complete: boolean } {
   const bundle = ancestry.bundle
   const selectable = node.nodeIdentifier === undefined ? undefined : parseIdentifier(node.nodeIdentifier)
@@ -261,12 +273,10 @@ function deriveIdentity(
     reference?.suite === undefined ||
     selectable.suite === reference.suite
 
-  // `named`, not merely defined. A bundle node whose name is blank yields an
-  // identity that names nothing while claiming to be complete — and a complete
-  // identity is compared against every selection a caller made, agreeing with
-  // none of them, reporting a mismatch for a test that ran.
+  // The bundle is no longer part of this question: `normalizeTestNodes` will
+  // not reach here without one, because an occurrence that cannot name itself
+  // is not published at all. What is left is whether the components agree.
   const complete =
-    isIdentifier(bundle) &&
     (selectable !== undefined || reference !== undefined) &&
     identifiersAgree &&
     (ancestry.suite === undefined || parsedSuite === undefined || ancestry.suite === parsedSuite)
@@ -275,7 +285,7 @@ function deriveIdentity(
   // not give us, and writing it as a present-but-blank field would put a name
   // in front of a reader that matches nothing and looks like it should.
   const parts = {
-    bundle: bundle ?? "",
+    bundle,
     ...(isIdentifier(suite) ? { suite } : {}),
     ...(isIdentifier(test) ? { test } : {}),
   }
