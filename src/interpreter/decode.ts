@@ -386,3 +386,99 @@ function describe(value: unknown): string {
   if (Array.isArray(value)) return "array"
   return typeof value
 }
+
+// --- test details ---------------------------------------------------------
+
+/**
+ * The bundle-backed detail behind one test, read lazily and never classified on.
+ *
+ * `xcresulttool get test-results test-details --test-id` is the only command
+ * here whose payload is *not* classification-critical: nothing in this file's
+ * result can change an outcome, a count, or a scope verdict. That is why its
+ * decoder is the most forgiving one in the module — a shape it does not
+ * recognize costs a caller some detail, where the same leniency anywhere else
+ * would cost them the truth.
+ *
+ * Activities and attachments in particular are additive by nature: Xcode adds
+ * node kinds between releases, and a decoder that rejected the whole payload
+ * over one unfamiliar child would lose the ninety that were fine.
+ */
+export type RawTestDetails = {
+  activities: RawActivity[]
+  attachments: RawAttachment[]
+  stackFrames: RawStackFrame[]
+}
+
+export type RawActivity = { title: string; message?: string; children: RawActivity[] }
+export type RawAttachment = { name: string; mediaType?: string; byteSize?: number }
+export type RawStackFrame = { symbol?: string; module?: string; sourceURL?: string }
+
+export function decodeTestDetails(payload: unknown): Decoded<RawTestDetails> {
+  if (!isRecord(payload)) return fail("unsupportedSchema", "", "test details were not an object")
+
+  return {
+    ok: true,
+    value: {
+      activities: decodeActivities(payload["testActivities"] ?? payload["activities"]),
+      attachments: decodeAttachments(payload["attachments"]),
+      stackFrames: decodeStackFrames(payload["stackFrames"] ?? payload["backtrace"]),
+    },
+  }
+}
+
+function decodeActivities(value: unknown): RawActivity[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry): RawActivity[] => {
+    if (!isRecord(entry)) return []
+    const title = stringOf(entry["title"]) ?? stringOf(entry["name"])
+    if (title === undefined) return []
+    const message = stringOf(entry["message"])
+    return [
+      {
+        title,
+        ...(message === undefined ? {} : { message }),
+        children: decodeActivities(entry["childActivities"] ?? entry["children"]),
+      },
+    ]
+  })
+}
+
+function decodeAttachments(value: unknown): RawAttachment[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry): RawAttachment[] => {
+    if (!isRecord(entry)) return []
+    const name = stringOf(entry["name"]) ?? stringOf(entry["filename"])
+    if (name === undefined) return []
+    const mediaType = stringOf(entry["uniformTypeIdentifier"]) ?? stringOf(entry["mediaType"])
+    const byteSize = entry["payloadSize"] ?? entry["byteSize"]
+    return [
+      {
+        name,
+        ...(mediaType === undefined ? {} : { mediaType }),
+        ...(typeof byteSize === "number" ? { byteSize } : {}),
+      },
+    ]
+  })
+}
+
+function decodeStackFrames(value: unknown): RawStackFrame[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry): RawStackFrame[] => {
+    if (!isRecord(entry)) return []
+    const symbol = stringOf(entry["symbolName"]) ?? stringOf(entry["symbol"])
+    const module = stringOf(entry["imageName"]) ?? stringOf(entry["module"])
+    const sourceURL = stringOf(entry["sourceURL"])
+    if (symbol === undefined && module === undefined && sourceURL === undefined) return []
+    return [
+      {
+        ...(symbol === undefined ? {} : { symbol }),
+        ...(module === undefined ? {} : { module }),
+        ...(sourceURL === undefined ? {} : { sourceURL }),
+      },
+    ]
+  })
+}
+
+function stringOf(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}

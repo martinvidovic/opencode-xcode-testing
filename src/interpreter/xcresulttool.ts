@@ -25,12 +25,31 @@ import type { XcresultCommand } from "./anomalies.ts"
 import type { ToolchainIdentity, XcresultResponse, XcresultTool } from "./ports.ts"
 import { REQUESTED_SCHEMA_VERSION } from "./schema.ts"
 
-/** The argument vectors, fixed per command. Nothing here is caller-supplied. */
-export function argumentsFor(command: XcresultCommand, bundlePath: string): string[] {
+/**
+ * The argument vectors, fixed per command.
+ *
+ * Nothing here is model-supplied. One command takes a subject — the Xcode test
+ * identifier a detail read is about — and it arrives from Xcode's own payload,
+ * never from a request. It is still passed as `--test-id=<value>` rather than
+ * as two words, so a value beginning with a dash is a value and not a flag.
+ */
+export function argumentsFor(
+  command: XcresultCommand,
+  bundlePath: string,
+  subject?: string,
+): string[] {
   const common = ["--path", bundlePath]
   switch (command) {
     case "metadata get":
       return ["metadata", "get", ...common]
+    case "get test-results test-details":
+      // A missing subject is a defect in the caller, not a read of every
+      // test: an empty `--test-id=` would look like a valid argument and
+      // return something, which is the worst of both.
+      if (subject === undefined || subject.length === 0) {
+        throw new Error("a test-details read requires the test it is about")
+      }
+      return schemaPinned(command.split(" "), [...common, `--test-id=${subject}`])
     default:
       // The command *is* its argument words; splitting it apart only to
       // reassemble it would be a second place for the two to disagree.
@@ -54,7 +73,7 @@ export function createXcresultTool(input: {
   return {
     identity: input.identity,
 
-    run(command: XcresultCommand, budgetMs: number): Promise<XcresultResponse> {
+    run(command: XcresultCommand, budgetMs: number, subject?: string): Promise<XcresultResponse> {
       if (!existsSync(input.bundlePath)) {
         return Promise.resolve({
           ok: false,
@@ -62,7 +81,7 @@ export function createXcresultTool(input: {
           message: "the expected Result Bundle does not exist",
         })
       }
-      return read(input.identity, input.bundlePath, command, budgetMs)
+      return read(input.identity, input.bundlePath, command, budgetMs, subject)
     }
   }
 }
@@ -85,12 +104,13 @@ function read(
   bundlePath: string,
   command: XcresultCommand,
   budgetMs: number,
+  subject?: string,
 ): Promise<XcresultResponse> {
   return new Promise((resolve) => {
     // Its own process group, so a read that has to be stopped is stopped
     // whole — `xcresulttool` spawns helpers, and signalling only the parent
     // leaves them behind holding the bundle open.
-    const child = spawn(identity.xcresulttoolPath, argumentsFor(command, bundlePath), {
+    const child = spawn(identity.xcresulttoolPath, argumentsFor(command, bundlePath, subject), {
       env: { ...process.env, DEVELOPER_DIR: identity.developerDirectory },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,

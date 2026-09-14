@@ -86,7 +86,18 @@ export type TruncationState = {
  */
 export type InspectionResponse<T> =
   | { status: "available"; completeness: EvidenceCompleteness; data: T; truncation: TruncationState }
-  | { status: "incomplete"; data: T; truncation: TruncationState }
+  | {
+      status: "incomplete"
+      data: T
+      truncation: TruncationState
+      /**
+       * Why this is incomplete, when there is something specific to say —
+       * a lazy read that ran out of its deadline, or detail that could not be
+       * associated to exactly one occurrence. Additive, so it needs no
+       * `schemaVersion` bump.
+       */
+      annotation?: string
+    }
   | { status: "expired" }
   | { status: "notFound"; subject: NotFoundSubject }
   | { status: "unsupported"; facet: InspectionFacet }
@@ -133,4 +144,33 @@ export type FocusedDiagnostic = {
   stackFrames: StackFrame[]
   activities: ActivityNode[]
   attachments: AttachmentMetadata[]
+}
+
+/**
+ * The expanded view of a single test, reachable only by `testId`.
+ *
+ * Carries the attempts because a test that passed on its second run is a
+ * different fact from one that passed outright, and a compact record cannot
+ * say which happened.
+ */
+export type FocusedTest = {
+  id: string
+  identity: TestIdentity
+  status: TestStatus
+  durationMs?: number
+  attempts: TestAttempt[]
+  /** Every diagnostic this test produced, so a caller need not search for them. */
+  diagnostics: DiagnosticSummary[]
+  /**
+   * The bounded activity hierarchy, when bundle-backed detail could be read.
+   * Empty on an `incomplete` response means nobody could look, not that the
+   * test recorded none.
+   */
+  activities: ActivityNode[]
+}
+
+export type TestAttempt = {
+  ordinal: number
+  status: TestStatus
+  durationMs?: number
 }

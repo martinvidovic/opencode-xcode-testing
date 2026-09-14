@@ -6,8 +6,14 @@
  * structure — not the Result Bundle — is what a later inspection answers from.
  */
 
-import type { BuildEvidence, TestCounts, TestEvidence } from "../domain/evidence.ts"
+import type {
+  BuildEvidence,
+  EvidenceCompleteness,
+  TestCounts,
+  TestEvidence,
+} from "../domain/evidence.ts"
 import type { DiagnosticSummary, FacetAvailability } from "../domain/inspection.ts"
+import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { ScopeAttestation, ScopeVerdict } from "../domain/scope.ts"
 import { isArrayOf, isRecord } from "../domain/json.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
@@ -41,6 +47,37 @@ export type NormalizedIndex = {
   counts?: TestCounts
   build: BuildEvidence
   tests: TestEvidence
+  /**
+   * How much of the *diagnostic* record survived, which is not the same
+   * question as how many tests were counted.
+   *
+   * A run can count every test correctly and still lose failure detail — the
+   * Result Summary's supplemental failures are the usual way, since the schema
+   * declares that field with a shape the decoder has to work around. Folding
+   * the two together would make an empty failures page look authoritative on
+   * the strength of the test counts being fine, which is exactly the claim
+   * that would be wrong.
+   */
+  diagnostics: { completeness: EvidenceCompleteness }
+  /**
+   * Every diagnostic's message at full length, keyed by diagnostic ID.
+   *
+   * A `DiagnosticSummary` carries a message capped for a summary, and seeing
+   * past that cap is the whole point of focusing — so the full text is
+   * retained here, when the evidence was fresh, rather than recovered later by
+   * matching prefixes against occurrences. A build error has no occurrence to
+   * recover it from at all, which is what makes this the only workable place.
+   */
+  fullMessages: Record<string, string>
+  /**
+   * The toolchain that produced this index, as #8 records it.
+   *
+   * Kept so a lazy read can verify the installation it is about to use is the
+   * one that wrote the bundle. Comparing the current toolchain against itself
+   * would verify nothing, and #8 is explicit that a path-and-version match
+   * without the binary digest is insufficient.
+   */
+  toolchain: ToolchainIdentity
   log: LogFacetEvidence
   /**
    * Stabilization-time digest re-verification. A mismatch never invalidates
@@ -83,6 +120,9 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
     typeof index.observedOutsideScope === "number" &&
     isFacet(index.build) &&
     isFacet(index.tests) &&
+    isFacet(index.diagnostics) &&
+    isRecord(index.fullMessages) &&
+    isRecord(index.toolchain) &&
     isLogFacet(index.log) &&
     typeof index.bundleDigestVerified === "string"
   )

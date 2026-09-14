@@ -100,6 +100,9 @@ describe("a retained index that cannot be trusted", () => {
       observedOutsideScope: 0,
       build: { completeness: "unavailable" },
       tests: { completeness: "unavailable" },
+      diagnostics: { completeness: "unavailable" },
+      fullMessages: {},
+      toolchain: { developerDirectory: "/x", xcodeVersion: "26.4.1", xcodeBuild: "17E202", xcresulttoolPath: "/x/t", xcresulttoolVersion: "24757", xcresulttoolDigest: "d", schemaVersion: "0.1.0" },
       log: { availability: "unavailable", retainedBytesExact: false },
       bundleDigestVerified: "unknown",
     })

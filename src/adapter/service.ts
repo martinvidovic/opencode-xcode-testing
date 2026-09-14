@@ -14,7 +14,7 @@
 
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs"
+import { closeSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs"
 import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../domain/request.ts"
@@ -26,7 +26,17 @@ import type { InspectionResponse, InspectRunRequest } from "../domain/inspection
 import { interpretRun } from "../interpreter/interpret.ts"
 import { INDEX_VERSION, isNormalizedIndex, type NormalizedIndex } from "../interpreter/index-model.ts"
 import { DECODER_VERSION, REQUESTED_SCHEMA_VERSION } from "../interpreter/schema.ts"
-import { inspectIndex } from "../interpreter/paging.ts"
+import { decodeTestDetails } from "../interpreter/decode.ts"
+import type { LazyOutcome } from "../interpreter/focus.ts"
+import { toolchainIdentityMatches } from "../interpreter/ports.ts"
+import type { LogWindow } from "../interpreter/log.ts"
+import {
+  inspectIndex,
+  inspectLog,
+  logAvailability,
+  resolveLogWindow,
+  type FacetPage,
+} from "../interpreter/paging.ts"
 import type { XcresultTool } from "../interpreter/ports.ts"
 import { SUPERVISOR_STARTUP_DEADLINE_MS } from "../runner/supervisor.ts"
 import { createXcresultTool } from "../interpreter/xcresulttool.ts"
@@ -42,6 +52,7 @@ import {
   createPrivateDirectory,
   createRunDirectory,
   isRunId,
+  openPrivateFile,
   readPrivateFile,
   RUN_ARTIFACTS,
   runDirectory,
@@ -153,7 +164,7 @@ export function createTestToolService(environment: ServiceEnvironment): TestTool
     },
 
     inspect(request) {
-      return Promise.resolve(inspectRetained(environment, request))
+      return inspectRetained(environment, request)
     },
 
     async recover() {
@@ -339,7 +350,7 @@ async function superviseAndInterpret(
       environment,
       runnerFailureSummary(environment, input, supervision.message, supervision.phase),
     )
-    publishTerminal(environment, input.record, summary, emptyIndex(input.record.runId))
+    publishTerminal(environment, input.record, summary, emptyIndex(environment, input.record.runId))
     return summary
   }
 
@@ -471,7 +482,7 @@ export const INDEX_ARTIFACT = "index.json"
  * inspecting the run is told there is no retained evidence, rather than told
  * the run does not exist.
  */
-function emptyIndex(runId: string): NormalizedIndex {
+function emptyIndex(environment: ServiceEnvironment, runId: string): NormalizedIndex {
   return {
     indexVersion: INDEX_VERSION,
     runId,
@@ -487,6 +498,9 @@ function emptyIndex(runId: string): NormalizedIndex {
     observedOutsideScope: 0,
     build: { completeness: "unavailable" },
     tests: { completeness: "unavailable" },
+    diagnostics: { completeness: "unavailable" },
+    fullMessages: {},
+    toolchain: environment.toolchain,
     log: { availability: "unavailable", retainedBytesExact: false },
     bundleDigestVerified: "unknown",
   }
@@ -574,7 +588,7 @@ export async function finalizeRecovered(
     // be written — fabricating one would look authoritative and be wrong. An
     // empty index is still published, so inspection answers "nothing retained"
     // rather than "never known", and the artifacts stay for review.
-    publishIndexOnly(environment, current, emptyIndex(runId))
+    publishIndexOnly(environment, current, emptyIndex(environment, runId))
     releaseOwnership(environment, runId)
     return
   }
@@ -869,10 +883,10 @@ function runSupervisor(
 
 // --- inspection -----------------------------------------------------------
 
-function inspectRetained(
+async function inspectRetained(
   environment: ServiceEnvironment,
   request: InspectRunRequest,
-): InspectionResponse<unknown> {
+): Promise<InspectionResponse<unknown>> {
   // A handle that cannot address storage names nothing, and is answered as
   // such. It never reaches the filesystem, so there is no traversal to
   // defend against further down.
@@ -920,7 +934,214 @@ function inspectRetained(
     return { status: "invalid", message: "the retained index does not belong to this Test Run" }
   }
 
-  return inspectIndex(parsed, request, environment.cursorSecret) as InspectionResponse<unknown>
+  if (request.facet === "log") {
+    return inspectRetainedLog(environment, parsed, request) as InspectionResponse<unknown>
+  }
+
+  const lazy =
+    request.diagnosticId === undefined && request.testId === undefined
+      ? undefined
+      : await lazyDetailFor(environment, parsed, request)
+
+  return inspectIndex(
+    parsed,
+    request,
+    environment.cursorSecret,
+    environment.trustedRoot,
+    lazy,
+  ) as InspectionResponse<unknown>
+}
+
+/**
+ * Detail read from the Result Bundle, under #8's lazy contract.
+ *
+ * Three things can go wrong and they are three different answers, which is the
+ * whole point of returning an outcome rather than `undefined`:
+ *
+ * - **The installation is gone or is no longer the one that wrote the bundle.**
+ *   `unsupported`. A different Xcode may decode the same file differently and
+ *   silently, and #8's identity includes the binary digest precisely because a
+ *   path-and-version match is not enough.
+ * - **The right toolchain ran and could not finish the job.** `incomplete`,
+ *   with an annotation — an expired deadline and an ambiguous association are
+ *   both this, and they ask different things of a caller.
+ * - **It worked.** `available`.
+ *
+ * None of it can touch the published summary, counts, or outcome: the index is
+ * immutable and ordinary paging never comes here.
+ */
+async function lazyDetailFor(
+  environment: ServiceEnvironment,
+  index: NormalizedIndex,
+  request: InspectRunRequest,
+): Promise<LazyOutcome> {
+  // One fixed monotonic deadline covering toolchain verification, digest
+  // verification and extraction together, per #8. Checked between steps, so a
+  // step that finishes late cannot spend the next one's budget.
+  const deadline = environment.now() + LAZY_DEADLINE_MS
+  const expired = () => environment.now() >= deadline
+
+  const occurrence = occurrenceFor(index, request)
+  if (occurrence.status !== "found") return occurrence.outcome
+
+  const bundlePath = join(
+    runDirectory(environment.storage, index.runId),
+    RUN_ARTIFACTS.resultBundle,
+  )
+  // Gone, not wrong: the indexed view is still entirely readable, and only
+  // the part that would have come from the bundle is missing. `unsupported`
+  // is reserved for a toolchain that must not read it.
+  if (!existsSync(bundlePath)) return INCOMPLETE_NO_BUNDLE
+
+  const tool = readerFor(environment, bundlePath)
+  // The identity recorded when the index was written, not the one this reader
+  // happens to carry. Comparing a value with itself verifies nothing.
+  if (!toolchainIdentityMatches(tool.identity, index.toolchain)) return { status: "unsupported" }
+  if (expired()) return TIMED_OUT
+
+  // Re-verified now, not read off the stabilization flag: the question is
+  // whether the bundle is *still* the one the index describes. #8 is explicit
+  // that verification is never skipped, only reported as unfinished.
+  const record = readRunRecord(environment.storage, index.runId)
+  if (record?.bundleDigest === undefined) return INCOMPLETE_DIGEST
+  const digest = bundleDigest(bundlePath, Math.max(0, deadline - environment.now()))
+  if (digest === undefined) return TIMED_OUT
+  if (digest !== record.bundleDigest) return INCOMPLETE_MUTATED
+  if (expired()) return TIMED_OUT
+
+  const response = await tool.run(
+    "get test-results test-details",
+    Math.max(0, deadline - environment.now()),
+    occurrence.subject,
+  )
+  if (!response.ok) return { status: "incomplete", annotation: response.message }
+
+  const decoded = decodeTestDetails(response.payload)
+  if (!decoded.ok) return { status: "incomplete", annotation: decoded.message }
+
+  return {
+    status: "available",
+    detail: {
+      activities: decoded.value.activities,
+      attachments: decoded.value.attachments,
+    },
+  }
+}
+
+const TIMED_OUT: LazyOutcome = {
+  status: "incomplete",
+  annotation: "the lazy detail deadline expired before the detail could be read",
+}
+const INCOMPLETE_NO_BUNDLE: LazyOutcome = {
+  status: "incomplete",
+  annotation: "the Result Bundle is no longer retained, so no further detail can be read from it",
+}
+const INCOMPLETE_DIGEST: LazyOutcome = {
+  status: "incomplete",
+  annotation: "no bundle digest was recorded for this Test Run, so detail cannot be trusted to describe it",
+}
+const INCOMPLETE_MUTATED: LazyOutcome = {
+  status: "incomplete",
+  annotation: "the Result Bundle no longer matches the digest recorded for this Test Run",
+}
+
+/**
+ * The one occurrence a focused request is about, and the Xcode identifier that
+ * addresses it.
+ *
+ * #8 associates detail to occurrences by recorded configuration and device
+ * IDs, then by canonical identity — and requires that **exactly one** retained
+ * match attaches it. A canonical identity may repeat across occurrences (the
+ * same test on two devices is two occurrences), so an ambiguous match returns
+ * `incomplete` rather than attaching a sibling occurrence's detail to this one.
+ */
+function occurrenceFor(
+  index: NormalizedIndex,
+  request: InspectRunRequest,
+):
+  | { status: "found"; subject: string }
+  | { status: "unresolved"; outcome: LazyOutcome } {
+  const testId =
+    request.testId ??
+    index.testFailures.find((entry) => entry.id === request.diagnosticId)?.testId
+
+  const occurrence = index.occurrences.find((entry) => entry.id === testId)
+  if (occurrence === undefined) {
+    // A build error belongs to no occurrence, and nothing in the bundle's
+    // test details describes it. That is not a failure to read anything.
+    return { status: "unresolved", outcome: { status: "incomplete", annotation: NO_ASSOCIATION } }
+  }
+
+  const siblings = index.occurrences.filter(
+    (entry) =>
+      entry.identity.canonical === occurrence.identity.canonical &&
+      entry.configurationId === occurrence.configurationId &&
+      entry.deviceId === occurrence.deviceId,
+  )
+  if (siblings.length !== 1) {
+    return { status: "unresolved", outcome: { status: "incomplete", annotation: AMBIGUOUS } }
+  }
+
+  return { status: "found", subject: occurrence.identity.canonical }
+}
+
+const NO_ASSOCIATION = "this diagnostic is not associated with a retained test occurrence"
+const AMBIGUOUS =
+  "more than one retained occurrence matches this test's configuration, device and identity"
+
+/**
+ * One bounded window of the retained raw log.
+ *
+ * The window is resolved before the file is opened and only those bytes are
+ * read: a retained log can be gigabytes, and "read it, then return a slice" is
+ * the one implementation that cannot be made to fit the response cap.
+ */
+function inspectRetainedLog(
+  environment: ServiceEnvironment,
+  index: NormalizedIndex,
+  request: InspectRunRequest,
+): InspectionResponse<FacetPage> {
+  const resolved = resolveLogWindow(index, request, environment.cursorSecret)
+  if (!resolved.ok) return resolved.response
+
+  // Asked before the file is opened. "No log was ever retained" and "the
+  // retained log is gone" are different answers, and only the index can tell
+  // them apart — a missing file looks identical from the filesystem.
+  const unavailable = logAvailability(index)
+  if (unavailable !== undefined) return unavailable
+
+  let read: { bytes: Buffer; totalBytes: number }
+  try {
+    read = readLogWindow(
+      join(runDirectory(environment.storage, request.runId), RUN_ARTIFACTS.rawLog),
+      resolved.window,
+    )
+  } catch (error) {
+    // The index said the log was retained and it is not readable now. That is
+    // a retained artifact that stopped being one, not a facet this run never
+    // had, so it reads as expiry rather than as "unsupported".
+    if (error instanceof UnsafeArtifactError) {
+      return { status: "invalid", message: "the retained log for this Test Run is not trustworthy" }
+    }
+    return { status: "expired" }
+  }
+
+  return inspectLog(index, read.bytes, resolved.window, read.totalBytes, environment.cursorSecret)
+}
+
+/** Read the window, from a descriptor validated as private. */
+function readLogWindow(path: string, window: LogWindow): { bytes: Buffer; totalBytes: number } {
+  const handle = openPrivateFile(path)
+  try {
+    const totalBytes = handle.size
+    if (window.byteOffset >= totalBytes) return { bytes: Buffer.alloc(0), totalBytes }
+
+    const bytes = Buffer.alloc(Math.min(window.maxBytes, totalBytes - window.byteOffset))
+    const read = readSync(handle.fd, bytes, 0, bytes.length, window.byteOffset)
+    return { bytes: bytes.subarray(0, read), totalBytes }
+  } finally {
+    closeSync(handle.fd)
+  }
 }
 
 function tombstoneExists(storage: Storage, runId: string): boolean {
@@ -1004,6 +1225,16 @@ function stabilize(
  * digest that never finishes must not hold a run open.
  */
 export const DIGEST_BUDGET_MS = 30_000
+
+/**
+ * One fixed monotonic deadline per lazy detail operation, per #8.
+ *
+ * It covers toolchain verification, digest verification and extraction
+ * together rather than each separately, because the caller is waiting on the
+ * whole operation and dividing the budget would let three steps that each
+ * finished "in time" take three times as long.
+ */
+export const LAZY_DEADLINE_MS = 60_000
 
 /**
  * A deterministic content digest (#8): recursive, name-ordered, and dependent

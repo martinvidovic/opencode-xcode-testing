@@ -38,7 +38,12 @@ export type XcresultResponse =
  */
 export type XcresultTool = {
   identity: ToolchainIdentity
-  run(command: XcresultCommand, budgetMs: number): Promise<XcresultResponse>
+  /**
+   * `subject` is the one command argument that is not fixed: the Xcode test
+   * identifier a detail read is about. It comes from Xcode's own payload, and
+   * never from a request.
+   */
+  run(command: XcresultCommand, budgetMs: number, subject?: string): Promise<XcresultResponse>
 }
 
 /**
