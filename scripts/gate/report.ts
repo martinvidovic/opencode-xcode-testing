@@ -28,6 +28,20 @@ export type RunReport = {
   schemaVersion: 1
   startedAt: string
   finishedAt: string
+  /**
+   * The suites this invocation selected, whether or not any of them ran.
+   *
+   * Recorded because "passed" means nothing without it: a report that listed
+   * only the scenarios that executed could not distinguish a full gate from
+   * one that selected a single suite, and the difference is the whole claim.
+   */
+  selected: string[]
+  /**
+   * Whether a real project was supplied. Deliberately a boolean: a project
+   * path is a private fact about someone's machine, and the report says that
+   * the standing gate was not what ran without naming where it ran instead.
+   */
+  project?: boolean
   /** The observed toolchain identity facts (#8), minus the private digest. */
   toolchain: {
     xcodeVersion: string
@@ -63,6 +77,7 @@ export function renderReport(report: RunReport, path: string): string {
   const lines = [
     `acceptance gate: ${report.outcome}`,
     "",
+    `selected       ${report.selected.join(", ")}${report.project === true ? " (against a supplied project)" : ""}`,
     `toolchain      Xcode ${report.toolchain.xcodeVersion} (${report.toolchain.xcodeBuild}), xcresulttool ${report.toolchain.xcresulttoolVersion}, schema ${report.toolchain.schemaVersion}`,
     `host           OpenCode ${report.hostVersion}`,
     `runtime        ${report.runtime.path}${report.runtime.version === undefined ? "" : ` (${report.runtime.version})`} [${report.runtime.source}]`,
@@ -74,6 +89,8 @@ export function renderReport(report: RunReport, path: string): string {
     "",
     "scenarios:",
   ]
+
+  if (report.scenarios.length === 0) lines.push("  (none ran)")
 
   for (const scenario of report.scenarios) {
     const mark = scenario.status === "passed" ? "ok  " : scenario.status === "failed" ? "FAIL" : "skip"

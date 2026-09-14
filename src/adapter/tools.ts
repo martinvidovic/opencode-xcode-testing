@@ -97,7 +97,14 @@ export type ToolContext = {
 
 export type ToolDeps = {
   service: TestToolService
-  budget?: Budget
+  /**
+   * The effective output budget, resolved on first use.
+   *
+   * A function rather than a value because it depends on a host call the
+   * plugin factory must not make: asking the host anything while it is still
+   * bootstrapping the plugin deadlocks it.
+   */
+  budget?: () => Promise<Budget>
   /** Monotonic, for the abort wait and for elapsed metadata. */
   now(): number
   sleep(ms: number): Promise<void>
@@ -113,7 +120,7 @@ export async function executeTest(
   deps: ToolDeps,
 ): Promise<string> {
   const request = toTestRunRequest(args)
-  const budget = deps.budget ?? DEFAULT_BUDGET
+  const budget = await resolveDeps(deps)
   const startedAt = deps.now()
 
   const publish = (state: ProtocolState, runId?: string) => {
@@ -232,6 +239,11 @@ export function pendingCancellation(
  * whose result lands in session history, so completing it is strictly more
  * useful than discarding it — this is adapter behavior, not a contract change.
  */
+/** The budget for this call, defaulting when the host told us nothing. */
+async function resolveDeps(deps: ToolDeps): Promise<Budget> {
+  return deps.budget === undefined ? DEFAULT_BUDGET : await deps.budget()
+}
+
 export async function executeInspect(
   args: InspectArguments,
   _context: ToolContext,
@@ -239,7 +251,7 @@ export async function executeInspect(
 ): Promise<string> {
   const request = toInspectRunRequest(args)
   const response = await deps.service.inspect(request)
-  return serialize(renderInspection(request, response), deps.budget ?? DEFAULT_BUDGET).text
+  return serialize(renderInspection(request, response), await resolveDeps(deps)).text
 }
 
 export function renderInspection(
@@ -367,7 +379,7 @@ export async function executeRecover(
       block(PRIORITY.envelope, `Recovery: ${outcome.status}`),
       block(PRIORITY.reason, ...(outcome.message === undefined ? [] : ["", outcome.message])),
     ],
-    deps.budget ?? DEFAULT_BUDGET,
+    await resolveDeps(deps),
   ).text
 }
 

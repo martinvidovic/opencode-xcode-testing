@@ -42,6 +42,104 @@ export type FreshnessReport = {
   observed: ObservedToolchain
   drift: Drift[]
   fixturesChecked: number
+  /** What a real bundle actually produced, when one was available to read. */
+  bundle?: BundleExamination
+}
+
+/**
+ * The shapes a real Result Bundle yields, per classification-critical command.
+ *
+ * Version strings are indirect evidence: they say the toolchain moved, not
+ * that anything the decoders rely on did. This is the direct evidence — the
+ * commands run against a bundle this machine's Xcode just produced, and the
+ * top-level keys each payload came back with. A command that stops answering,
+ * or a payload that loses a key the decoders read, is drift that no version
+ * comparison would have caught.
+ */
+export type BundleExamination = {
+  status: "examined" | "unavailable"
+  /** Why nothing was examined, when that is the answer. */
+  reason?: string
+  commands: Array<{
+    command: string
+    status: "decoded" | "failed"
+    /** Top-level keys observed, so a shape change is visible in the report. */
+    keys?: string[]
+    message?: string
+  }>
+  /** Keys the decoders read that a real payload no longer carries. */
+  missingKeys: string[]
+}
+
+/**
+ * The top-level keys each decoder reads. Kept here rather than imported from
+ * the decoders so that a decoder quietly dropping one shows up as drift
+ * instead of silently agreeing with itself.
+ */
+const REQUIRED_KEYS: Record<string, string[]> = {
+  "get content-availability": ["hasTestResults"],
+  "get build-results": ["errorCount", "warningCount"],
+  "get test-results tests": ["testNodes"],
+  "get test-results summary": ["result"],
+}
+
+/**
+ * Read a real Result Bundle with the same commands interpretation uses.
+ *
+ * Non-fatal like everything else here: an absent bundle is reported as one,
+ * never as a failure. The gate generates a bundle as a side effect of running
+ * its scenarios, and examining that one is both cheaper and more honest than
+ * generating another that nothing else ever looked at.
+ */
+export function examineBundle(
+  bundlePath: string | undefined,
+  run: (command: string, args: string[]) => { status: number | null; stdout: string } = execute,
+): BundleExamination {
+  if (bundlePath === undefined) {
+    return { status: "unavailable", reason: "no Result Bundle was produced by this run", commands: [], missingKeys: [] }
+  }
+
+  const commands: BundleExamination["commands"] = []
+  const missingKeys: string[] = []
+
+  for (const [command, required] of Object.entries(REQUIRED_KEYS)) {
+    const result = run("/usr/bin/xcrun", [
+      "xcresulttool",
+      ...command.split(" "),
+      "--path",
+      bundlePath,
+      "--format",
+      "json",
+      "--schema-version",
+      "0.1.0",
+    ])
+
+    if (result.status !== 0) {
+      commands.push({ command, status: "failed", message: firstLine(result.stdout) })
+      missingKeys.push(...required.map((key) => `${command}.${key}`))
+      continue
+    }
+
+    let payload: unknown
+    try {
+      payload = JSON.parse(result.stdout)
+    } catch {
+      commands.push({ command, status: "failed", message: "the payload was not JSON" })
+      missingKeys.push(...required.map((key) => `${command}.${key}`))
+      continue
+    }
+
+    const keys =
+      typeof payload === "object" && payload !== null ? Object.keys(payload).sort() : []
+    commands.push({ command, status: "decoded", keys })
+    missingKeys.push(...required.filter((key) => !keys.includes(key)).map((key) => `${command}.${key}`))
+  }
+
+  return { status: "examined", commands, missingKeys: missingKeys.sort() }
+}
+
+function firstLine(text: string): string {
+  return (text.split("\n")[0] ?? "").trim().slice(0, 200)
 }
 
 type FixtureProvenance = {
@@ -159,7 +257,11 @@ export function render(report: FreshnessReport): string {
     return `freshness: unavailable — ${report.observed.unavailable ?? "the toolchain could not be observed"}\n`
   }
   if (report.status === "fresh") {
-    return `freshness: fresh — ${report.fixturesChecked} fixtures match the observed toolchain\n`
+    const examined =
+      report.bundle?.status === "examined"
+        ? `, and a real Result Bundle carried every shape they rely on`
+        : ""
+    return `freshness: fresh — ${report.fixturesChecked} fixtures match the observed toolchain${examined}\n`
   }
 
   const lines = [`freshness: drifted — ${report.drift.length} fact(s) no longer match`]
@@ -169,11 +271,27 @@ export function render(report: FreshnessReport): string {
       `    affected: ${entry.affectedFixtures.join(", ")}`,
     )
   }
+  for (const key of report.bundle?.missingKeys ?? []) {
+    lines.push(`  a real Result Bundle no longer carries ${key}`)
+  }
   return `${lines.join("\n")}\n`
 }
 
-export function runFreshnessCheck(directory = DEFAULT_FIXTURE_DIR): FreshnessReport {
-  return compare(observeToolchain(), readFixtureProvenance(directory))
+export function runFreshnessCheck(
+  options: { directory?: string; bundle?: BundleExamination } = {},
+): FreshnessReport {
+  const directory = options.directory ?? DEFAULT_FIXTURE_DIR
+  const report = compare(observeToolchain(), readFixtureProvenance(directory))
+  // Examined by whoever produced the bundle, while it still existed.
+  const bundle = options.bundle ?? examineBundle(undefined)
+
+  return {
+    ...report,
+    bundle,
+    // A payload that lost a key the decoders read is drift, whatever the
+    // version strings say — and it is the kind that actually breaks things.
+    status: bundle.missingKeys.length > 0 ? "drifted" : report.status,
+  }
 }
 
 if (import.meta.main) {
@@ -181,7 +299,7 @@ if (import.meta.main) {
   const at = argv.indexOf("--fixtures")
   const directory = at === -1 ? DEFAULT_FIXTURE_DIR : (argv[at + 1] ?? DEFAULT_FIXTURE_DIR)
 
-  const report = runFreshnessCheck(directory)
+  const report = runFreshnessCheck({ directory })
   process.stdout.write(argv.includes("--json") ? `${JSON.stringify(report, null, 2)}\n` : render(report))
 
   // Non-fatal by design: drift is surfaced, never a reason to fail the gate.

@@ -38,6 +38,17 @@ export type ExecutionOptions = {
   toolchain: ToolchainIdentity
   runtimePath: string
   destination: Destination
+  /**
+   * A locally owned real project.
+   *
+   * (b2) drives the *host*, and every scenario here asserts a rendered
+   * contract — the exact outcome text, the budget, the shape of an inspection.
+   * Those assertions are about generated projects with known outcomes, so a
+   * supplied project is deliberately not run here; Layer 4 is where it adds
+   * its report-only evidence. Accepted so the option can be forwarded
+   * uniformly rather than being silently dropped by one layer.
+   */
+  project?: string
 }
 
 type Client = {
@@ -155,9 +166,15 @@ async function scenarios(
     args: scope("NoSuchSuiteExists"),
   })
   results.push(
-    zeroMatch.includes("Test Run passed")
-      ? failure("b2 zero-match", "a run that matched no tests rendered as passed")
-      : success("b2 zero-match", firstLine(zeroMatch)),
+    // The exact contract, rendered. "Not passed" would be satisfied by any
+    // wrong answer at all, and a caller reading this text needs to be told
+    // their *selection* was the problem rather than their code.
+    /infrastructureFailed/.test(zeroMatch) && /scopeMismatch/.test(zeroMatch)
+      ? success("b2 zero-match", firstLine(zeroMatch))
+      : failure(
+          "b2 zero-match",
+          `expected infrastructureFailed/scopeMismatch, rendered: ${firstLine(zeroMatch)}`,
+        ),
   )
 
   const buildFailed = await invoke(client, stub, roots.broken, {
@@ -174,14 +191,53 @@ async function scenarios(
       tool: "xcode_test_inspect",
       args: { runId, facet: "failures" },
     })
+    results.push(inspectionResult(inspected, runId))
+
+    // The log facet reads a file rather than the index, and is the one facet
+    // whose content is untrusted. Both facts have to survive the round trip
+    // through the host, or a model reads project output as instruction.
+    const logged = await invoke(client, stub, roots.passing, {
+      tool: "xcode_test_inspect",
+      args: { runId, facet: "log", maxBytes: 4096 },
+    })
     results.push(
-      inspected.includes("available") || inspected.includes("incomplete")
-        ? success("b2 inspection without rerun", firstLine(inspected))
-        : failure("b2 inspection without rerun", firstLine(inspected)),
+      /untrusted/i.test(logged) && /bytes\s+\d+\.\./.test(logged)
+        ? success("b2 log facet", firstLine(logged))
+        : failure(
+            "b2 log facet",
+            `expected a byte-ranged chunk labelled untrusted, rendered: ${firstLine(logged)}`,
+          ),
     )
   }
 
   return results
+}
+
+/**
+ * What an inspection of a failing run must have rendered.
+ *
+ * Substring-matching "available" would pass on the word appearing anywhere,
+ * including inside a diagnostic explaining that nothing is available. The
+ * assertions here are about the answer's shape: the run it is about, the facet
+ * asked for, and at least one record actually read back.
+ */
+function inspectionResult(rendered: string, runId: string): ScenarioResult {
+  if (!rendered.includes(runId)) {
+    return failure("b2 inspection without rerun", "the response named a different run")
+  }
+  if (!/Inspection of failures/.test(rendered)) {
+    return failure("b2 inspection without rerun", `not a failures inspection: ${firstLine(rendered)}`)
+  }
+
+  const records = /records \((\d+)\)/.exec(rendered)
+  if (records === null) {
+    return failure("b2 inspection without rerun", `no records section: ${firstLine(rendered)}`)
+  }
+  if (Number.parseInt(records[1] as string, 10) === 0) {
+    return failure("b2 inspection without rerun", "a failing run inspected to zero failure records")
+  }
+
+  return success("b2 inspection without rerun", `${firstLine(rendered)} — ${records[0]}`)
 }
 
 /** Script one call, drive one turn, and return the rendered tool output. */
