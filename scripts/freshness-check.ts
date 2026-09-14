@@ -50,6 +50,18 @@ export type FreshnessReport = {
   fixturesChecked: number
   /** What a real bundle actually produced, when one was available to read. */
   bundle?: BundleExamination
+  /**
+   * How far this check got.
+   *
+   * `status` is a verdict — fresh, drifted — and a verdict reads the same
+   * whether or not the check finished making it. The two halves have very
+   * different costs: comparing version strings is immediate, and examining a
+   * bundle may build an Xcode project and take minutes. A report of the first
+   * half alone is worth keeping and must not be mistaken for the whole thing,
+   * so it says which it is rather than leaving a reader to infer it from an
+   * absent `bundle`.
+   */
+  stage: "comparison" | "complete"
 }
 
 /**
@@ -282,7 +294,7 @@ export function compare(
   const fixturesChecked = Object.keys(provenance).length
 
   if (observed.unavailable !== undefined) {
-    return { status: "unavailable", observed, drift: [], fixturesChecked }
+    return { status: "unavailable", observed, drift: [], fixturesChecked, stage: "comparison" }
   }
 
   const drift: Drift[] = []
@@ -309,6 +321,9 @@ export function compare(
   }
 
   return {
+    // `compare` answers the version-string half and nothing else, so what it
+    // returns is a comparison. Only `runFreshnessCheck` can call it complete.
+    stage: "comparison",
     status: drift.length === 0 ? "fresh" : "drifted",
     observed,
     drift: drift.sort((a, b) => a.fact.localeCompare(b.fact)),
@@ -321,6 +336,13 @@ function sameMajor(a: string, b: string): boolean {
 }
 
 export function render(report: FreshnessReport): string {
+  // Said first, because everything below it is a verdict and a verdict from an
+  // unfinished check reads exactly like one from a finished check.
+  const unfinished =
+    report.stage === "comparison" && report.status !== "unavailable"
+      ? " (version strings only; the bundle was not examined)"
+      : ""
+
   if (report.status === "unavailable") {
     return `freshness: unavailable — ${report.observed.unavailable ?? "the toolchain could not be observed"}\n`
   }
@@ -329,10 +351,10 @@ export function render(report: FreshnessReport): string {
       report.bundle?.status === "examined"
         ? `, and a real Result Bundle carried every shape they rely on`
         : ""
-    return `freshness: fresh — ${report.fixturesChecked} fixtures match the observed toolchain${examined}\n`
+    return `freshness: fresh — ${report.fixturesChecked} fixtures match the observed toolchain${examined}${unfinished}\n`
   }
 
-  const lines = [`freshness: drifted — ${report.drift.length} fact(s) no longer match`]
+  const lines = [`freshness: drifted — ${report.drift.length} fact(s) no longer match${unfinished}`]
   for (const entry of report.drift) {
     lines.push(
       `  ${entry.fact}: fixtures expect ${entry.expected}, this machine reports ${entry.observed}`,
@@ -357,14 +379,18 @@ export function runFreshnessCheck(
      * The comparison is cheap and already true; the bundle examination is
      * neither. Without this, a caller whose run ends during the second half
      * has nothing to show for the first, and reports the whole check as
-     * unobserved — which says nobody looked, when somebody did.
+     * unobserved — which says nobody looked, when somebody did. What it is
+     * handed is marked `stage: "comparison"`, so it cannot be read as a
+     * finished check.
      */
-    record?: (partial: FreshnessReport) => void
+    record?: (comparison: FreshnessReport) => void
   } = {},
 ): FreshnessReport {
   const directory = options.directory ?? DEFAULT_FIXTURE_DIR
   const report = compare(observeToolchain(), readFixtureProvenance(directory))
-  options.record?.({ ...report })
+  // A real snapshot: the arrays are copied too, so what was recorded stays
+  // what was recorded whatever happens to `report` afterwards.
+  options.record?.({ ...report, drift: [...report.drift], stage: "comparison" })
 
   // Examined by whoever produced the bundle, while it still existed —
   // otherwise produced here, so the check is never version strings alone.
@@ -375,6 +401,7 @@ export function runFreshnessCheck(
   return {
     ...report,
     bundle,
+    stage: "complete",
     // A payload that lost a key the decoders read is drift, whatever the
     // version strings say — and it is the kind that actually breaks things.
     status: bundle.missingKeys.length > 0 ? "drifted" : report.status,

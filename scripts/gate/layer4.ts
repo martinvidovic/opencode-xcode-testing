@@ -52,28 +52,23 @@ export type Layer4Options = ExecutionContext & {
 const SUPERVISOR_ENTRYPOINT = join(import.meta.dir, "..", "..", "src", "runner", "supervisor-entry.ts")
 
 /**
- * The scenarios, and what a real Result Bundle they produced actually
- * contained.
+ * Run the Layer 4 scenarios against a real simulator.
  *
- * The **examination** travels out, not the path. Every artifact this function
- * creates lives in a workspace it deletes on the way out, so a path handed to
- * a later caller would name a directory that no longer exists — which is
- * exactly the bug the first version of this had, and which the gate's own
- * report caught.
- */
-export type Layer4Outcome = { bundle?: BundleExamination }
-
-/**
- * `record` is called as each scenario finishes, not once at the end.
+ * `record` is called as each scenario finishes, not once at the end. This
+ * suite drives real `xcodebuild` invocations, so it is the likeliest place in
+ * the gate for something to throw — and every scenario before the throw is a
+ * fact about this machine that stays true.
  *
- * This suite runs real `xcodebuild` invocations against a real simulator, so
- * it is the likeliest place in the gate for something to throw — and every
- * scenario before the throw is a fact about this machine that stays true.
+ * What comes back is the **examination** of the Result Bundle, not its path.
+ * Every artifact this function creates lives in a workspace it deletes on the
+ * way out, so a path handed to a later caller would name a directory that no
+ * longer exists — exactly the bug the first version of this had, and which
+ * the gate's own report caught.
  */
 export async function runLayer4(
-  options: Layer4Options & { record: ScenarioSink },
-): Promise<Layer4Outcome> {
-  const { record } = options
+  options: Layer4Options,
+  record: ScenarioSink,
+): Promise<BundleExamination | undefined> {
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-gate-"))
   const homeDir = join(workspace, "home")
   mkdirSync(homeDir, { recursive: true })
@@ -158,7 +153,7 @@ export async function runLayer4(
 
     // Examined here, while the bundle still exists.
     const bundlePath = bundleOf(homeDir, passing, passed)
-    return bundlePath === undefined ? {} : { bundle: examineBundle(bundlePath) }
+    return bundlePath === undefined ? undefined : examineBundle(bundlePath)
   } finally {
     rmSync(workspace, { recursive: true, force: true })
   }

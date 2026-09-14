@@ -22,13 +22,14 @@ import { join } from "node:path"
 
 import { main, recordUncaughtFailure } from "../../scripts/acceptance-gate.ts"
 import {
+  asSuite,
   newObservations,
   reportFrom,
   scenarioSink,
   UNOBSERVED_TOOLCHAIN,
   type Observations,
 } from "../../scripts/gate/observations.ts"
-import { runFreshnessCheck } from "../../scripts/freshness-check.ts"
+import { compare, render, runFreshnessCheck } from "../../scripts/freshness-check.ts"
 import { reportPathFor, writeReport, type RunReport } from "../../scripts/gate/report.ts"
 
 const STARTED_AT = "2026-09-14T01:00:00.000Z"
@@ -254,25 +255,51 @@ describe("a suite that throws part-way through", () => {
     ])
   })
 
-  test("distinguishes what passed, what failed, and what was never reached", () => {
-    // Three states, and the third is the absence of a record rather than a
-    // record saying nothing. `selected` is what makes it readable: a reader
-    // who knows b2 was selected and sees no b2 scenario knows the suite did
-    // not get there.
+  test("distinguishes what passed, what failed, and what was never reached", async () => {
+    // Three states. The first two are statuses; the third is absence — and
+    // absence is only legible because the report says which suites were
+    // entered and which of those finished. Four layer4 scenarios from a suite
+    // that completed is all there was; four from one that did not is four and
+    // then a stop.
     const observed = newObservations(STARTED_AT)
     observed.selected = ["layer4", "b2"]
     const record = scenarioSink(observed)
 
-    record({ name: "passing run", kind: "gating", status: "passed", detail: "passed" })
-    record({ name: "buildFailed", kind: "gating", status: "failed", detail: "expected 2 errors" })
+    await expect(
+      asSuite(observed, "layer4", async () => {
+        record({ name: "passing run", kind: "gating", status: "passed", detail: "passed" })
+        record({ name: "buildFailed", kind: "gating", status: "failed", detail: "2 errors" })
+        throw new Error("the simulator went away")
+      }),
+    ).rejects.toThrow()
 
     const report = reportFrom(observed, "failed", "Error: boom")
 
     expect(report.scenarios.filter((s) => s.status === "passed")).toHaveLength(1)
     expect(report.scenarios.filter((s) => s.status === "failed")).toHaveLength(1)
+
+    // layer4 was entered and did not finish: everything after `buildFailed`
+    // is work nobody did.
+    expect(report.suites).toEqual([{ suite: "layer4", entered: true, completed: false }])
+
+    // b2 was selected and never entered at all, which is a different fact
+    // from a b2 that ran and found nothing.
     expect(report.selected).toContain("b2")
-    expect(report.scenarios.some((s) => s.name.startsWith("b2"))).toBe(false)
+    expect(report.suites?.some((entry) => entry.suite === "b2")).toBe(false)
     expect(report.diagnostic).toBe("Error: boom")
+  })
+
+  test("marks a suite that got all the way through as completed", async () => {
+    const observed = newObservations(STARTED_AT)
+    const record = scenarioSink(observed)
+
+    await asSuite(observed, "b1", async () => {
+      record({ name: "b1 tool ids register", kind: "gating", status: "passed", detail: "" })
+    })
+
+    expect(reportFrom(observed, "passed").suites).toEqual([
+      { suite: "b1", entered: true, completed: true },
+    ])
   })
 
   test("cannot have its record reordered or removed by the suite writing to it", () => {
@@ -283,7 +310,6 @@ describe("a suite that throws part-way through", () => {
     const record = scenarioSink(observed)
 
     record({ name: "first", kind: "gating", status: "passed", detail: "" })
-    expect(Array.isArray(record)).toBe(false)
     expect(observed.scenarios.map((s) => s.name)).toEqual(["first"])
   })
 })
@@ -310,5 +336,20 @@ describe("a freshness check that begins and cannot finish", () => {
     const report = reportFrom(observed, "failed", "Error: the build went away")
     expect(report.freshness).not.toEqual({ status: "unobserved" })
     expect((report.freshness as { observed: unknown }).observed).toBeDefined()
+
+    // And it says it is only half a check. `status` is a verdict, and a
+    // verdict from an unfinished check reads exactly like one from a finished
+    // check — so the stage is what stops a reader trusting it as the whole.
+    expect((report.freshness as { stage: string }).stage).toBe("comparison")
+  })
+
+  test("says so in the text a person reads, not only in the JSON", () => {
+    const comparison = compare(
+      { xcodeVersion: "26.4.1", xcodeBuild: "17E202", xcresulttoolVersion: "24757", schemaVersion: "0.1.0" },
+      {},
+    )
+
+    expect(render(comparison)).toContain("the bundle was not examined")
+    expect(render({ ...comparison, stage: "complete" })).not.toContain("not examined")
   })
 })

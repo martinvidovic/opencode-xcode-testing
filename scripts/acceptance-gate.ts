@@ -31,6 +31,7 @@ import { runInstallationGate } from "./gate/installation.ts"
 import { runRegistrationGate } from "./gate/registration.ts"
 import { runExecutionGate } from "./gate/execution.ts"
 import {
+  asSuite,
   newObservations,
   reportFrom,
   scenarioSink,
@@ -69,8 +70,8 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   if (project !== undefined && suites.includes("layer4")) observed.project = true
   observed.hostVersion = observedHostVersion()
 
-  // Held by reference, so a scenario pushed here is a scenario the report has
-  // — including a report written from a `catch` three suites later.
+  // A read alias for the pass/fail decision below. Nothing pushes through it —
+  // the suites write through `record`, which is the only handle they get.
   const scenarios = observed.scenarios
 
   // Handed to every suite, so a scenario is in the report the moment it
@@ -164,21 +165,22 @@ export async function main(argv: string[], observed: Observations): Promise<numb
 
   let bundle: BundleExamination | undefined
   if (suites.includes("layer4") && context !== undefined) {
-    const outcome = await runLayer4({
-      ...context,
-      ...(project === undefined ? {} : { project }),
-      record,
-    })
-    bundle = outcome.bundle
+    // Wrapped so the report can tell "this suite ran four scenarios" from
+    // "this suite ran four scenarios and then stopped".
+    bundle = await asSuite(observed, "layer4", () =>
+      runLayer4({ ...context, ...(project === undefined ? {} : { project }) }, record),
+    )
   }
   if (suites.includes("b1")) {
-    await runRegistrationGate(record)
-    await runInstallationGate(record)
+    await asSuite(observed, "b1", async () => {
+      await runRegistrationGate(record)
+      await runInstallationGate(record)
+    })
   }
   if (suites.includes("b2") && context !== undefined) {
     // (b2) drives the host against generated projects with known outcomes, so
     // it takes the shared context and not the project override.
-    await runExecutionGate(context, record)
+    await asSuite(observed, "b2", () => runExecutionGate(context, record))
   }
 
   // A run that executed no gating scenario has verified nothing, whatever its

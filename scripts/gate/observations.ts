@@ -58,10 +58,40 @@ export type Observations = {
   destination?: RunReport["destination"]
   freshness?: unknown
   scenarios: ScenarioResult[]
+  /**
+   * Which selected suites were entered, and which of those got to the end.
+   *
+   * This is what makes an *unreached* scenario legible rather than merely
+   * absent. A reader seeing four layer4 scenarios cannot tell whether layer4
+   * ran four and stopped or ran four and that was all there was — and the
+   * difference is the whole question a failed report is asked. A suite marked
+   * `entered` with no `completed` beside it is a suite that was interrupted,
+   * and everything it would have done after its last recorded scenario is
+   * work nobody did.
+   */
+  suites: Array<{ suite: Suite; entered: true; completed: boolean }>
 }
 
 export function newObservations(startedAt: string): Observations {
-  return { startedAt, selected: [], scenarios: [] }
+  return { startedAt, selected: [], scenarios: [], suites: [] }
+}
+
+/**
+ * Run `work` as a suite, recording that it was entered and whether it ended.
+ *
+ * The two facts are written at different times on purpose: entry before the
+ * suite can throw, completion only once it has not.
+ */
+export async function asSuite<T>(
+  observed: Observations,
+  suite: Suite,
+  work: () => Promise<T>,
+): Promise<T> {
+  const entry = { suite, entered: true as const, completed: false }
+  observed.suites.push(entry)
+  const result = await work()
+  entry.completed = true
+  return result
 }
 
 /**
@@ -103,6 +133,7 @@ export function reportFrom(
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
     selected: observed.selected,
+    suites: observed.suites.map((entry) => ({ ...entry })),
     ...(observed.project === true ? { project: true } : {}),
     // Copied, never aliased. A shared object handed to every report is one
     // any reader could edit for all of them.
