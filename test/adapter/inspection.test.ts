@@ -238,6 +238,49 @@ describe("the response cap", () => {
   })
 
   test("always makes progress, even when one record is larger than the cap", async () => {
+    // Oversized in its *message*, which is display text: it shortens, and the
+    // record is still returned. Returning nothing here would freeze the cursor
+    // at this position forever, and the caller could never reach anything
+    // beyond it.
+    const enormous = [
+      {
+        id: "diag-1",
+        kind: "testFailure" as const,
+        message: `XCTAssertEqual failed${" and more".repeat(30_000)}`,
+        testId: "occ-1",
+        inspectionAvailable: true,
+      },
+    ]
+    await retained(
+      indexWith({ testFailures: enormous as NormalizedIndex["testFailures"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "failures" })
+        if (response.status !== "available") throw new Error("expected a page")
+
+        const records = (response.data as { records: Array<Record<string, unknown>> }).records
+        expect(records).toHaveLength(1)
+
+        // And it still fits: a mandatory record that cannot be dropped is
+        // shortened instead, never returned over the cap.
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
+        expect(response.truncation.fieldTruncated).toBe(true)
+
+        // What survives is what a caller acts on. A truncated id addresses
+        // nothing, and a truncated kind is a different kind.
+        expect(records[0]?.["id"]).toBe("diag-1")
+        expect(records[0]?.["kind"]).toBe("testFailure")
+        expect(records[0]?.["testId"]).toBe("occ-1")
+      },
+    )
+  })
+
+  test("never shortens a nested test name, cheap though it is to cut", async () => {
+    // Being nested is what made these the first strings to go: one level down
+    // inside a selection, they were simply the longest thing available. A
+    // halved test name is an `-only-testing` filter that runs nothing, which
+    // makes depth exactly the wrong basis for the decision.
     const enormous = [
       {
         selection: { bundle: "AppTests", suite: "S", test: `test${"x".repeat(200_000)}()` },
@@ -249,24 +292,14 @@ describe("the response cap", () => {
       indexWith({ attestations: enormous as NormalizedIndex["attestations"] }),
       async (inspect) => {
         const response = await inspect({ facet: "scope" })
-        if (response.status !== "available") throw new Error("expected a page")
+        if (response.status !== "incomplete") throw new Error("expected an incomplete page")
 
-        // Returning nothing would freeze the cursor at this position forever,
-        // and the caller could never reach anything beyond it.
-        const records = (response.data as { records: Array<Record<string, unknown>> }).records
-        expect(records).toHaveLength(1)
+        expect((response.data as { records: unknown[] }).records).toHaveLength(0)
+        expect(response.truncation.recordsOmitted).toBe(1)
 
-        // And it still fits: a mandatory record that cannot be dropped is
-        // shortened instead, never returned over the cap.
-        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
-          RESPONSE_BYTE_CAP,
-        )
-        expect(response.truncation.fieldTruncated).toBe(true)
-
-        // What survives is what a caller acts on. A truncated verdict would be
-        // a different verdict.
-        expect(records[0]?.["verdict"]).toBe("matched")
-        expect(records[0]?.["matchedTestCount"]).toBe(1)
+        // Progress is still made: the cursor accounts for it, so a caller
+        // asking again reaches what comes after rather than this page forever.
+        expect(response.truncation.hasMore).toBe(false)
       },
     )
   })
@@ -278,7 +311,12 @@ describe("the response cap", () => {
     // there. Absence is the honest answer, and the page says so.
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: `AppTests/Suite/test${"x".repeat(200_000)}()` },
+      identity: {
+        bundle: "AppTests",
+        suite: "Suite",
+        test: `test${"x".repeat(200_000)}()`,
+        canonical: `AppTests/Suite/test${"x".repeat(200_000)}()`,
+      },
       identityComplete: true,
       status: "passed" as const,
       position: "0",
@@ -305,6 +343,41 @@ describe("the response cap", () => {
         // And the cursor has moved past it: there is nothing after it here, so
         // the page is the last one rather than an empty one repeating forever.
         expect(response.truncation.hasMore).toBe(false)
+      },
+    )
+  })
+
+  test("never shortens a source identifier, which is how a reader finds the test in Xcode", async () => {
+    // Retained only when the Result Bundle spells the test differently from
+    // the canonical form, which makes it the one string that gets a reader
+    // from this tool's output back to Xcode's. Half of it gets them nowhere.
+    const occurrence = {
+      id: "occ-1",
+      identity: {
+        bundle: "AppTests",
+        suite: "LoginTests",
+        test: "testSignsIn()",
+        canonical: "AppTests/LoginTests/testSignsIn()",
+        sourceIdentifier: `AppTests/LoginTests/testSignsIn${"x".repeat(200_000)}`,
+      },
+      identityComplete: true,
+      status: "passed" as const,
+      position: "0",
+      attempts: [],
+      failures: [],
+    }
+
+    await retained(
+      indexWith({ occurrences: [occurrence] as NormalizedIndex["occurrences"] }),
+      async (inspect) => {
+        const response = await inspect({ facet: "tests" })
+        if (response.status !== "incomplete") throw new Error("expected an incomplete page")
+
+        expect((response.data as { records: unknown[] }).records).toHaveLength(0)
+        expect(response.truncation.recordsOmitted).toBe(1)
+        expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(
+          RESPONSE_BYTE_CAP,
+        )
       },
     )
   })
@@ -376,7 +449,12 @@ describe("bundle-backed detail", () => {
 
   const occurrence = {
     id: "occ-1",
-    identity: { canonical: "AppTests/LoginTests/testSignsIn()", test: "testSignsIn()" },
+    identity: {
+      bundle: "AppTests",
+      suite: "LoginTests",
+      test: "testSignsIn()",
+      canonical: "AppTests/LoginTests/testSignsIn()",
+    },
     identityComplete: true,
     status: "failed" as const,
     position: "0/0/0",

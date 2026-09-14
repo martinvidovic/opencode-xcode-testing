@@ -199,6 +199,14 @@ function fit<T extends { message?: string }>(view: T, truncation: TruncationStat
     }
   }
 
+  // Everything sheddable is gone and it still does not fit. What is left is
+  // the identity and the location, which are what a caller acts on and are
+  // never shortened — so the view goes back over the cap rather than back
+  // wrong. Saying so is the least that is owed: a response reporting nothing
+  // truncated while exceeding the one bound the contract fixes would be
+  // inaccurate in the direction a caller cannot check.
+  const overCap = !fits(current)
+
   return {
     focused: current as T,
     truncation: {
@@ -207,7 +215,7 @@ function fit<T extends { message?: string }>(view: T, truncation: TruncationStat
       // string was shortened is not a smaller inaccuracy than saying nothing.
       fieldTruncated: truncation.fieldTruncated || shortenedField,
       collectionTruncated: truncation.collectionTruncated || shedCollection,
-      responseTruncated: shedCollection || shortenedField,
+      responseTruncated: shedCollection || shortenedField || overCap,
     },
   }
 }

@@ -16,6 +16,7 @@
 
 import type { TestStatus } from "../domain/evidence.ts"
 import type { SafeLocation } from "../domain/inspection.ts"
+import { isIdentifier } from "../domain/json.ts"
 import { canonicalTestIdentity, type TestIdentity } from "../domain/scope.ts"
 import type { RawTestNode } from "./decode.ts"
 import { safeDisplayPath, safeLocationFromSourceURL } from "./locations.ts"
@@ -260,26 +261,29 @@ function deriveIdentity(
     reference?.suite === undefined ||
     selectable.suite === reference.suite
 
+  // `named`, not merely defined. A bundle node whose name is blank yields an
+  // identity that names nothing while claiming to be complete — and a complete
+  // identity is compared against every selection a caller made, agreeing with
+  // none of them, reporting a mismatch for a test that ran.
   const complete =
-    bundle !== undefined &&
+    isIdentifier(bundle) &&
     (selectable !== undefined || reference !== undefined) &&
     identifiersAgree &&
     (ancestry.suite === undefined || parsedSuite === undefined || ancestry.suite === parsedSuite)
 
-  const identity: TestIdentity = {
+  // Empty is absent. A component that came through as `""` is one Xcode did
+  // not give us, and writing it as a present-but-blank field would put a name
+  // in front of a reader that matches nothing and looks like it should.
+  const parts = {
     bundle: bundle ?? "",
-    ...(suite === undefined ? {} : { suite }),
-    test,
-    canonical: canonicalTestIdentity({
-      bundle: bundle ?? "",
-      ...(suite === undefined ? {} : { suite }),
-      test,
-    }),
+    ...(isIdentifier(suite) ? { suite } : {}),
+    ...(isIdentifier(test) ? { test } : {}),
   }
+  const identity: TestIdentity = { ...parts, canonical: canonicalTestIdentity(parts) }
 
   const source = node.nodeIdentifierURL ?? node.nodeIdentifier
   const canonicalSource = source === undefined ? undefined : stripIdentifierScheme(source)
-  if (canonicalSource !== undefined && canonicalSource !== identity.canonical) {
+  if (isIdentifier(canonicalSource) && canonicalSource !== identity.canonical) {
     identity.sourceIdentifier = canonicalSource
   }
 

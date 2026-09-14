@@ -185,30 +185,54 @@ function isToolchainIdentity(value: unknown): value is ToolchainIdentity {
  */
 function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
   if (!isRecord(value)) return false
+  // Read by attestation to decide whether identities can be matched at all,
+  // so a missing or non-boolean one silently changes what scope verdicts say.
+  if (typeof value.identityComplete !== "boolean") return false
+
   return (
     isIdentifier(value.id) &&
-    isTestIdentity(value.identity) &&
+    isTestIdentity(value.identity, value.identityComplete) &&
     oneOf(value.status, TEST_STATUSES) &&
-    typeof value.position === "string" &&
+    isIdentifier(value.position) &&
     isArrayOf(value.failures, isNormalizedFailure) &&
     isArrayOf(value.attempts, isAttempt) &&
-    // Read by attestation to decide whether identities can be matched at all,
-    // so a missing or non-boolean one silently changes what scope verdicts say.
-    typeof value.identityComplete === "boolean" &&
     (value.durationMs === undefined || isDuration(value.durationMs))
   )
 }
 
 /**
  * The identity a scope attestation is decided against, and the one a focused
- * view shows. Its optional parts are still typed when present: a `suite` that
- * is a number would reach a model as one.
+ * view shows.
+ *
+ * Every part of it is an identifier, so every part of it is checked for being
+ * *usable* rather than merely being a string. A `suite` that is a number would
+ * reach a model as one; a `suite` that is `""` would reach it as a name that
+ * matches nothing and looks like it should.
+ *
+ * `attestedComplete` is the occurrence's own claim about this identity, not a
+ * strictness setting a caller chooses. It decides which standard the identity
+ * is held to, because the two cases mean genuinely different things and the
+ * decoder must accept what the interpreter legitimately writes for each.
  */
-function isTestIdentity(value: unknown): boolean {
+function isTestIdentity(value: unknown, attestedComplete: boolean): boolean {
   if (!isRecord(value)) return false
-  if (!isIdentifier(value.canonical)) return false
-  return ["bundle", "suite", "test"].every(
-    (field) => value[field] === undefined || typeof value[field] === "string",
+
+  // The bundle and the canonical form are held to the standard the occurrence
+  // claims for itself. An identity that admits it is incomplete may name
+  // nothing at all — that is what the flag says, and attestation already
+  // refuses to match on it. One that claims completeness has no such excuse.
+  if (attestedComplete) {
+    if (!isIdentifier(value.bundle) || !isIdentifier(value.canonical)) return false
+  } else if (typeof value.bundle !== "string" || typeof value.canonical !== "string") {
+    return false
+  }
+
+  return ["suite", "test", "sourceIdentifier"].every(
+    // `sourceIdentifier` is the Result Bundle's own spelling of this test,
+    // retained only when it differs from the canonical one. It is what a
+    // reader uses to find the test in Xcode's own output, which makes it an
+    // identifier like the rest and not a display string.
+    (field) => value[field] === undefined || isIdentifier(value[field]),
   )
 }
 
@@ -224,9 +248,12 @@ function isNormalizedFailure(value: unknown): boolean {
 function isAttempt(value: unknown): boolean {
   if (!isRecord(value)) return false
   return (
-    // Attempts are ordered and shown by ordinal, so a zeroth or a `NaN`th
-    // attempt is one a caller cannot ask about again.
-    isPosition(value.ordinal) &&
+    // A count, because attempts are numbered from zero here — the first
+    // attempt is the zeroth. Requiring one instead reads as the stricter
+    // choice and is simply the wrong one: it rejects the ordinals the
+    // interpreter writes, and with them the whole index of any run that
+    // retried a test.
+    isCount(value.ordinal) &&
     oneOf(value.status, TEST_STATUSES) &&
     (value.durationMs === undefined || isDuration(value.durationMs))
   )
