@@ -135,6 +135,13 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
  * name says which selection a verdict is about. The cap is still absolute — a
  * record whose identifier alone is oversized is omitted rather than returned —
  * but it is met by leaving the record out, never by returning a corrupted one.
+ *
+ * **Nesting is not a demotion.** `suite`, `test` and `sourceIdentifier` sit
+ * one level down inside an identity or a selection, and being nested made them
+ * the cheapest strings in the record to halve — so they were the first to go,
+ * which is precisely backwards. A test name is what `-only-testing` takes and
+ * what a reader types into Xcode; half of one is a filter that runs nothing.
+ * The rule is about what a field *is*, not where it sits.
  */
 const STRUCTURAL_FIELDS = new Set([
   "id",
@@ -144,7 +151,14 @@ const STRUCTURAL_FIELDS = new Set([
   "verdict",
   "canonical",
   "bundle",
+  "suite",
+  "test",
+  "sourceIdentifier",
   "position",
+  // A location is somewhere to go and look. Half a path names a file that
+  // does not exist, and the reader who follows it learns nothing except that
+  // this tool is wrong about where things are.
+  "path",
 ])
 
 /**

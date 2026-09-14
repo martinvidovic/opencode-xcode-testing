@@ -266,24 +266,28 @@ function deriveIdentity(
     identifiersAgree &&
     (ancestry.suite === undefined || parsedSuite === undefined || ancestry.suite === parsedSuite)
 
-  const identity: TestIdentity = {
+  // Empty is absent. A component that came through as `""` is one Xcode did
+  // not give us, and writing it as a present-but-blank field would put a name
+  // in front of a reader that matches nothing and looks like it should.
+  const parts = {
     bundle: bundle ?? "",
-    ...(suite === undefined ? {} : { suite }),
-    test,
-    canonical: canonicalTestIdentity({
-      bundle: bundle ?? "",
-      ...(suite === undefined ? {} : { suite }),
-      test,
-    }),
+    ...(named(suite) ? { suite } : {}),
+    ...(named(test) ? { test } : {}),
   }
+  const identity: TestIdentity = { ...parts, canonical: canonicalTestIdentity(parts) }
 
   const source = node.nodeIdentifierURL ?? node.nodeIdentifier
   const canonicalSource = source === undefined ? undefined : stripIdentifierScheme(source)
-  if (canonicalSource !== undefined && canonicalSource !== identity.canonical) {
+  if (named(canonicalSource) && canonicalSource !== identity.canonical) {
     identity.sourceIdentifier = canonicalSource
   }
 
   return { identity, complete }
+}
+
+/** Present, and actually naming something. */
+function named(value: string | undefined): value is string {
+  return value !== undefined && value.length > 0
 }
 
 function stripIdentifierScheme(identifier: string): string {

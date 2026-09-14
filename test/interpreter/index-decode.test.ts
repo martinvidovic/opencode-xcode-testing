@@ -65,7 +65,7 @@ describe("closed sets are closed", () => {
   test("a test status outside the contract is not a status", () => {
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: "AppTests/T/test()" },
+      identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
       identityComplete: true,
       status: "probably-passed",
       position: "0",
@@ -149,7 +149,7 @@ describe("nested collections", () => {
   test("a failure inside an occurrence is checked like anything else", () => {
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: "AppTests/T/test()" },
+      identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
       identityComplete: true,
       status: "failed",
       position: "0",
@@ -164,7 +164,7 @@ describe("nested collections", () => {
   test("an attempt with no usable status is not an attempt", () => {
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: "AppTests/T/test()" },
+      identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
       identityComplete: true,
       status: "passed",
       position: "0",
@@ -177,7 +177,7 @@ describe("nested collections", () => {
   test("an identity whose parts are not text is not an identity", () => {
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: "AppTests/T/test()", suite: 7 },
+      identity: { bundle: "AppTests", canonical: "AppTests/T/test()", suite: 7 },
       identityComplete: true,
       status: "passed",
       position: "0",
@@ -249,7 +249,7 @@ describe("numbers that are not numbers", () => {
   test("a duration that ran backwards is not a duration", () => {
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: "AppTests/T/test()" },
+      identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
       identityComplete: true,
       status: "passed",
       position: "0",
@@ -263,7 +263,7 @@ describe("numbers that are not numbers", () => {
   test("an attempt numbered from zero is not an attempt", () => {
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: "AppTests/T/test()" },
+      identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
       identityComplete: true,
       status: "passed",
       position: "0",
@@ -309,7 +309,7 @@ describe("fields that decide what other evidence means", () => {
     // what the scope verdicts say a run covered.
     const occurrence = {
       id: "occ-1",
-      identity: { canonical: "AppTests/T/test()" },
+      identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
       status: "passed",
       position: "0",
       failures: [],
@@ -332,7 +332,7 @@ describe("identifiers that address nothing", () => {
 
     const occurrence = {
       id: "",
-      identity: { canonical: "AppTests/T/test()" },
+      identity: { bundle: "AppTests", suite: "T", test: "test()", canonical: "AppTests/T/test()" },
       identityComplete: true,
       status: "passed",
       position: "0",
@@ -343,5 +343,73 @@ describe("identifiers that address nothing", () => {
 
     const nameless = { ...occurrence, id: "occ-1", identity: { canonical: "" } }
     expect(isNormalizedIndex(index({ occurrences: [nameless] }))).toBe(false)
+  })
+})
+
+describe("a retained test identity", () => {
+  function withIdentity(identity: unknown, identityComplete = true): Record<string, unknown> {
+    return index({
+      occurrences: [
+        { id: "occ-1", identity, identityComplete, status: "passed", position: "0", failures: [], attempts: [] },
+      ],
+    })
+  }
+
+  const WHOLE = {
+    bundle: "AppTests",
+    suite: "LoginTests",
+    test: "testSignsIn()",
+    canonical: "AppTests/LoginTests/testSignsIn()",
+  }
+
+  test("decodes when every part of it names something", () => {
+    expect(isNormalizedIndex(withIdentity(WHOLE))).toBe(true)
+  })
+
+  test("claims completeness only with a bundle to be complete about", () => {
+    // A complete identity is matched against what a caller asked to run. One
+    // naming no bundle is compared against every selection and agrees with
+    // none, which reports a mismatch for a test that ran.
+    const { bundle: _dropped, ...bundleless } = WHOLE
+    expect(isNormalizedIndex(withIdentity(bundleless))).toBe(false)
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, bundle: "" }))).toBe(false)
+  })
+
+  test("still decodes without a bundle when it admits it is incomplete", () => {
+    // This is what the interpreter writes when Xcode's ancestry gave it
+    // nothing to work with, and attestation already refuses to match on it.
+    // Refusing it here would reject an index this tool itself published.
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, bundle: "" }, false))).toBe(true)
+  })
+
+  test("refuses a part that is present and blank", () => {
+    // `""` is a name that matches nothing and looks like it should. Absent
+    // says "Xcode did not tell us"; blank says "it is called nothing".
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, suite: "" }))).toBe(false)
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, test: "" }))).toBe(false)
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, sourceIdentifier: "" }))).toBe(false)
+  })
+
+  test("refuses a source identifier that is not text", () => {
+    // Retained so a reader can find the test in Xcode's own output, which
+    // makes it an identifier and not a display string.
+    expect(isNormalizedIndex(withIdentity({ ...WHOLE, sourceIdentifier: 7 }))).toBe(false)
+    expect(
+      isNormalizedIndex(withIdentity({ ...WHOLE, sourceIdentifier: "AppTests/LoginTests/testSignsIn" })),
+    ).toBe(true)
+  })
+
+  test("refuses an occurrence whose position names nothing", () => {
+    // The position is how a focused view addresses one occurrence among
+    // several with the same name.
+    expect(
+      isNormalizedIndex(
+        index({
+          occurrences: [
+            { id: "occ-1", identity: WHOLE, identityComplete: true, status: "passed", position: "", failures: [], attempts: [] },
+          ],
+        }),
+      ),
+    ).toBe(false)
   })
 })

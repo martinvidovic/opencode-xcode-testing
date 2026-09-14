@@ -185,30 +185,49 @@ function isToolchainIdentity(value: unknown): value is ToolchainIdentity {
  */
 function isIndexedOccurrence(value: unknown): value is IndexedOccurrence {
   if (!isRecord(value)) return false
+  // Read by attestation to decide whether identities can be matched at all,
+  // so a missing or non-boolean one silently changes what scope verdicts say.
+  if (typeof value.identityComplete !== "boolean") return false
+
   return (
     isIdentifier(value.id) &&
-    isTestIdentity(value.identity) &&
+    isTestIdentity(value.identity, value.identityComplete) &&
     oneOf(value.status, TEST_STATUSES) &&
-    typeof value.position === "string" &&
+    isIdentifier(value.position) &&
     isArrayOf(value.failures, isNormalizedFailure) &&
     isArrayOf(value.attempts, isAttempt) &&
-    // Read by attestation to decide whether identities can be matched at all,
-    // so a missing or non-boolean one silently changes what scope verdicts say.
-    typeof value.identityComplete === "boolean" &&
     (value.durationMs === undefined || isDuration(value.durationMs))
   )
 }
 
 /**
  * The identity a scope attestation is decided against, and the one a focused
- * view shows. Its optional parts are still typed when present: a `suite` that
- * is a number would reach a model as one.
+ * view shows.
+ *
+ * Every part of it is an identifier, so every part of it is checked for being
+ * *usable* rather than merely being a string. A `suite` that is a number would
+ * reach a model as one; a `suite` that is `""` would reach it as a name that
+ * matches nothing and looks like it should.
+ *
+ * The bundle is conditional on `complete`, and the condition is the contract
+ * rather than a concession. An identity this tool could not fully derive
+ * records an empty bundle and says so with that flag, and attestation already
+ * refuses to match on it. An identity that claims to be complete has no such
+ * excuse: it is matched against what a caller asked to run, and a complete
+ * identity naming no bundle would be compared against every selection and
+ * agree with none of them, reporting a mismatch for a test that ran.
  */
-function isTestIdentity(value: unknown): boolean {
+function isTestIdentity(value: unknown, complete: boolean): boolean {
   if (!isRecord(value)) return false
   if (!isIdentifier(value.canonical)) return false
-  return ["bundle", "suite", "test"].every(
-    (field) => value[field] === undefined || typeof value[field] === "string",
+  if (complete ? !isIdentifier(value.bundle) : typeof value.bundle !== "string") return false
+
+  return ["suite", "test", "sourceIdentifier"].every(
+    // `sourceIdentifier` is the Result Bundle's own spelling of this test,
+    // retained only when it differs from the canonical one. It is what a
+    // reader uses to find the test in Xcode's own output, which makes it an
+    // identifier like the rest and not a display string.
+    (field) => value[field] === undefined || isIdentifier(value[field]),
   )
 }
 
