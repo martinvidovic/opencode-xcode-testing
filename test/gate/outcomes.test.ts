@@ -14,15 +14,20 @@
 
 import { describe, expect, test } from "bun:test"
 
+import { TEST_TOOL_OUTCOMES, type TestToolOutcome } from "../../src/domain/outcome.ts"
 import { isHealthyOutcome } from "../../scripts/gate/layer4.ts"
+
+/** Outcomes that say the tool did its job, whatever the project's code did. */
+const HEALTHY: TestToolOutcome[] = ["passed", "testFailed", "buildFailed"]
+
+/** Outcomes that say this tool could not produce an answer at all. */
+const UNHEALTHY: TestToolOutcome[] = ["infrastructureFailed", "timedOut", "cancelled", "invalid"]
 
 describe("an outcome that describes the project", () => {
   test("passes, because the project's code is not under test here", () => {
     // The tool ran the tests and said what happened. That it happened to be
     // bad news about the repository is the repository's business.
-    for (const outcome of ["passed", "testFailed", "buildFailed"]) {
-      expect(isHealthyOutcome(outcome)).toBe(true)
-    }
+    for (const outcome of HEALTHY) expect(isHealthyOutcome(outcome)).toBe(true)
   })
 })
 
@@ -31,15 +36,15 @@ describe("an outcome that describes the tool", () => {
     // Each of these is a well-formed answer meaning "no answer": the tool
     // could not produce one. Counting them as passes is how a gate reports
     // green on the finding it exists to surface.
-    for (const outcome of ["infrastructureFailed", "timedOut", "cancelled", "invalid"]) {
-      expect(isHealthyOutcome(outcome)).toBe(false)
-    }
+    for (const outcome of UNHEALTHY) expect(isHealthyOutcome(outcome)).toBe(false)
   })
 
-  test("fails for anything it does not recognize at all", () => {
-    // A new outcome is not assumed benign. The safe default for a gate is to
-    // refuse what it cannot account for.
-    expect(isHealthyOutcome("somethingNew")).toBe(false)
-    expect(isHealthyOutcome("")).toBe(false)
+  test("covers every outcome the contract defines, so a new one cannot slip through", () => {
+    // The list is closed in the domain — "adding a member is a schema change"
+    // — so the compiler, not a runtime string check, is what stops a new
+    // outcome being silently treated as healthy. This asserts the two lists
+    // together account for all of it.
+    const judged = [...HEALTHY, ...UNHEALTHY].sort()
+    expect(judged).toEqual([...TEST_TOOL_OUTCOMES].sort())
   })
 })

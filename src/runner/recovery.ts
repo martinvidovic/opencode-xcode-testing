@@ -37,6 +37,7 @@ export type RecoveryStatus =
   | "recovered"
   | "alreadyHealthy"
   | "busy"
+  | "deferred"
   | "stillQuarantined"
   | "cancelled"
   | "failed"
@@ -45,6 +46,12 @@ export type RecoveryEnvironment = {
   storage: Storage
   probe: ProcessProbe
   timestamp(): string
+  /**
+   * Stops the pass between runs. It covers both cancellation and an expiring
+   * budget, because a synchronous scan cannot be interrupted from outside: a
+   * timer cannot fire while the work it bounds is still on the stack, so the
+   * only deadline that can hold is one the scan checks itself.
+   */
   signal?: { aborted: boolean }
   /**
    * The process that will finalize whatever this pass adopts. Recorded onto
@@ -83,13 +90,16 @@ export type RecoveryReport = {
 export function reconcileRoot(environment: RecoveryEnvironment): RecoveryReport {
   const report = withTryLock(environment.storage.rootLock, () => reconcileLocked(environment))
 
-  // A held root lock means a live instance is already doing exactly this, and
-  // the answer for this one is to get out of its way. Waiting would be worse
-  // than useless here: reconciliation runs inside plugin startup, which is
-  // synchronous from the host's point of view, so a blocking acquisition
-  // cannot be cut short by the deadline that is supposed to bound it — the
-  // timer cannot fire until the wait it is bounding has already ended.
-  return report ?? { ...emptyReport(), status: "busy" }
+// A held root lock means a live instance is already doing exactly this, and
+  // the answer for this one is to get out of its way. ADR 0002 requires it:
+  // "Both reconciliation passes try the lock without waiting."
+  //
+  // `deferred`, not `busy`. They sound alike and mean opposite things: `busy`
+  // is something this pass *found* — a live run owning the slot — and
+  // `deferred` is the absence of any finding at all, because nothing was
+  // examined. A caller told `busy` has been told about the root; a caller told
+  // `deferred` has been told about this attempt.
+  return report ?? { ...emptyReport(), status: "deferred" }
 }
 
 /**

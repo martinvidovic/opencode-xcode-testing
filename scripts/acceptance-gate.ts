@@ -25,7 +25,7 @@ import { resolveToolchain } from "../src/runner/toolchain.ts"
 import { runFreshnessCheck, type BundleExamination } from "./freshness-check.ts"
 import { discoverDestination, type DestinationDiscovery } from "./gate/destination.ts"
 import { safeDiagnostic } from "./gate/diagnostic.ts"
-import { parseOptions, usage } from "./gate/options.ts"
+import { parseOptions, usage, type Suite } from "./gate/options.ts"
 import { runLayer4 } from "./gate/layer4.ts"
 import { runInstallationGate } from "./gate/installation.ts"
 import { runRegistrationGate } from "./gate/registration.ts"
@@ -43,17 +43,8 @@ async function main(argv: string[]): Promise<number> {
     // mistyped is part of that answer.
     process.stderr.write(`acceptance gate: ${parsed.message}\n\n${usage()}\n`)
     writeReport({
-      schemaVersion: 1,
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      selected: [],
-      toolchain: UNOBSERVED_TOOLCHAIN,
-      hostVersion: "unobserved",
-      runtime: { path: "", source: "unresolved" },
+      ...unobservedReport(startedAt, []),
       destination: { unavailable: parsed.message },
-      freshness: { status: "unavailable", observed: {}, drift: [], fixturesChecked: 0 },
-      scenarios: [],
-      outcome: "failed",
     })
     return 2
   }
@@ -70,18 +61,12 @@ async function main(argv: string[]): Promise<number> {
     facts: Partial<RunReport> & { diagnostic?: string },
   ): number => {
     const report: RunReport = {
-      schemaVersion: 1,
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      selected: suites,
+      ...unobservedReport(startedAt, suites),
       // Claimed only when a layer that uses it actually ran: otherwise the
       // line says something the run did not do.
       ...(project !== undefined && suites.includes("layer4") ? { project: true } : {}),
-      toolchain: UNOBSERVED_TOOLCHAIN,
       hostVersion: observedHostVersion(),
-      runtime: { path: "", source: "unresolved" },
       destination: { unavailable: "not required by the selected suites" },
-      freshness: { status: "unavailable", observed: {}, drift: [], fixturesChecked: 0 },
       scenarios,
       outcome,
       ...facts,
@@ -237,33 +222,41 @@ if (import.meta.main) {
       process.stderr.write(`acceptance gate: ${diagnostic}\n`)
 
       try {
-        const path = writeReport(unobservedReport(startedAt, diagnostic))
+        // What this invocation *selected* is knowable even now, and a report
+        // that omitted it could not be told from one that selected nothing.
+        const parsed = parseOptions(process.argv.slice(2))
+        const path = writeReport({
+          ...unobservedReport(startedAt, parsed.status === "parsed" ? parsed.options.suites : []),
+          destination: { unavailable: diagnostic },
+        })
         process.stdout.write(`report         ${basename(path)}\n`)
-      } catch {
-        // Writing the report is the last thing attempted and the least
-        // important: the diagnostic above is already out.
+      } catch (failure) {
+        // The report is required, so failing to write one is itself worth
+        // saying out loud rather than swallowing behind the original error.
+        process.stderr.write(`acceptance gate: no report could be written: ${safeDiagnostic(failure)}\n`)
       }
       process.exitCode = 1
     })
 }
 
 /**
- * A report for a run that established nothing.
+ * The baseline every report starts from: a run that established nothing.
  *
  * Every fact is stated as unobserved rather than left blank or defaulted,
- * because a report that said "Xcode 0.0" would be a report that lied about
- * having looked.
+ * because a report saying "Xcode 0.0" would be a report lying about having
+ * looked. Callers overwrite what they actually observed, so a fact that
+ * survives is one nobody established.
  */
-function unobservedReport(startedAt: string, diagnostic: string): RunReport {
+function unobservedReport(startedAt: string, selected: Suite[]): RunReport {
   return {
     schemaVersion: 1,
     startedAt,
     finishedAt: new Date().toISOString(),
-    selected: [],
+    selected,
     toolchain: UNOBSERVED_TOOLCHAIN,
     hostVersion: "unobserved",
     runtime: { path: "", source: "unresolved" },
-    destination: { unavailable: diagnostic },
+    destination: { unavailable: "unobserved" },
     freshness: { status: "unavailable", observed: {}, drift: [], fixturesChecked: 0 },
     scenarios: [],
     outcome: "failed",

@@ -20,6 +20,7 @@ import type { ExecutionContext } from "./context.ts"
 import type { TestToolResult } from "../../src/domain/result.ts"
 import type { ToolchainIdentity } from "../../src/domain/toolchain.ts"
 import { isTestRunSummary } from "../../src/domain/result.ts"
+import type { TestToolOutcome } from "../../src/domain/outcome.ts"
 import { createTestToolService } from "../../src/adapter/service.ts"
 import { readProjectConfiguration } from "../../src/adapter/trusted-root.ts"
 import { prepareStorage, runDirectory, storageFor, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
@@ -350,10 +351,10 @@ async function projectScenarios(
  * could not produce one, which on a real repository is the finding a
  * `--project` run exists to surface.
  */
-const HEALTHY_OUTCOMES = ["passed", "testFailed", "buildFailed"] as const
+const HEALTHY_OUTCOMES: readonly TestToolOutcome[] = ["passed", "testFailed", "buildFailed"]
 
-export function isHealthyOutcome(outcome: string): boolean {
-  return (HEALTHY_OUTCOMES as readonly string[]).includes(outcome)
+export function isHealthyOutcome(outcome: TestToolOutcome): boolean {
+  return HEALTHY_OUTCOMES.includes(outcome)
 }
 
 /**

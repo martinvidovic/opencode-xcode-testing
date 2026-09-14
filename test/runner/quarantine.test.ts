@@ -400,7 +400,10 @@ describe("reconciliation at startup", () => {
         }),
       )
 
-      expect(report.status).toBe("busy")
+      // `deferred`, not `busy`. They sound alike and mean opposite things:
+      // `busy` is something a pass *found*, and this pass found nothing
+      // because it looked at nothing.
+      expect(report.status).toBe("deferred")
     })
   })
 
@@ -420,6 +423,27 @@ describe("reconciliation at startup", () => {
       expect(report.needsFinalization).toEqual([])
       expect(report.quarantined).toEqual([])
       expect(report.quarantineCleared).toBe(false)
+    })
+  })
+
+  test("stops scanning when its budget expires, rather than finishing regardless", async () => {
+    await withSandbox((box) => {
+      for (const runId of ["run-a", "run-b", "run-c"]) {
+        createRunDirectory(box.storage, runId)
+      }
+
+      // The pass is synchronous filesystem work, so nothing outside it can
+      // interrupt it once started. A deadline that holds is one the scan asks
+      // about between runs — this one has already passed.
+      const report = reconcileRoot({
+        storage: box.storage,
+        probe: fakeProbe({}),
+        timestamp: () => TIMESTAMP,
+        signal: { get aborted() { return true } },
+      })
+
+      expect(report.status).toBe("cancelled")
+      expect(report.uncertain).toEqual([])
     })
   })
 
