@@ -88,6 +88,27 @@ export type RunReport = {
   }
   /** The host version the adapter observed, per ADR 0002. */
   hostVersion: string
+  /**
+   * The linked OpenCode packages this run actually compiled and ran against
+   * (issue #81).
+   *
+   * Separate from `hostVersion`, because they are separate facts and the
+   * report used to carry only the least informative of them. The adapter is
+   * written against `@opencode-ai/plugin` and the gates drive a host through
+   * `@opencode-ai/sdk`, both resolved from a tree the host manages on its own
+   * schedule — so "tested against OpenCode 1.18.29" could be true of the host
+   * and false of everything the code was linked to.
+   *
+   * Versions and ranges only. Nothing here names a path.
+   */
+  packages?: {
+    plugin?: string
+    sdk?: string
+    /** What the host's own config manifest asks for, when it asks. */
+    requested?: string
+    /** Skew that is supported and worth saying anyway. */
+    caveats?: string[]
+  }
   runtime: { path: string; version?: string; source: string }
   destination: { deviceName: string; runtime: string; id: string } | { unavailable: string }
   freshness: unknown
@@ -169,6 +190,7 @@ export function renderReport(report: RunReport, path: string): string {
     `selected       ${report.selected.join(", ") || "(nothing)"}${report.project === true ? " (against a supplied project)" : ""}`,
     `toolchain      Xcode ${report.toolchain.xcodeVersion} (${report.toolchain.xcodeBuild}), xcresulttool ${report.toolchain.xcresulttoolVersion}, schema ${report.toolchain.schemaVersion}`,
     `host           OpenCode ${report.hostVersion}`,
+    `packages       ${renderPackages(report.packages)}`,
     `runtime        ${report.runtime.version ?? "unknown version"} [${report.runtime.source}]`,
     `destination    ${
       "unavailable" in report.destination
@@ -192,6 +214,15 @@ export function renderReport(report: RunReport, path: string): string {
   if (report.registryProblems !== undefined && report.registryProblems.length > 0) {
     // Printed, not only serialized. A check nobody reads is not a check.
     lines.push("", `registry      ${report.registryProblems.join("; ")}`)
+  }
+
+  const caveats = report.packages?.caveats ?? []
+  if (caveats.length > 0) {
+    // Never gating, always printed. A supported-but-stale package tree is the
+    // ordinary state of a host-managed install, and a run that was green
+    // against a package set three minors behind the host should say so where
+    // a reader sees it rather than only in JSON nobody opens.
+    lines.push("", `package skew   ${caveats.join("; ")}`)
   }
 
   if (report.evidence !== undefined) {
@@ -221,4 +252,20 @@ export function renderReport(report: RunReport, path: string): string {
   // reports directory, and not a line that names someone's home directory.
   lines.push("", `report         ${basename(path)}`)
   return `${lines.join("\n")}\n`
+}
+
+
+/**
+ * The linked package versions, beside the host's own.
+ *
+ * Printed on every run, green or not. A number a reader has to go and look up
+ * is a number nobody looks up, and the whole point of recording these is that
+ * a green report should say what it was green against.
+ */
+function renderPackages(packages: RunReport["packages"]): string {
+  if (packages === undefined) return "not established"
+  const plugin = packages.plugin ?? "unknown"
+  const sdk = packages.sdk ?? "unknown"
+  const requested = packages.requested === undefined ? "" : ` (host asks for ${packages.requested})`
+  return `plugin ${plugin}, sdk ${sdk}${requested}`
 }

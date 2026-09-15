@@ -61,6 +61,7 @@ export type Observations = {
   evidence?: RunReport["evidence"]
   selected: Suite[]
   project?: boolean
+  packages?: RunReport["packages"]
   toolchain?: RunReport["toolchain"]
   hostVersion?: string
   runtime?: RunReport["runtime"]
@@ -173,6 +174,7 @@ export function reportFrom(
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
     ...(observed.evidence === undefined ? {} : { evidence: observed.evidence }),
+    ...(observed.packages === undefined ? {} : { packages: observed.packages }),
     selected: observed.selected,
     // Only what a reader needs. `from` and `to` are how this file attributes
     // scenarios to suites, and a durable record is not the place for the

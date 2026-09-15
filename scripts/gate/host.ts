@@ -8,12 +8,13 @@
  * boot timeout and the port cannot drift apart between them.
  */
 
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 import { defaultConfigDirectory } from "../link-host-package.ts"
+import { readProvenance } from "./provenance.ts"
 
 /**
  * How long the host may take to come up with this plugin loaded.
@@ -118,6 +119,16 @@ function listening(child: ReturnType<typeof spawn>): Promise<void> {
   })
 }
 
+
+/**
+ * The host version the gate actually ran against. Recorded rather than
+ * asserted: ADR 0002's policy is to surface skew, never to block on it.
+ */
+export function observedHostVersion(): string {
+  const result = spawnSync("opencode", ["--version"], { encoding: "utf8" })
+  const version = (result.stdout ?? "").trim()
+  return result.status === 0 && version.length > 0 ? version : "unknown"
+}
 
 // --- the host-managed SDK ---------------------------------------------------
 
@@ -261,3 +272,23 @@ function isSdk(value: unknown): value is Sdk {
  */
 export const PLUGIN_NOT_LINKED =
   "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`."
+
+/**
+ * Why this package tree cannot be drawn conclusions from, if it cannot (#81).
+ *
+ * Checked before a gate boots anything, because a tree that disagrees with
+ * itself makes the run unattributable: whatever it proves, it proves about a
+ * package set nobody could name afterwards, and the next install in that
+ * directory changes it.
+ *
+ * Only the answers that make the run meaningless. A supported-but-stale tree
+ * is the ordinary state of a host-managed install and is surfaced in the
+ * report as a caveat instead — failing on it would make the gate unrunnable
+ * on a machine whose only problem is an install nobody has re-run in a
+ * directory this repository does not own.
+ */
+export function provenanceProblem(hostVersion: string): string | undefined {
+  const { problems } = readProvenance(hostVersion)
+  if (problems.length === 0) return undefined
+  return `the OpenCode packages this gate would run against cannot be relied on. ${problems.join(" ")}`
+}

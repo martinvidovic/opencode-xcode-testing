@@ -40,9 +40,15 @@ function registrationWith(body: string | undefined): Scenario[] {
 
   try {
     if (body !== undefined) {
-      const dist = join(home, ".config", "opencode", "node_modules", "@opencode-ai", "sdk", "dist")
-      mkdirSync(dist, { recursive: true })
-      writeFileSync(join(dist, "index.js"), body)
+      const sdk = join(home, ".config", "opencode", "node_modules", "@opencode-ai", "sdk")
+      mkdirSync(join(sdk, "dist"), { recursive: true })
+      writeFileSync(join(sdk, "dist", "index.js"), body)
+      // With its manifest, as a real install has one. A package directory
+      // carrying no manifest is a broken tree, and the provenance check
+      // rightly refuses to run against one — which would answer every case
+      // below with the same sentence about the tree instead of the one about
+      // the import.
+      writeFileSync(join(sdk, "package.json"), '{ "name": "@opencode-ai/sdk", "version": "9.9.9" }')
     }
 
     const script = `

@@ -18,7 +18,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { TOOL_IDS, descriptionFor } from "../../src/adapter/descriptions.ts"
-import { bounded, loadSdk, PLUGIN_NOT_LINKED, SERVER_BOOT_MS, type OpencodeClient } from "./host.ts"
+import {
+  bounded,
+  loadSdk,
+  observedHostVersion,
+  PLUGIN_NOT_LINKED,
+  provenanceProblem,
+  SERVER_BOOT_MS,
+  type OpencodeClient,
+} from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
@@ -33,10 +41,18 @@ const TEMPLATES = join(REPO, "examples", "agent")
 const GATE_PORT = 45_729
 
 /** Records each scenario as it finishes; see `ScenarioSink`. */
-export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
+export async function runRegistrationGate(
+  record: ScenarioSink,
+  hostVersion = observedHostVersion(),
+): Promise<void> {
   const bootstrapFailed = (detail: string) => {
     record({ name: SCENARIO["b1 host registration"], kind: "gating", status: "failed", detail })
   }
+
+  // Before anything boots (#81). A tree that disagrees with itself makes
+  // whatever this gate establishes unattributable to any package set.
+  const provenance = provenanceProblem(hostVersion)
+  if (provenance !== undefined) return bootstrapFailed(provenance)
 
   const loaded = await loadSdk()
   if (loaded.status !== "loaded") return bootstrapFailed(loaded.detail)
