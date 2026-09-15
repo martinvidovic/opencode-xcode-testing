@@ -1,0 +1,128 @@
+{
+  "provenance": {
+    "schemaVersion": "0.1.0",
+    "decoderVersion": 1,
+    "xcresulttoolVersion": "24757",
+    "legacyCommandsFormatVersion": "3.58",
+    "xcodeVersion": "26.4.1",
+    "xcodeBuild": "17E202",
+    "scenario": "multiline-diagnostics",
+    "observedShape": "failure messages and build errors carrying an indented backtrace across several lines",
+    "note": "a stack frame is a line, so a failure's trace must survive the normalization that collapses whitespace for display",
+    "defect": "collapsed-frames"
+  },
+  "payloads": {
+    "metadata get": {
+      "id": "opaque",
+      "creatingApplication": "Xcode"
+    },
+    "get content-availability": {
+      "hasCoverage": false,
+      "hasDiagnostics": true,
+      "hasTestResults": true,
+      "logs": [
+        "build",
+        "action"
+      ]
+    },
+    "get build-results": {
+      "status": "succeeded",
+      "errorCount": 1,
+      "errors": [
+        {
+          "targetName": "App",
+          "message": "cannot find 'undefinedSymbol' in scope\n    2   SwiftDriver                         0x00000001052a0140 Driver.run() + 64\n    at Sources/App/Login.swift:17:5",
+          "sourceURL": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=17&StartingColumnNumber=5"
+        }
+      ]
+    },
+    "get test-results tests": {
+      "testPlanConfigurations": [
+        {
+          "configurationId": "C1",
+          "configurationName": "Configuration 1"
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "D1",
+          "deviceName": "Simulator",
+          "platform": "iOS Simulator",
+          "osVersion": "26.0"
+        }
+      ],
+      "testNodes": [
+        {
+          "nodeType": "Test Plan",
+          "name": "App",
+          "children": [
+            {
+              "nodeType": "Unit test bundle",
+              "name": "AppTests",
+              "children": [
+                {
+                  "nodeType": "Test Suite",
+                  "name": "LoginTests",
+                  "children": [
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSignsIn()",
+                      "nodeIdentifier": "LoginTests/testSignsIn()",
+                      "result": "Passed",
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSignsIn"
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testRejectsBadPassword()",
+                      "nodeIdentifier": "LoginTests/testRejectsBadPassword()",
+                      "result": "Failed",
+                      "duration": "0,12s",
+                      "children": [
+                        {
+                          "nodeType": "Failure Message",
+                          "name": "XCTAssertEqual failed: (\"denied\") is not equal to (\"granted\")\n    0   AppTests                            0x0000000104a2b1c4 LoginTests.testRejectsBadPassword() + 132\n    1   XCTestCore                          0x00000001049117ac XCTestCase.invokeTest() + 88\n    at /workspace/Sources/App/Login.swift:42:9\n    at /elsewhere/Private/Secret.swift:7:1",
+                          "children": [
+                            {
+                              "nodeType": "Source Code Reference",
+                              "name": "file:///workspace/Sources/App/Login.swift#StartingLineNumber=42&StartingColumnNumber=9"
+                            }
+                          ]
+                        }
+                      ],
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testRejectsBadPassword"
+                    },
+                    {
+                      "nodeType": "Test Case",
+                      "name": "testSkipsOnDevice()",
+                      "nodeIdentifier": "LoginTests/testSkipsOnDevice()",
+                      "result": "Skipped",
+                      "duration": "0,12s",
+                      "durationInSeconds": 0.12,
+                      "nodeIdentifierURL": "test://com.apple.xcode/App/AppTests/LoginTests/testSkipsOnDevice"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "get test-results summary": {
+      "result": "Failed",
+      "totalTestCount": 3,
+      "passedTests": 1,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "testFailures": {
+        "testName": "testRejectsBadPassword()",
+        "targetName": "AppTests",
+        "failureText": "XCTAssertEqual failed: (\"denied\") is not equal to (\"granted\")"
+      }
+    }
+  }
+}

@@ -485,12 +485,20 @@ function publish(
     unidentifiable: gathered.unidentifiable,
   })
 
-  const { diagnostics: testFailures, fullMessages: failureMessages } = buildTestFailures(
+  const {
+    diagnostics: testFailures,
+    fullMessages: failureMessages,
+    detailMessages: failureDetail,
+  } = buildTestFailures(
     occurrences,
     gathered.supplementalFailures,
     { runId },
   )
-  const { diagnostics: buildErrors, fullMessages: buildMessages } = buildBuildErrors(
+  const {
+    diagnostics: buildErrors,
+    fullMessages: buildMessages,
+    detailMessages: buildDetail,
+  } = buildBuildErrors(
     gathered.buildIssues,
     { runId, trustedRoot: request.facts.trustedRoot },
   )
@@ -525,6 +533,7 @@ function publish(
             : "complete",
     },
     fullMessages: { ...failureMessages, ...buildMessages },
+    detailMessages: { ...failureDetail, ...buildDetail },
     toolchain: request.facts.toolchain,
     log: {
       availability: request.facts.log.retainedBytes === undefined ? "unavailable" : "available",

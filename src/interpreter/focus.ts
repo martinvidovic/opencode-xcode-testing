@@ -114,7 +114,12 @@ export function focusedDiagnostic(
   const full = index.fullMessages[diagnostic.id] ?? diagnostic.message
   const message = capTo(full, FOCUSED_MESSAGE_CHAR_CAP)
 
-  const extracted = extractFrames(full, trustedRoot)
+  // Frames come from the text as it arrived, with its lines intact; the
+  // message shown is still built from the normalized one. `detailMessages`
+  // says why. The fallback recognizes nothing, which for text that no longer
+  // has lines is the honest answer rather than a failure to try.
+  const detail = index.detailMessages?.[diagnostic.id] ?? full
+  const extracted = extractFrames(detail, trustedRoot)
   const outcomes = extracted.frames.map(capFrame)
   const frames = capCollection(
     outcomes.flatMap((outcome) => (outcome.frame === undefined ? [] : [outcome.frame])),

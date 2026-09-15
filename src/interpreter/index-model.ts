@@ -90,6 +90,31 @@ export type NormalizedIndex = {
    */
   fullMessages: Record<string, string>
   /**
+   * The same messages with their line structure kept, for the ones that had
+   * any (issue #75).
+   *
+   * `fullMessages` is normalized — whitespace collapsed — because that is what
+   * display and deduplication need: two tests that failed the same assertion
+   * must dedup whatever the wrapping did to them. But a stack frame *is* a
+   * line, so frames extracted from that text found nothing, ever, and every
+   * multiline failure reported incomplete frame evidence.
+   *
+   * Private, and never displayed. What a caller sees is still built from the
+   * normalized text, under the same caps; this exists so the trace can be read
+   * from the shape it arrived in.
+   *
+   * Sparse: no entry for the single-line failures that are most of them.
+   *
+   * Optional only on the read side. Every index this decoder writes carries
+   * the field, possibly empty; what the `?` is for is the indexes already on
+   * disk, written before it existed. Bumping `indexVersion` for an additive
+   * private field would have made every retained run unpageable, which is a
+   * steep price for a field the reader can simply do without — and doing
+   * without it, it recognizes no trace and says so, which for text that no
+   * longer has lines is correct.
+   */
+  detailMessages?: Record<string, string>
+  /**
    * The toolchain that produced this index, as #8 records it.
    *
    * Kept so a lazy read can verify the installation it is about to use is the
@@ -143,6 +168,8 @@ export function isNormalizedIndex(value: unknown): value is NormalizedIndex {
     isTestEvidence(index.tests) &&
     isFacet(index.diagnostics) &&
     isMessageMap(index.fullMessages) &&
+    // Validated when present, so an index that predates it still pages.
+    (index.detailMessages === undefined || isMessageMap(index.detailMessages)) &&
     isToolchainIdentity(index.toolchain) &&
     isLogFacet(index.log) &&
     oneOf(index.bundleDigestVerified, EVIDENCE_FACTS)
