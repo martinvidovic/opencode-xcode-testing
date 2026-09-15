@@ -23,6 +23,21 @@ import { withSandbox, type Sandbox } from "../runner/harness.ts"
 const STUB_SUPERVISOR = join(import.meta.dir, "..", "runner", "stub", "stub-supervisor.ts")
 
 /**
+ * What the committed stub can be scripted to do.
+ *
+ * A union rather than a string, as `cancellation.test.ts` already does with
+ * the same concept: a mode the stub does not recognize falls through to its
+ * default and runs a different test from the one that was written, passing or
+ * failing for a reason nobody would look for.
+ */
+type StubMode =
+  | "ready-then-complete"
+  | "silent"
+  | "crash"
+  | "hang"
+  | `ready-then-linger:${number}`
+
+/**
  * A trusted root that resolves, with the committed stub scripted.
  *
  * Resolution validates the container against the real filesystem, so a run in
@@ -30,7 +45,7 @@ const STUB_SUPERVISOR = join(import.meta.dir, "..", "runner", "stub", "stub-supe
  * at all. The stub is the committed one ADR 0001 names for these transitions,
  * not a fixture written on the fly.
  */
-function project(box: Sandbox, mode: string): string {
+function project(box: Sandbox, mode: StubMode): string {
   const root = join(box.homeDir, "project")
   mkdirSync(join(root, "App.xcodeproj"), { recursive: true })
   writeFileSync(join(root, ".stub-mode"), `${mode}\n`)
@@ -39,7 +54,7 @@ function project(box: Sandbox, mode: string): string {
 
 function environmentFor(
   box: Sandbox,
-  mode: string,
+  mode: StubMode,
   overrides: Partial<ServiceEnvironment> = {},
 ): ServiceEnvironment {
   return {
@@ -62,11 +77,11 @@ function environmentFor(
 
 /** Start one run against a project that resolves, and wait for its result. */
 async function run(box: Sandbox, overrides: Partial<ServiceEnvironment> = {}) {
-  return runScripted(box, "hang", overrides)
+  return (await runScripted(box, "hang", overrides)).result
 }
 
 /**
- * The same, with the mode named and the protocol states it reported kept.
+ * The same, with the mode named, returning the protocol states it reported.
  *
  * The states are the only place a killed supervisor and a finished one differ
  * observably from out here: a run record is trimmed when it is finalized, so
@@ -74,10 +89,10 @@ async function run(box: Sandbox, overrides: Partial<ServiceEnvironment> = {}) {
  */
 async function runScripted(
   box: Sandbox,
-  mode: string,
+  mode: StubMode,
   overrides: Partial<ServiceEnvironment> = {},
-  states: string[] = [],
 ) {
+  const states: string[] = []
   const service = createTestToolService(
     environmentFor(box, mode, {
       configuration: {
@@ -92,10 +107,11 @@ async function runScripted(
       ...overrides,
     }),
   )
-  return service.start(
+  const result = await service.start(
     { requestedScope: { kind: "all" } },
     { onState: (state) => states.push(state) },
   ).result
+  return { result, states }
 }
 
 describe("a supervisor that never completes its handshake", () => {
@@ -209,13 +225,9 @@ describe("a supervisor that handshakes and then keeps working", () => {
       // minute does, and it must mean nothing: left armed, the timer sends
       // `SIGKILL` to a healthy supervisor mid-run and reports a run that was
       // passing as a launching-phase runner failure.
-      const states: string[] = []
-      const result = await runScripted(
-        box,
-        "ready-then-linger:600",
-        { handshakeDeadlineMs: 200 },
-        states,
-      )
+      const { result, states } = await runScripted(box, "ready-then-linger:600", {
+        handshakeDeadlineMs: 200,
+      })
 
       if (!isTestRunSummary(result)) throw new Error(`expected a Test Run: ${result.outcome}`)
 
@@ -235,8 +247,9 @@ describe("a supervisor that handshakes and then keeps working", () => {
       // deadline is confirmed gone, and a confirmed exit releases the root —
       // so releasing it proves nothing about the timer. It is worth saying
       // once that the healthy path ends with the slot back.
-      expect(readQueue(box.storage).quarantine).toBeUndefined()
-      expect(readQueue(box.storage).activeRunId).toBeUndefined()
+      const queue = readQueue(box.storage)
+      expect(queue.quarantine).toBeUndefined()
+      expect(queue.activeRunId).toBeUndefined()
     })
   }, 20_000)
 })

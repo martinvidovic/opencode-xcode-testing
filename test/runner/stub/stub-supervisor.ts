@@ -31,15 +31,17 @@ import { advance, readRunRecord } from "../../../src/runner/state.ts"
 const control = createWriteStream("", { fd: 4 })
 const incoming = createReadStream("", { fd: 3 })
 
+type Spec = { homeDir: string; trustedRoot: string; runId: string }
+
 let buffer = ""
-incoming.on("data", async (chunk) => {
+incoming.on("data", (chunk) => {
   buffer += String(chunk)
   const { messages, rest } = decodeMessages(buffer)
   buffer = rest
 
   for (const message of messages) {
     if (message.type !== "hello") continue
-    const spec = message as unknown as { homeDir: string; trustedRoot: string; runId: string }
+    const spec = message as unknown as Spec
 
     const mode = modeFor(spec.trustedRoot)
     if (mode === "silent") process.exit(0)
@@ -53,29 +55,37 @@ incoming.on("data", async (chunk) => {
 
     control.write(encodeMessage({ type: "ready", runId: spec.runId }))
 
-    // The handshake and the work are deliberately separated here. A stub that
-    // answered and finished in the same tick could never show what happens to
-    // a supervisor still working when its startup deadline comes round.
-    const lingerMs = lingerOf(mode)
-    if (lingerMs > 0) await sleep(lingerMs)
-
-    const storage = storageFor(spec.homeDir, spec.trustedRoot)
-    let record = readRunRecord(storage, spec.runId)
-    if (record !== undefined) {
-      for (const state of ["supervisorReady", "childRecorded", "launchAuthorized"] as const) {
-        record = advance(storage, record, state)
-      }
-      record = advance(storage, record, "executionCompleted", {
-        execObserved: "yes",
-        exitCode: 0,
-        descendantsConfirmedExited: "yes",
-      })
-    }
-
-    control.write(encodeMessage({ type: "completed", exitCode: 0 }))
-    process.exit(mode === "crash" ? 70 : 0)
+    // The listener stays synchronous and the waiting happens off it, so a
+    // rejection is an exit status the test can see rather than an unhandled
+    // rejection it cannot.
+    void serve(spec, mode).catch(() => process.exit(70))
   }
 })
+
+/** Everything after the handshake, which is where a linger has to happen. */
+async function serve(spec: Spec, mode: string): Promise<never> {
+  // The handshake and the work are deliberately separated. A stub that
+  // answered and finished in the same tick could never show what happens to a
+  // supervisor still working when its startup deadline comes round.
+  const lingerMs = lingerOf(mode)
+  if (lingerMs > 0) await sleep(lingerMs)
+
+  const storage = storageFor(spec.homeDir, spec.trustedRoot)
+  let record = readRunRecord(storage, spec.runId)
+  if (record !== undefined) {
+    for (const state of ["supervisorReady", "childRecorded", "launchAuthorized"] as const) {
+      record = advance(storage, record, state)
+    }
+    record = advance(storage, record, "executionCompleted", {
+      execObserved: "yes",
+      exitCode: 0,
+      descendantsConfirmedExited: "yes",
+    })
+  }
+
+  control.write(encodeMessage({ type: "completed", exitCode: 0 }))
+  process.exit(mode === "crash" ? 70 : 0)
+}
 
 /** Milliseconds a `ready-then-linger:MS` mode asks for; zero for any other. */
 function lingerOf(mode: string): number {
