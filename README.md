@@ -307,6 +307,22 @@ storage root, never anywhere this repository could accidentally track it. That
 includes runs that fail before a scenario starts: an invocation that left no
 trace is one nobody can check afterwards.
 
+When Layer 4 **fails**, it keeps the run evidence a diagnosis needs — Run
+Records, raw logs, the normalized index and the Result Bundles — beside the
+report, under the same key, owner-only. A passing run keeps nothing: its
+workspace is regenerable, and its evidence would prove only what the report
+already says. The store is bounded by age, by count and by bytes, and a single
+run's evidence too large for the whole budget is discarded rather than granted
+an exception — an unbounded diagnostic aid is a disk that fills up quietly.
+The report names the key and never a path.
+
+A `--project` run that fails keeps evidence about **your** project: the Run
+Records, logs and Result Bundles of runs against it name its scheme, its tests
+and where it lives. The report itself still records only that a project was
+supplied. That is the trade — private, owner-only, bounded, and yours to delete
+— and it is the reason the evidence store is not somewhere the repository could
+ever reach.
+
 `--project <path>` additionally runs against a real Xcode project you own:
 
 ```bash

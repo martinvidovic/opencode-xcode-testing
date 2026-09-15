@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 
-import { TOOL_DIRECTORY } from "../../src/runner/paths.ts"
+import { toolRootFor } from "../../src/runner/paths.ts"
 import type { Suite } from "./options.ts"
 import type { ScenarioName } from "./scenarios.ts"
 
@@ -94,6 +94,20 @@ export type RunReport = {
   scenarios: ScenarioResult[]
   outcome: "passed" | "failed"
   /**
+   * The key a failed run's private evidence was filed under (issue #73).
+   *
+   * A key, never a path. The evidence is in the tool-managed storage root
+   * under exactly this name, which is derived from `startedAt` by the same
+   * rule as this report's own filename — so the correlation holds because of
+   * where things are rather than because someone wrote it down correctly.
+   *
+   * Absent on a pass, where there is nothing to keep. Present and negative
+   * when a run failed and its evidence could not be kept: a reader who goes
+   * looking needs to be told it is not there and why, rather than left to
+   * conclude the run was fine.
+   */
+  evidence?: { key: string; bytes: number } | { unavailable: string }
+  /**
    * Why the run ended as it did, when there is something to say — redacted of
    * anything path-shaped before it gets here.
    *
@@ -106,7 +120,18 @@ export type RunReport = {
 
 /** The `reports` directory inside the tool-managed storage root. */
 export function reportDirectory(homeDir = homedir()): string {
-  return join(homeDir, "Library", "Application Support", TOOL_DIRECTORY, "reports")
+  return join(toolRootFor(homeDir), "reports")
+}
+
+/**
+ * The name a run's durable artifacts are filed under, from when it started.
+ *
+ * One rule, used by the report's filename and by the evidence store beside it.
+ * Written twice they would agree until one of them changed, and the whole
+ * point of the correlation is that nobody has to keep it accurate.
+ */
+export function keyFor(startedAt: string): string {
+  return startedAt.replace(/[:.]/g, "-")
 }
 
 /**
@@ -117,7 +142,7 @@ export function reportDirectory(homeDir = homedir()): string {
  * something that guessed the name.
  */
 export function reportPathFor(startedAt: string, homeDir = homedir()): string {
-  return join(reportDirectory(homeDir), `acceptance-${startedAt.replace(/[:.]/g, "-")}.json`)
+  return join(reportDirectory(homeDir), `acceptance-${keyFor(startedAt)}.json`)
 }
 
 export function writeReport(report: RunReport, homeDir = homedir()): string {
@@ -167,6 +192,18 @@ export function renderReport(report: RunReport, path: string): string {
   if (report.registryProblems !== undefined && report.registryProblems.length > 0) {
     // Printed, not only serialized. A check nobody reads is not a check.
     lines.push("", `registry      ${report.registryProblems.join("; ")}`)
+  }
+
+  if (report.evidence !== undefined) {
+    // Named in the terminal too. Evidence a reader does not know exists is
+    // evidence that gets pruned before anyone looks at it. The key, and never
+    // the path: a report is read by people who did not run the gate.
+    lines.push(
+      "",
+      "unavailable" in report.evidence
+        ? `evidence      not kept: ${report.evidence.unavailable}`
+        : `evidence      kept under ${report.evidence.key} (${report.evidence.bytes} bytes)`,
+    )
   }
 
   if (report.unreached !== undefined && report.unreached.length > 0) {
