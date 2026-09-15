@@ -20,11 +20,12 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { bundleDigest, type ServiceEnvironment } from "../../src/adapter/service.ts"
+import { bundleDigest } from "../../src/adapter/service.ts"
+import { LockUnavailableError } from "../../src/runner/locks.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 import { executeInspect, executeRecover, type ToolDeps } from "../../src/adapter/tools.ts"
 
@@ -46,16 +47,38 @@ function withBundle(work: (root: string) => void): void {
   }
 }
 
-function restore(root: string): void {
+/**
+ * Make the tree removable again, whatever the test locked.
+ *
+ * Walked rather than named: a `restore` that knew the directory names would
+ * stop working the day a test used a different one, and `rmSync` would then
+ * leave a temp directory behind on every run without saying so.
+ */
+function restore(path: string): void {
   try {
-    chmodSync(root, 0o700)
-    chmodSync(join(root, "nested"), 0o700)
+    chmodSync(path, 0o700)
+    for (const entry of readdirSync(path)) restore(join(path, entry))
   } catch {
-    // Whatever the test did not create.
+    // Not a directory, or already gone. Either way there is nothing to open.
   }
 }
 
+/**
+ * Whether `chmod` can deny this process anything.
+ *
+ * Root is not subject to permission bits, so every test below would pass
+ * having checked nothing. Stated rather than skipped silently: a suite that
+ * quietly verifies less under one account is worse than one that says so.
+ */
+const CHMOD_DENIES = process.getuid?.() !== 0
+
 describe("digesting a Result Bundle", () => {
+  test("is being tested against a filesystem that can actually deny it", () => {
+    // Root ignores permission bits, so without this the four tests below pass
+    // having established nothing at all.
+    expect(CHMOD_DENIES).toBe(true)
+  })
+
   test("refuses to digest a tree whose top it cannot list", () => {
     withBundle((root) => {
       chmodSync(root, 0o000)
@@ -77,6 +100,21 @@ describe("digesting a Result Bundle", () => {
       // The case the swallowed `catch` was written for, and got wrong. The
       // top of the tree read fine, so the walk carried on and produced a
       // digest over everything except the part it could not see.
+      expect(bundleDigest(root)).toEqual({ status: "incomplete", reason: "unreadable" })
+    })
+  })
+
+  test("refuses when an entry it listed cannot be examined", () => {
+    withBundle((root) => {
+      const nested = join(root, "nested")
+      mkdirSync(nested)
+      writeFileSync(join(nested, "deep.bin"), "deep")
+      // Readable but not traversable: the listing succeeds and every `lstat`
+      // on what it listed fails. That is the shape of an entry removed
+      // between the two, which is otherwise a race nothing can provoke on
+      // demand — and it is a different branch from a file that will not open.
+      chmodSync(nested, 0o400)
+
       expect(bundleDigest(root)).toEqual({ status: "incomplete", reason: "unreadable" })
     })
   })
@@ -184,6 +222,11 @@ describe("the redaction itself", () => {
     // and loses the path, which is the part that belongs to whoever ran it.
     const cases = [
       "EACCES: permission denied, scandir '/Users/someone/Library/run.xcresult'",
+      // The one that was leaking. Everything this tool keeps lives under
+      // `Application Support`, so a rule that stopped at the first space
+      // removed the half naming the machine and kept the half naming the
+      // repository.
+      "EACCES: permission denied, scandir '/Users/someone/Library/Application Support/opencode-xcode-test/roots/abc'",
       "ENOENT: no such file or directory, lstat '/private/tmp/xcode-test-abc/x'",
       "EMFILE: too many open files, open '/Users/someone/code/App/Info.plist'",
       "ENOTDIR: not a directory, scandir '/Users/someone/thing/file'",
@@ -196,7 +239,21 @@ describe("the redaction itself", () => {
       expect(safe).toContain(message.slice(0, message.indexOf(":")))
       expect(safe).not.toContain("/Users")
       expect(safe).not.toContain("/private")
+      expect(safe).not.toContain("Support")
+      expect(safe).not.toContain("roots")
     }
+  })
+
+  test("removes a private identifier, which addresses rather than describes", () => {
+    // A run id or a root key is not secret, it is an address: one names
+    // retained evidence, the other names a repository on this machine. Neither
+    // tells a model anything it can act on inside an error message, and a
+    // caller who needs one asked with it.
+    const runId = "0123456789abcdef0123456789abcdef"
+    const safe = safeFailure(new Error(`run ${runId} could not be read`))
+
+    expect(safe).not.toContain(runId)
+    expect(safe).toContain("could not be read")
   })
 
   test("says something honest about a value that is not an error at all", () => {
@@ -205,5 +262,31 @@ describe("the redaction itself", () => {
     // somewhere else.
     expect(safeFailure("a bare string")).toBe("an unrecognized failure")
     expect(safeFailure(undefined)).toBe("an unrecognized failure")
+  })
+})
+
+describe("a recovery that cannot take its lock", () => {
+  test("says so without naming the lock", async () => {
+    // The real error recovery raises when a sibling instance holds the root,
+    // and it carries the lock's absolute path in its message. Contained here
+    // rather than in a synthetic rejection, because what is being checked is
+    // that this particular message survives the boundary without its path.
+    const lock = "/Users/someone/Library/Application Support/opencode-xcode-test/roots/abc/root.lock"
+    const deps = {
+      service: {
+        start: () => {
+          throw new Error("not used")
+        },
+        inspect: () => Promise.resolve({ status: "notFound", subject: "run" }),
+        recover: () => Promise.reject(new LockUnavailableError(lock)),
+      },
+    } as unknown as ToolDeps
+
+    const text = await executeRecover({}, {} as never, deps)
+
+    expect(text).toContain("Recovery: failed")
+    expect(text).toContain("LockUnavailableError")
+    expect(text).not.toContain("/Users")
+    expect(text).not.toContain("root.lock")
   })
 })

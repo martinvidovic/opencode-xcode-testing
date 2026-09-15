@@ -16,6 +16,7 @@ import type {
 } from "../../src/domain/result.ts"
 import { SCHEMA_VERSION } from "../../src/domain/result.ts"
 import { FAILED_EXIT, interpretFixture, type ScenarioOverrides } from "../interpreter/harness.ts"
+import { bundleDigest } from "../../src/adapter/service.ts"
 
 export type Scenario = {
   name: string
@@ -104,3 +105,17 @@ export const SCENARIOS: Scenario[] = [
   fixed("request-cancelled-queued", queueCancelled),
   fixed("request-resolution-failed", resolutionFailed),
 ]
+
+/**
+ * The digest, or `undefined` when the walk did not finish.
+ *
+ * The typed outcome is what the production callers act on — a deadline and an
+ * unreadable tree ask different things of them — but a test comparing two
+ * digests for equality is not about that distinction, and spelling it out at
+ * every call site would bury what each of those is checking. The tests that
+ * *are* about it discriminate on the union directly.
+ */
+export function digestOf(path: string, budgetMs?: number): string | undefined {
+  const outcome = budgetMs === undefined ? bundleDigest(path) : bundleDigest(path, budgetMs)
+  return outcome.status === "digested" ? outcome.digest : undefined
+}

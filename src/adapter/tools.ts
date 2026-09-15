@@ -115,9 +115,26 @@ export type ToolDeps = {
 
 // --- xcode_test -----------------------------------------------------------
 
-/** The budget for this call, defaulting when the host told us nothing. */
+/**
+ * The budget for this call, defaulting when the host told us nothing.
+ *
+ * And defaulting when it could not be asked. Reading a host's configured
+ * limits is a call into somebody else's code, and a throw from it would take
+ * down a response that was otherwise finished — a tool that failed to answer
+ * because it could not find out how long its answer was allowed to be. The
+ * default is conservative, so falling back to it can only make a response
+ * smaller (issue #77).
+ *
+ * Guarded here rather than at each call site, so there is one rule instead of
+ * three and no caller can forget it.
+ */
 async function budgetFor(deps: ToolDeps): Promise<Budget> {
-  return deps.budget === undefined ? DEFAULT_BUDGET : await deps.budget()
+  if (deps.budget === undefined) return DEFAULT_BUDGET
+  try {
+    return await deps.budget()
+  } catch {
+    return DEFAULT_BUDGET
+  }
 }
 
 export async function executeTest(
@@ -265,10 +282,16 @@ export async function executeInspect(
     const response = await deps.service.inspect(request)
     return serialize(renderInspection(request, response), await budgetFor(deps)).text
   } catch (error) {
-    return serialize(
-      renderInspection(request, contained(error)),
-      await budgetFor(deps).catch(() => DEFAULT_BUDGET),
-    ).text
+    const annotation = `the retained evidence could not be read: ${safeFailure(error)}`
+    try {
+      return serialize(renderInspection(request, contained(annotation)), await budgetFor(deps)).text
+    } catch {
+      // The last resort, and it has to be one: a boundary whose handler can
+      // itself throw is not a boundary. Rendering and fitting are ordinary
+      // code over a response this function just built, so this should never
+      // run — which is exactly the kind of thing that does.
+      return `Inspection of ${request.facet} for run ${request.runId}: incomplete\n\n${annotation}`
+    }
   }
 }
 
@@ -280,12 +303,10 @@ export async function executeInspect(
  * their run never produced the facet, and saying nothing at all would be the
  * thrown error this exists to replace.
  *
- * The operation is named and the machine is not. `safeFailure` keeps the
- * error's kind and its first line with anything path-shaped removed — enough
- * to tell a permission denial from a missing file, and nothing that says where
- * this machine keeps things.
+ * Takes the annotation already made rather than the error, so the text is
+ * built once and the last-resort path below can print the same words.
  */
-function contained(error: unknown): InspectionResponse<unknown> {
+function contained(annotation: string): InspectionResponse<unknown> {
   return {
     status: "incomplete",
     data: undefined,
@@ -295,7 +316,7 @@ function contained(error: unknown): InspectionResponse<unknown> {
       responseTruncated: false,
       hasMore: false,
     },
-    annotation: `the retained evidence could not be read: ${safeFailure(error)}`,
+    annotation,
   }
 }
 
@@ -328,10 +349,15 @@ export function renderInspection(
           //
           // In the envelope block rather than beside the records, so the
           // budget drops facts before it drops the reason there are fewer of
-          // them. Every annotation in this tool is a literal written in this
+          // them.
+          //
+          // Almost every annotation here is a literal written in this
           // repository — no failure text from `xcresulttool`, no field value
-          // from a payload — which is what makes printing it safe rather than
-          // merely sanitized.
+          // from a payload — which is what makes printing one safe rather
+          // than merely sanitized. The exception is a contained defect (issue
+          // #77), which carries an error's kind through `safeFailure`: paths,
+          // home-relative paths and private identifiers removed, first line
+          // only, bounded.
           ...(response.annotation === undefined ? [] : ["", response.annotation]),
         ),
         block(PRIORITY.facts, ...recordLines(response.data), ...truncationLines(response.truncation)),
@@ -469,7 +495,7 @@ export async function executeRecover(
       block(PRIORITY.envelope, `Recovery: ${outcome.status}`),
       block(PRIORITY.reason, ...(outcome.message === undefined ? [] : ["", outcome.message])),
     ],
-    await budgetFor(deps).catch(() => DEFAULT_BUDGET),
+    await budgetFor(deps),
   ).text
 }
 

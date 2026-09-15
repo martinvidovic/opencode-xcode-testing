@@ -16,20 +16,7 @@ import { join } from "node:path"
 import { bundleDigest, DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
 import { withJumpingWallClock } from "../wall-clock.ts"
-
-/**
- * The digest, or `undefined` when the walk did not finish.
- *
- * The typed outcome is what the production callers act on — a deadline and an
- * unreadable tree ask different things — but a test comparing two digests for
- * equality is not about that distinction, and spelling it out at every call
- * site would bury what each of these is checking.
- */
-function digestOf(path: string, budgetMs?: number): string | undefined {
-  const outcome = budgetMs === undefined ? bundleDigest(path) : bundleDigest(path, budgetMs)
-  return outcome.status === "digested" ? outcome.digest : undefined
-}
-
+import { digestOf } from "./scenarios.ts"
 
 /** A bundle holding one file far larger than any chunk of it. */
 function bundleWithLargeFile(box: Sandbox, bytes: number): string {

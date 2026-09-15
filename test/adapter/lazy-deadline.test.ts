@@ -37,20 +37,7 @@ import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index
 import { createRunDirectory, runDirectory, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
-
-/**
- * The digest, or `undefined` when the walk did not finish.
- *
- * The typed outcome is what the production callers act on — a deadline and an
- * unreadable tree ask different things — but a test comparing two digests for
- * equality is not about that distinction, and spelling it out at every call
- * site would bury what each of these is checking.
- */
-function digestOf(path: string, budgetMs?: number): string | undefined {
-  const outcome = budgetMs === undefined ? bundleDigest(path) : bundleDigest(path, budgetMs)
-  return outcome.status === "digested" ? outcome.digest : undefined
-}
-
+import { digestOf } from "./scenarios.ts"
 
 const RUN = "run-lazy"
 

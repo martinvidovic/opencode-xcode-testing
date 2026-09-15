@@ -24,7 +24,7 @@ import { probeRuntimeCandidate, bunOnPath } from "../src/adapter/probe.ts"
 import { resolveToolchain } from "../src/runner/toolchain.ts"
 import { runFreshnessCheck, type BundleExamination } from "./freshness-check.ts"
 import { discoverDestination, type DestinationDiscovery } from "./gate/destination.ts"
-import { safeDiagnostic } from "./gate/diagnostic.ts"
+
 import { parseOptions, usage } from "./gate/options.ts"
 import { runLayer4 } from "./gate/layer4.ts"
 import { runB1Suite } from "./gate/b1.ts"
@@ -38,6 +38,7 @@ import {
 } from "./gate/observations.ts"
 import { preserveEvidence } from "./gate/forensics.ts"
 import { renderReport, writeReport, type RunReport } from "./gate/report.ts"
+import { safeFailure } from "../src/adapter/sanitize.ts"
 
 /**
  * Exported so the report-writing paths can be exercised without a simulator.
@@ -240,7 +241,7 @@ export function describeEvidence(source: string, startedAt: string, homeDir?: st
       ? { key: kept.key, bytes: kept.bytes }
       : { unavailable: kept.reason }
   } catch (error) {
-    return { unavailable: safeDiagnostic(error) }
+    return { unavailable: safeFailure(error) }
   }
 }
 
@@ -276,7 +277,7 @@ export function recordUncaughtFailure(
   error: unknown,
   homeDir?: string,
 ): void {
-  const diagnostic = safeDiagnostic(error)
+  const diagnostic = safeFailure(error)
   process.stderr.write(`acceptance gate: ${diagnostic}\n`)
 
   try {
@@ -287,7 +288,7 @@ export function recordUncaughtFailure(
     // The report is required, so failing to write one is itself worth saying
     // out loud rather than swallowing behind the original error.
     process.stderr.write(
-      `acceptance gate: no report could be written: ${safeDiagnostic(failure)}\n`,
+      `acceptance gate: no report could be written: ${safeFailure(failure)}\n`,
     )
   }
 }

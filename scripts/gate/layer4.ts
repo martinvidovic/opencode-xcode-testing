@@ -29,9 +29,9 @@ import { prepareStorage, runDirectory, storageFor, RUN_ARTIFACTS } from "../../s
 import { loadCursorSecret } from "../../src/runner/secrets.ts"
 import { examineBundle, type BundleExamination } from "../freshness-check.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
-import { safeDiagnostic } from "./diagnostic.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
+import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 /**
  * Layer 4's own context: the shared one, plus the project override that only
@@ -406,7 +406,7 @@ async function projectScenarios(
         : scenario("failed", `the tool did not complete the run: ${describe(result)}`),
     ]
   } catch (error) {
-    return [scenario("failed", `the run could not be driven: ${safeDiagnostic(error)}`)]
+    return [scenario("failed", `the run could not be driven: ${safeFailure(error)}`)]
   }
 }
 
