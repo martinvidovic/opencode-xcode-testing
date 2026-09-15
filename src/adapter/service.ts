@@ -1045,6 +1045,13 @@ function runSupervisor(
     })
 
     const handshakeTimer = setTimeout(() => {
+      // Only ever about a supervisor that has not answered. The timer is
+      // disarmed the moment one does, and this says the same thing a second
+      // way because what follows is a `SIGKILL`, not merely a resolution:
+      // `finish` being idempotent would not save a supervisor killed before
+      // reaching it.
+      if (handshook) return
+
       // It never handshook, so it never authorized a launch and owns no child.
       // But "we signalled it" is not "it is gone": returning here would hand
       // the execution slot back while a process nobody is tracking carries on,
@@ -1110,7 +1117,21 @@ function runSupervisor(
       buffer = rest
       for (const message of messages) {
         if (message.type === "ready") {
+          // The startup deadline governs startup and nothing else (issue #72).
+          // Left armed, it fires part-way through a perfectly healthy Test Run
+          // — `SIGKILL` to the supervisor, and a run that was passing reported
+          // as a launching-phase runner failure — for the sole reason that the
+          // suite ran longer than the supervisor was given to say hello.
+          // Disarmed here, permanently: a handshake is not something that can
+          // be taken back, and everything after it belongs to the Test Run's
+          // own timeout and to cancellation.
+          //
+          // The frame is authenticated by the channel it arrived on: nothing
+          // but the spawned supervisor holds the write end of this inherited
+          // descriptor, which is why the secret travels the other way and is
+          // checked on the frames the supervisor receives.
           handshook = true
+          clearTimeout(handshakeTimer)
           input.onState("supervisorReady")
         }
         if (message.type === "state") input.onState(message.state as ProtocolState)

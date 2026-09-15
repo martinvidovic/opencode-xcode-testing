@@ -23,24 +23,28 @@ import { withSandbox, type Sandbox } from "../runner/harness.ts"
 const STUB_SUPERVISOR = join(import.meta.dir, "..", "runner", "stub", "stub-supervisor.ts")
 
 /**
- * A trusted root that resolves, with the committed stub scripted to hang.
+ * A trusted root that resolves, with the committed stub scripted.
  *
  * Resolution validates the container against the real filesystem, so a run in
  * this file has to reach the supervisor before it can be about the supervisor
  * at all. The stub is the committed one ADR 0001 names for these transitions,
  * not a fixture written on the fly.
  */
-function project(box: Sandbox): string {
+function project(box: Sandbox, mode: string): string {
   const root = join(box.homeDir, "project")
   mkdirSync(join(root, "App.xcodeproj"), { recursive: true })
-  writeFileSync(join(root, ".stub-mode"), "hang\n")
+  writeFileSync(join(root, ".stub-mode"), `${mode}\n`)
   return root
 }
 
-function environmentFor(box: Sandbox, overrides: Partial<ServiceEnvironment> = {}): ServiceEnvironment {
+function environmentFor(
+  box: Sandbox,
+  mode: string,
+  overrides: Partial<ServiceEnvironment> = {},
+): ServiceEnvironment {
   return {
     storage: box.storage,
-    trustedRoot: project(box),
+    trustedRoot: project(box, mode),
     homeDir: box.homeDir,
     toolchain: identityFor(loadFixture("passed")),
     runtime: { path: process.execPath },
@@ -58,8 +62,24 @@ function environmentFor(box: Sandbox, overrides: Partial<ServiceEnvironment> = {
 
 /** Start one run against a project that resolves, and wait for its result. */
 async function run(box: Sandbox, overrides: Partial<ServiceEnvironment> = {}) {
+  return runScripted(box, "hang", overrides)
+}
+
+/**
+ * The same, with the mode named and the protocol states it reported kept.
+ *
+ * The states are the only place a killed supervisor and a finished one differ
+ * observably from out here: a run record is trimmed when it is finalized, so
+ * what the supervisor got done has to be caught as it is reported.
+ */
+async function runScripted(
+  box: Sandbox,
+  mode: string,
+  overrides: Partial<ServiceEnvironment> = {},
+  states: string[] = [],
+) {
   const service = createTestToolService(
-    environmentFor(box, {
+    environmentFor(box, mode, {
       configuration: {
         status: "loaded",
         configuration: {
@@ -72,7 +92,10 @@ async function run(box: Sandbox, overrides: Partial<ServiceEnvironment> = {}) {
       ...overrides,
     }),
   )
-  return service.start({ requestedScope: { kind: "all" } }, { onState: () => {} }).result
+  return service.start(
+    { requestedScope: { kind: "all" } },
+    { onState: (state) => states.push(state) },
+  ).result
 }
 
 describe("a supervisor that never completes its handshake", () => {
@@ -176,4 +199,44 @@ describe("a supervisor that never completes its handshake", () => {
       expect(readQueue(box.storage).quarantine).toBeUndefined()
     })
   })
+})
+
+describe("a supervisor that handshakes and then keeps working", () => {
+  test("is not killed when its startup deadline comes round", async () => {
+    await withSandbox(async (box) => {
+      // The deadline is for saying hello, and this one said hello at once.
+      // Crossing it afterwards is what every Test Run longer than half a
+      // minute does, and it must mean nothing: left armed, the timer sends
+      // `SIGKILL` to a healthy supervisor mid-run and reports a run that was
+      // passing as a launching-phase runner failure.
+      const states: string[] = []
+      const result = await runScripted(
+        box,
+        "ready-then-linger:600",
+        { handshakeDeadlineMs: 200 },
+        states,
+      )
+
+      if (!isTestRunSummary(result)) throw new Error(`expected a Test Run: ${result.outcome}`)
+
+      // The stub writes no Result Bundle, so this run cannot end in a verdict
+      // — and that is the point of naming the reason rather than avoiding
+      // one. `resultBundleMissing` is a publication fact, reached only by a
+      // supervisor that was left alone to finish. `runnerFailure` is where an
+      // armed timer would have put it, and it is a different phase entirely.
+      expect(result.reason).toBe("resultBundleMissing")
+
+      // And said again in what the supervisor reported: a handshake, then a
+      // completion it could only send by being alive to send it.
+      expect(states).toContain("executionCompleted")
+
+      // Asserted here rather than in a test of its own, and marked for what it
+      // is: this one holds either way. A supervisor killed at its startup
+      // deadline is confirmed gone, and a confirmed exit releases the root —
+      // so releasing it proves nothing about the timer. It is worth saying
+      // once that the healthy path ends with the slot back.
+      expect(readQueue(box.storage).quarantine).toBeUndefined()
+      expect(readQueue(box.storage).activeRunId).toBeUndefined()
+    })
+  }, 20_000)
 })

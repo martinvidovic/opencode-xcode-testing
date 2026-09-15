@@ -14,6 +14,9 @@
  *   crash                exit non-zero after handshaking
  *   hang                 never handshake and never exit, so the adapter's
  *                        startup deadline is the only thing that ends it
+ *   ready-then-linger:MS handshake at once, then take MS milliseconds to
+ *                        finish — a healthy supervisor overseeing a Test Run
+ *                        that outlasts its own startup deadline
  */
 
 import { createReadStream, createWriteStream } from "node:fs"
@@ -29,7 +32,7 @@ const control = createWriteStream("", { fd: 4 })
 const incoming = createReadStream("", { fd: 3 })
 
 let buffer = ""
-incoming.on("data", (chunk) => {
+incoming.on("data", async (chunk) => {
   buffer += String(chunk)
   const { messages, rest } = decodeMessages(buffer)
   buffer = rest
@@ -50,6 +53,12 @@ incoming.on("data", (chunk) => {
 
     control.write(encodeMessage({ type: "ready", runId: spec.runId }))
 
+    // The handshake and the work are deliberately separated here. A stub that
+    // answered and finished in the same tick could never show what happens to
+    // a supervisor still working when its startup deadline comes round.
+    const lingerMs = lingerOf(mode)
+    if (lingerMs > 0) await sleep(lingerMs)
+
     const storage = storageFor(spec.homeDir, spec.trustedRoot)
     let record = readRunRecord(storage, spec.runId)
     if (record !== undefined) {
@@ -67,6 +76,16 @@ incoming.on("data", (chunk) => {
     process.exit(mode === "crash" ? 70 : 0)
   }
 })
+
+/** Milliseconds a `ready-then-linger:MS` mode asks for; zero for any other. */
+function lingerOf(mode: string): number {
+  const match = /^ready-then-linger:(\d+)$/.exec(mode)
+  return match?.[1] === undefined ? 0 : Number(match[1])
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function modeFor(trustedRoot: string): string {
   try {
