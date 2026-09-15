@@ -308,7 +308,11 @@ export function renderInspection(
           PRIORITY.envelope,
           header,
           "",
-          "This facet was never produced for this run.",
+          // The reason when there is one, and the default only when there is
+          // not. "Never produced" is a claim about the run; a bundle nothing
+          // here can read is a fact about this machine, and a caller told the
+          // first would stop looking (issue #76).
+          response.annotation ?? "This facet was never produced for this run.",
         ),
       ]
     case "invalid":

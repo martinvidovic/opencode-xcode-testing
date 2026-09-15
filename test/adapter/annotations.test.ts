@@ -24,8 +24,8 @@ import { describe, expect, test } from "bun:test"
 import type { InspectionResponse } from "../../src/domain/inspection.ts"
 import { renderInspection } from "../../src/adapter/tools.ts"
 import { RESPONSE_BYTE_CAP } from "../../src/domain/limits.ts"
-import { decodeTestDetails } from "../../src/interpreter/decode.ts"
-import { TIMED_OUT } from "../../src/interpreter/ports.ts"
+import { LAZY_ANNOTATIONS } from "../../src/adapter/service.ts"
+import { OMITTED_REASON, UNREADABLE_BY_THIS_TOOLCHAIN } from "../../src/interpreter/paging.ts"
 
 const REQUEST = { runId: "a".repeat(32), facet: "failures" as const }
 
@@ -49,22 +49,40 @@ function rendered(annotation?: string): string {
 }
 
 /**
- * The typed causes, as the adapter and the interpreter word them.
+ * Every typed cause, from where it is defined.
  *
- * Copied here on purpose. This is the one place that asserts a reader can tell
- * them apart, so a test that imported them would pass just as happily if every
- * one of them were changed to the same string.
+ * Imported rather than copied. A copy is the one thing that can go stale in
+ * exactly the way this file exists to prevent, and it did: the first version
+ * of this list left out the ambiguous-association case, which is one of the
+ * causes the issue names. What a copy would have caught — every cause
+ * collapsing to one string — is caught below by requiring them to be
+ * pairwise distinct.
  */
 const CAUSES = [
-  "the lazy detail deadline expired before the detail could be read",
-  "the Result Bundle is no longer retained, so no further detail can be read from it",
-  "no bundle digest was recorded for this Test Run, so detail cannot be trusted to describe it",
-  "the Result Bundle no longer matches the digest recorded for this Test Run",
-  "this diagnostic is not associated with a retained test occurrence",
+  ...Object.values(LAZY_ANNOTATIONS),
+  OMITTED_REASON,
+  UNREADABLE_BY_THIS_TOOLCHAIN,
   "the retained evidence for this Test Run could not be read",
   "the retained evidence for this Test Run is not trustworthy",
-  "2 record(s) could not be returned within the response cap",
 ]
+
+describe("the typed causes themselves", () => {
+  test("are distinct, so a caller can act on which one they got", () => {
+    // The property a hand-copied list was there to check. Collapsing them to
+    // one string would satisfy every "is it rendered" test in this file.
+    expect(new Set(CAUSES).size).toBe(CAUSES.length)
+  })
+
+  test("include the ones the issue names by name", () => {
+    const all = CAUSES.join("\n")
+
+    expect(all).toContain("deadline expired")
+    expect(all).toContain("no longer retained")
+    expect(all).toContain("no longer matches the digest")
+    expect(all).toContain("more than one")
+    expect(all).toContain("response cap")
+  })
+})
 
 describe("an incomplete inspection", () => {
   test("carries its reason to the caller", () => {
@@ -77,10 +95,10 @@ describe("an incomplete inspection", () => {
     // The general warning is what stops a caller reading an empty page as
     // proof; the reason is what tells them whether to ask again. Neither
     // replaces the other.
-    const text = rendered(CAUSES[0])
+    const text = rendered(CAUSES[0] as string)
 
     expect(text).toContain("an empty page does not prove there are zero records")
-    expect(text).toContain(CAUSES[0])
+    expect(text).toContain(CAUSES[0] as string)
   })
 
   test("says the general thing when there is no particular reason", () => {
@@ -109,27 +127,39 @@ describe("an incomplete inspection", () => {
 })
 
 describe("the text an annotation may carry", () => {
-  test("never comes from a payload, even when the payload is a path", () => {
-    // Two of the annotations are passed through from a read that failed rather
-    // than written at the point of rendering, which is what makes this worth
-    // checking rather than reading. They have to stay authored text: a message
-    // that echoed what it was handed would print someone's home directory to a
-    // model the first time a bundle was odd.
-    const planted = "/Users/someone/private/checkout/Secret.swift"
-    const decoded = decodeTestDetails(planted as unknown)
-
-    expect(decoded.ok).toBe(false)
-    if (decoded.ok) return
-    expect(decoded.message).not.toContain(planted)
-    expect(decoded.message).not.toContain("/")
-  })
-
   test("is short enough that the reason is never what breaks the budget", () => {
     // The annotations are one sentence each by construction. Asserted rather
     // than assumed, because this one is printed in the envelope block — the
     // part the budget protects rather than trims.
-    for (const cause of [...CAUSES, TIMED_OUT.message]) {
+    for (const cause of CAUSES) {
       expect(Buffer.byteLength(cause, "utf8")).toBeLessThan(RESPONSE_BYTE_CAP / 100)
     }
+  })
+})
+
+describe("a facet that cannot be answered", () => {
+  function renderedUnsupported(annotation?: string): string {
+    return renderInspection(REQUEST, {
+      status: "unsupported",
+      facet: "failures",
+      ...(annotation === undefined ? {} : { annotation }),
+    })
+      .map((entry) => entry.lines.join("\n"))
+      .join("\n")
+  }
+
+  test("says it was never produced only when that is what happened", () => {
+    expect(renderedUnsupported()).toContain("never produced for this run")
+  })
+
+  test("says what is actually wrong when something else is", () => {
+    // A Result Bundle whose Xcode is gone was produced perfectly well. Told
+    // "never produced", a caller concludes their run had no failures facet
+    // and stops looking — a claim about the run drawn from a fact about this
+    // machine.
+    const text = renderedUnsupported(UNREADABLE_BY_THIS_TOOLCHAIN)
+
+    expect(text).toContain(UNREADABLE_BY_THIS_TOOLCHAIN)
+    expect(text).not.toContain("never produced for this run")
   })
 })

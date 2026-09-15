@@ -20,7 +20,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { isTestRunSummary } from "../../src/domain/result.ts"
-import { inspectIndex } from "../../src/interpreter/paging.ts"
+import { inspectIndex, UNREADABLE_BY_THIS_TOOLCHAIN } from "../../src/interpreter/paging.ts"
 import { FAILED_EXIT, interpretFixture, TRUSTED_ROOT } from "./harness.ts"
 
 const SECRET = Buffer.alloc(32, 7)
@@ -107,5 +107,46 @@ describe("the advertisement and the facet", () => {
 
     expect(summary.inspection.failures).toBe("incomplete")
     expect(facetStatus(index)).toBe("incomplete")
+  })
+})
+
+describe("what a facet says about itself", () => {
+  test("names the evidence it is short of, rather than only warning", async () => {
+    // Driven through the real producer, because the defect was that the
+    // producer had nothing to say. A list of strings fed to the renderer
+    // would have passed against a page that carried no annotation at all.
+    const degraded = await withoutTheSummary()
+
+    const response = inspectIndex(
+      degraded.index,
+      { runId: degraded.index.runId, facet: "failures" },
+      SECRET,
+      TRUSTED_ROOT,
+    )
+
+    expect(response.status).toBe("incomplete")
+    if (response.status !== "incomplete") return
+    expect(response.annotation).toContain("diagnostic record")
+  })
+
+  test("distinguishes a bundle nothing can read from a facet never produced", async () => {
+    // `unsupported` covered both, and rendered the second: "this facet was
+    // never produced for this run" is a claim about the run, and a caller
+    // told it about a bundle whose Xcode is merely gone would stop looking.
+    const { index } = await interpretFixture("test-failed", {
+      request: { execution: FAILED_EXIT },
+    })
+
+    const response = inspectIndex(
+      index,
+      { runId: index.runId, facet: "failures", diagnosticId: index.testFailures[0]?.id ?? "" },
+      SECRET,
+      TRUSTED_ROOT,
+      { status: "unsupported" },
+    )
+
+    expect(response.status).toBe("unsupported")
+    if (response.status !== "unsupported") return
+    expect(response.annotation).toBe(UNREADABLE_BY_THIS_TOOLCHAIN)
   })
 })

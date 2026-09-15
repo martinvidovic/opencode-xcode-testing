@@ -115,7 +115,16 @@ export type InspectionResponse<T> =
     }
   | { status: "expired" }
   | { status: "notFound"; subject: NotFoundSubject }
-  | { status: "unsupported"; facet: InspectionFacet }
+  /**
+   * The facet cannot be answered from what is here.
+   *
+   * `annotation` because that covers two different things (issue #76): a facet
+   * that was never produced for this run, and one that was produced and that
+   * nothing available can now read — a Result Bundle whose Xcode is gone, an
+   * index a later decoder wrote. Told only "never produced", a caller draws a
+   * conclusion about their run from a fact about this machine.
+   */
+  | { status: "unsupported"; facet: InspectionFacet; annotation?: string }
   | { status: "invalid"; message: string }
 
 /** A chunk of the merged stdout/stderr log, labeled untrusted by the adapter. */

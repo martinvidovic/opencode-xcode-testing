@@ -308,7 +308,14 @@ function page(
   const completeness = facetCompleteness(index, facet)
 
   if (completeness === "unavailable") return { status: "unsupported", facet }
-  if (completeness === "partial") return { status: "incomplete", data, truncation }
+  // Named rather than left to the generic warning (issue #76). "Partial" is
+  // the commonest way a page becomes incomplete and was the only one with
+  // nothing to say for itself — so the one sentence a caller got was the part
+  // they had already worked out. Which evidence was only partly recovered is
+  // what tells them whether the gap is where they are looking.
+  if (completeness === "partial") {
+    return { status: "incomplete", data, truncation, annotation: PARTIAL_EVIDENCE[facet] }
+  }
 
   // An omitted record makes the page incomplete, whatever the evidence behind
   // it says. `available` carries a strong promise — that an empty page
@@ -354,7 +361,16 @@ export function toTestRecord(occurrence: NormalizedIndex["occurrences"][number])
   }
 }
 
-function facetCompleteness(
+/**
+ * Which evidence a facet answers to, and how complete that evidence is.
+ *
+ * The one place this mapping is written. The summary advertises these same
+ * facets through `availabilityOf`, and when the two derived it separately they
+ * disagreed: the advertisement said a failures page was authoritative and the
+ * page itself said it was not (issue #76). A comment saying "keep these in
+ * step" is a comment; this is the rule.
+ */
+export function facetCompleteness(
   index: NormalizedIndex,
   facet: "scope" | "failures" | "buildErrors" | "tests",
 ): "complete" | "partial" | "unavailable" {
@@ -363,7 +379,8 @@ function facetCompleteness(
       return index.build.completeness
     // Failures answer to the diagnostic record, not to the test counts. A run
     // that counted every test and lost its supplemental failure detail has a
-    // complete `tests` facet and an incomplete `failures` one.
+    // complete `tests` facet and an incomplete `failures` one — which is the
+    // whole reason these are separate fields on the index.
     case "failures":
       return index.diagnostics.completeness
     case "scope":
@@ -384,12 +401,17 @@ function focusDiagnostic(
   // Deliberately does not say which run it was not found in.
   if (diagnostic === undefined) return { status: "notFound", subject: "diagnostic" }
 
-  if (lazy.status === "unsupported") return { status: "unsupported", facet: "failures" }
+  // Annotated, because the default sentence for `unsupported` — that the
+  // facet was never produced — is false here. It was produced; the
+  // installation that could read it is gone (issue #76).
+  if (lazy.status === "unsupported") {
+    return { status: "unsupported", facet: "failures", annotation: UNREADABLE_BY_THIS_TOOLCHAIN }
+  }
 
   const facet = failure !== undefined ? "failures" : "buildErrors"
   const view = focusedDiagnostic(index, diagnostic, trustedRoot, lazy.detail)
   if (view.focused === undefined) {
-    return omittedResponse(facet, view.truncation, view.blockedBy ?? [])
+    return omittedResponse(facet, view.truncation, view.blockedBy ?? [], lazy)
   }
 
   return focusedResponse({ view: "focused", facet, focused: view.focused }, view.truncation, lazy)
@@ -402,11 +424,13 @@ function focusTest(
 ): InspectionResponse<FacetPage> {
   const occurrence = index.occurrences.find((record) => record.id === id)
   if (occurrence === undefined) return { status: "notFound", subject: "test" }
-  if (lazy.status === "unsupported") return { status: "unsupported", facet: "tests" }
+  if (lazy.status === "unsupported") {
+    return { status: "unsupported", facet: "tests", annotation: UNREADABLE_BY_THIS_TOOLCHAIN }
+  }
 
   const view = focusedTest(index, occurrence, lazy.detail)
   if (view.focused === undefined) {
-    return omittedResponse("tests", view.truncation, view.blockedBy ?? [])
+    return omittedResponse("tests", view.truncation, view.blockedBy ?? [], lazy)
   }
 
   return focusedResponse({ view: "focused", facet: "tests", focused: view.focused }, view.truncation, lazy)
@@ -458,6 +482,7 @@ function omittedResponse(
   facet: InspectionFacet,
   truncation: TruncationState,
   blockedBy: readonly string[],
+  lazy?: LazyOutcome,
 ): InspectionResponse<FacetPage> {
   // Bounded, because this is the one part of a response assembled *after* the
   // data was fitted to the cap. Everything else in an envelope is a fixed
@@ -473,12 +498,15 @@ function omittedResponse(
       ? OMITTED_REASON
       : `${OMITTED_REASON}: ${fields} would have to be shortened, and a shortened identifier or safe location names something that does not exist`
 
+  // Fixed literals, unlike `reason`. Both are authored here and of known
+  // length, so the envelope stays a known size — and a record that did not fit
+  // *and* whose detail read expired is two facts, not one. Told only the
+  // first, a caller asks for less and gets the same answer again (issue #76).
+  const lazyCause = lazy?.status === "incomplete" ? lazy.annotation : undefined
+
   return {
     status: "incomplete",
-    // A fixed literal, unlike `reason`. The annotation is what every other
-    // `incomplete` response carries, and keeping it constant is what keeps the
-    // envelope a known size.
-    annotation: OMITTED_REASON,
+    annotation: lazyCause === undefined ? OMITTED_REASON : `${OMITTED_REASON}; ${lazyCause}`,
     data: { view: "omitted", facet, reason, blockedBy: [...named] },
     truncation,
   }
@@ -488,6 +516,24 @@ function omittedResponse(
 export const BLOCKED_FIELD_CAP = 4
 
 export const OMITTED_REASON = "this record cannot be returned within the response cap"
+
+/**
+ * Which evidence a partly-recovered facet is short of.
+ *
+ * One literal per facet, keyed the way `facetCompleteness` is, so the reason a
+ * page is partial names the same thing that made it partial. `scope` and
+ * `tests` share an evidence source and therefore share a sentence.
+ */
+const PARTIAL_EVIDENCE: Record<"scope" | "failures" | "buildErrors" | "tests", string> = {
+  failures: "the diagnostic record for this Test Run was only partly recovered",
+  buildErrors: "the build results for this Test Run were only partly recovered",
+  scope: "the test hierarchy for this Test Run was only partly recovered",
+  tests: "the test hierarchy for this Test Run was only partly recovered",
+}
+
+/** A bundle nothing here may read, as against a facet that never existed. */
+export const UNREADABLE_BY_THIS_TOOLCHAIN =
+  "the Xcode installation that wrote this Result Bundle is unavailable or is no longer the one that wrote it, so no further detail can be read from it"
 
 function single(data: FacetPage): InspectionResponse<FacetPage> {
   return {

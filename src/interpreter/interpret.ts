@@ -63,6 +63,7 @@ import { buildBuildErrors, buildTestFailures, type IndexedOccurrence } from "./d
 import { deriveId } from "./ids.ts"
 import { countOccurrences, INDEX_VERSION, type NormalizedIndex } from "./index-model.ts"
 import { normalizeTestNodes, type NormalizedOccurrence } from "./occurrences.ts"
+import { facetCompleteness } from "./paging.ts"
 import type { CancellationSignal, ExecutionFacts, MonotonicClock, XcresultTool } from "./ports.ts"
 import { toolchainIdentityMatches } from "./ports.ts"
 import {
@@ -342,35 +343,34 @@ async function gather(
   // detail it carries and never overturns the authoritative facets.
   if (cancelled() || expired()) return state
   const summaryResponse = await request.tool.run("get test-results summary", remaining())
-  if (!summaryResponse.ok) {
-    // A read that did not happen is not a read that found nothing (issue #76).
-    // Whatever failures the summary would have supplemented are unaccounted
-    // for, so an empty failures page no longer proves there were none — and
-    // saying otherwise is the one direction a caller cannot detect.
-    //
-    // The counts are untouched. This degrades the *diagnostic* record, which
-    // is precisely the distinction `diagnostics.completeness` exists to carry.
+
+  /**
+   * The summary is gone, so any failure it would have supplemented is gone
+   * with it. The counts may still be perfectly good — degrading the
+   * *diagnostic* record and nothing else is the distinction
+   * `diagnostics.completeness` exists to carry.
+   */
+  const degradeDiagnostics = (fieldPath: string, observedShape: string, what: string) => {
     state.diagnosticsDegraded = true
     anomalies.record({
       command: "get test-results summary",
-      fieldPath: "",
-      observedShape: summaryResponse.message,
-      normalizationApplied: "summary unavailable",
+      fieldPath,
+      observedShape,
+      normalizationApplied: what,
       lossy: true,
     })
+  }
+
+  if (!summaryResponse.ok) {
+    // A read that did not happen is not a read that found nothing (issue #76).
+    // Only a read that succeeded and decoded badly used to degrade anything,
+    // so a bundle whose summary could not be read at all left its failures
+    // advertised as whole — the one direction a caller cannot detect.
+    degradeDiagnostics("", summaryResponse.message, "summary unavailable")
   } else {
     const decoded = decodeTestSummary(summaryResponse.payload, anomalies)
     if (!decoded.ok) {
-      // The summary is gone, so any failure it would have supplemented is
-      // gone with it. The counts may still be perfectly good.
-      state.diagnosticsDegraded = true
-      anomalies.record({
-        command: "get test-results summary",
-        fieldPath: decoded.fieldPath,
-        observedShape: decoded.message,
-        normalizationApplied: "summary discarded",
-        lossy: true,
-      })
+      degradeDiagnostics(decoded.fieldPath, decoded.message, "summary discarded")
     } else {
       state.supplementalFailures = decoded.value.testFailures
       if (decoded.value.testFailuresDegraded) state.diagnosticsDegraded = true
@@ -663,22 +663,23 @@ function section(total: number, cap: number): CappedSection {
   return { total, shown: Math.min(total, cap), truncated: total > cap }
 }
 
+/**
+ * What the summary advertises about each facet.
+ *
+ * Every answer comes from `facetCompleteness`, which is also what the facet
+ * itself answers from (issue #76). Derived separately, the two disagreed:
+ * failures were advertised from the *test counts* and answered from the
+ * *diagnostic record*, so a run that counted every test and lost its failure
+ * detail promised an authoritative empty page and then delivered an
+ * unauthoritative one. `log` is the exception because it is not in the index's
+ * evidence at all — it is a file on disk under the retention contract.
+ */
 function availabilityOf(index: NormalizedIndex): InspectionAvailability {
-  const tests = facetAvailability(index.tests.completeness)
   return {
-    scope: tests,
-    // Failures answer to the diagnostic record, not to the test counts (issue
-    // #76). A run can count every test correctly and still lose its failure
-    // detail — a failed supplemental read is the usual way — and saying
-    // `available` on the strength of the counts advertises an empty failures
-    // page as authoritative when it is nothing of the kind.
-    //
-    // The same rule as `facetCompleteness` in `paging.ts`, and it has to be:
-    // this is the summary's advertisement of a facet, that is the facet, and a
-    // caller that believed the first would be contradicted by the second.
-    failures: facetAvailability(index.diagnostics.completeness),
-    tests,
-    buildErrors: facetAvailability(index.build.completeness),
+    scope: facetAvailability(facetCompleteness(index, "scope")),
+    failures: facetAvailability(facetCompleteness(index, "failures")),
+    tests: facetAvailability(facetCompleteness(index, "tests")),
+    buildErrors: facetAvailability(facetCompleteness(index, "buildErrors")),
     log: index.log.availability,
   }
 }
