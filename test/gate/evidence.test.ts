@@ -15,19 +15,28 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { describeEvidence } from "../../scripts/acceptance-gate.ts"
 import {
   EVIDENCE_POLICY,
   evidenceDirectory,
-  evidenceKeyFor,
   preserveEvidence,
   pruneEvidence,
 } from "../../scripts/gate/forensics.ts"
-import { countsAsFailure, runLayer4 } from "../../scripts/gate/layer4.ts"
-import { reportPathFor } from "../../scripts/gate/report.ts"
+import { countsAsFailure, runLayer4, type Layer4Options } from "../../scripts/gate/layer4.ts"
+import { keyFor, reportPathFor } from "../../scripts/gate/report.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 
 /** A temp home, and a source tree standing in for a run's storage. */
@@ -42,9 +51,27 @@ function withHome<T>(work: (home: string) => T): T {
 
 function sourceTree(bytes: number): string {
   const source = mkdtempSync(join(tmpdir(), "xcode-test-source-"))
-  mkdirSync(join(source, "runs", "abc"), { recursive: true })
-  writeFileSync(join(source, "runs", "abc", "metadata.json"), "x".repeat(bytes))
+  const run = join(source, "runs", "abc")
+  mkdirSync(join(run, "result.xcresult"), { recursive: true })
+  writeFileSync(join(run, "metadata.json"), "x".repeat(bytes))
+  writeFileSync(join(run, "result.xcresult", "Info.plist"), "x".repeat(bytes))
+  // World-readable on purpose. `xcodebuild` writes a Result Bundle at
+  // 0755/0644, so a copy that carried source modes would land like this — and
+  // a test whose source was already private could never tell.
+  chmodSync(join(run, "result.xcresult"), 0o755)
+  chmodSync(join(run, "result.xcresult", "Info.plist"), 0o644)
   return source
+}
+
+/** Every path beneath `root`, and `root` itself. */
+function everythingUnder(root: string): string[] {
+  const found = [root]
+  for (const entry of readdirSync(root)) {
+    const path = join(root, entry)
+    found.push(path)
+    if (statSync(path).isDirectory()) found.push(...everythingUnder(path).slice(1))
+  }
+  return found
 }
 
 /** Plant a set of a given size and age, as a previous run would have left it. */
@@ -79,8 +106,8 @@ describe("a failed run's evidence", () => {
         // from the same instant by the same rule, so a reader holding the
         // report knows where the evidence is without the report saying — and
         // a correlation that is nobody's job to maintain cannot drift.
-        expect(reportPathFor(startedAt, home)).toContain(evidenceKeyFor(startedAt))
-        expect(setsIn(home)).toEqual([evidenceKeyFor(startedAt)])
+        expect(reportPathFor(startedAt, home)).toContain(keyFor(startedAt))
+        expect(setsIn(home)).toEqual([keyFor(startedAt)])
       } finally {
         rmSync(source, { recursive: true, force: true })
       }
@@ -94,9 +121,15 @@ describe("a failed run's evidence", () => {
         preserveEvidence(source, { startedAt: "2026-09-15T00:00:00.000Z", homeDir: home })
 
         // A run's evidence is its private log output and its Result Bundle,
-        // which is project source in all but name.
-        const mode = statSync(join(evidenceDirectory(home), "2026-09-15T00-00-00-000Z")).mode
-        expect(mode & 0o077).toBe(0)
+        // which is project source in all but name. Checked to the leaves, not
+        // at the root: `cpSync` carries the source's modes, and a Result
+        // Bundle arrives from `xcodebuild` at 0755/0644. A 0700 root contains
+        // those in practice, and "in practice" is not what the rest of this
+        // tool's storage promises.
+        const root = join(evidenceDirectory(home), "2026-09-15T00-00-00-000Z")
+        for (const path of everythingUnder(root)) {
+          expect(statSync(path).mode & 0o077).toBe(0)
+        }
       } finally {
         rmSync(source, { recursive: true, force: true })
       }
@@ -140,6 +173,75 @@ describe("a failed run's evidence", () => {
 })
 
 describe("the evidence store", () => {
+  test("makes room before it copies, not after", () => {
+    withHome((home) => {
+      // The bound has to hold at every instant, not only once the dust
+      // settles. Pruning afterwards would leave a window holding the old store
+      // *and* the new set — which for real Result Bundles is hundreds of
+      // megabytes, and is the failure this is meant to prevent rather than a
+      // moment on the way to preventing it.
+      plantSet(home, "already-there", 900, 1_000)
+      const source = sourceTree(100)
+
+      try {
+        const kept = preserveEvidence(source, {
+          startedAt: "2026-09-15T00:00:00.000Z",
+          homeDir: home,
+          policy: { ...EVIDENCE_POLICY, maxBytes: 1000 },
+        })
+
+        // The planted set fits the budget on its own, so a prune that did not
+        // know what was coming would have kept it — and then written past the
+        // budget.
+        expect(kept.status).toBe("preserved")
+        expect(setsIn(home)).toEqual(["2026-09-15T00-00-00-000Z"])
+      } finally {
+        rmSync(source, { recursive: true, force: true })
+      }
+    })
+  })
+
+  test("counts the set it is about to write against the limit", () => {
+    withHome((home) => {
+      // The same reservation as for bytes, and needed for the same reason: a
+      // prune that made room for three and then wrote a fourth has kept four.
+      plantSet(home, "a-oldest", 16, 3_000)
+      plantSet(home, "b-middle", 16, 2_000)
+      plantSet(home, "c-newest", 16, 1_000)
+      const source = sourceTree(16)
+
+      try {
+        preserveEvidence(source, {
+          startedAt: "2026-09-15T00:00:00.000Z",
+          homeDir: home,
+          policy: { ...EVIDENCE_POLICY, maxSets: 3 },
+        })
+
+        expect(setsIn(home)).toEqual(["2026-09-15T00-00-00-000Z", "b-middle", "c-newest"])
+      } finally {
+        rmSync(source, { recursive: true, force: true })
+      }
+    })
+  })
+
+  test("does not treat a set it has just written as old", () => {
+    withHome((home) => {
+      // Age here is age *in the store*, which works because `cpSync` stamps
+      // the copy "now" rather than carrying the source's timestamps. Asking it
+      // to preserve them would make every freshly kept set look as old as the
+      // run it came from and be pruned on arrival.
+      const source = sourceTree(16)
+      try {
+        preserveEvidence(source, { startedAt: "2026-09-15T00:00:00.000Z", homeDir: home })
+        pruneEvidence(home, EVIDENCE_POLICY)
+
+        expect(setsIn(home)).toEqual(["2026-09-15T00-00-00-000Z"])
+      } finally {
+        rmSync(source, { recursive: true, force: true })
+      }
+    })
+  })
+
   test("keeps only the newest sets its count allows", () => {
     withHome((home) => {
       plantSet(home, "oldest", 16, 3_000)
@@ -194,8 +296,8 @@ describe("Layer 4 itself", () => {
    * genuinely cannot be spawned — which is what makes this a test of the
    * suite's own decision rather than of a flag passed to it.
    */
-  async function layer4With(overrides: Record<string, unknown>) {
-    const kept: Array<{ source: string; startedAt: string }> = []
+  async function layer4With(overrides: Partial<Layer4Options>) {
+    const kept: string[] = []
     let threw: unknown
 
     try {
@@ -205,9 +307,9 @@ describe("Layer 4 itself", () => {
           runtimePath: "/nonexistent/runtime",
           destination: { kind: "id", id: "NO-SUCH-DEVICE" },
           startedAt: "2026-09-15T00:00:00.000Z",
-          keepEvidence: (input) => kept.push(input),
+          keepEvidence: (source) => kept.push(source),
           ...overrides,
-        } as never,
+        } as Layer4Options,
         () => {},
       )
     } catch (error) {
@@ -217,11 +319,16 @@ describe("Layer 4 itself", () => {
     return { kept, threw }
   }
 
-  test("keeps its evidence when a scenario fails", async () => {
+  test("keeps its evidence when a scenario fails, from inside its own workspace", async () => {
     const { kept, threw } = await layer4With({})
 
     expect(threw).toBeUndefined()
     expect(kept).toHaveLength(1)
+
+    // What gets copied is the run storage the suite built for itself. Naming
+    // anything under the real home would mean a failing gate copied a user's
+    // actual runs into a second place.
+    expect(kept[0]).toContain("xcode-test-gate-")
   }, 60_000)
 
   test("keeps its evidence when it ends by throwing", async () => {
@@ -232,15 +339,6 @@ describe("Layer 4 itself", () => {
 
     expect(threw).toBeDefined()
     expect(kept).toHaveLength(1)
-  }, 60_000)
-
-  test("names a source inside its own workspace, never the user's storage", async () => {
-    // What gets copied is the run storage the suite built for itself. Naming
-    // anything under the real home here would mean a failing gate copied a
-    // user's actual runs into a second place.
-    const { kept } = await layer4With({})
-
-    expect(kept[0]?.source).toContain("xcode-test-gate-")
   }, 60_000)
 })
 
@@ -267,5 +365,44 @@ describe("what makes a run worth keeping evidence for", () => {
     expect(
       countsAsFailure({ name: "real cancellation", kind: "report-only", status: "failed", detail: "" }),
     ).toBe(false)
+  })
+})
+
+describe("what the report is told", () => {
+  test("names the key and the size when evidence was kept", () => {
+    withHome((home) => {
+      const source = sourceTree(32)
+      try {
+        const described = describeEvidence(source, "2026-09-15T00:00:00.000Z", home)
+
+        expect(described).toEqual({ key: "2026-09-15T00-00-00-000Z", bytes: 64 })
+      } finally {
+        rmSync(source, { recursive: true, force: true })
+      }
+    })
+  })
+
+  test("survives a store it cannot write to, and says why", () => {
+    withHome((home) => {
+      // The claim worth checking. This runs on the failing path, often the
+      // exceptional one, and losing the account of *why* a run failed in the
+      // course of trying to keep more of it would be the wrong trade every
+      // time. A file where the storage root should be is the bluntest way to
+      // make the store unwritable.
+      const blocked = join(home, "blocked")
+      writeFileSync(blocked, "not a directory")
+      const source = sourceTree(32)
+
+      try {
+        const described = describeEvidence(source, "2026-09-15T00:00:00.000Z", blocked)
+
+        expect(described).toHaveProperty("unavailable")
+        // Redacted on the way out, like every other diagnostic this gate
+        // prints: a reason is not worth a path leak.
+        expect(JSON.stringify(described)).not.toContain(blocked)
+      } finally {
+        rmSync(source, { recursive: true, force: true })
+      }
+    })
   })
 })

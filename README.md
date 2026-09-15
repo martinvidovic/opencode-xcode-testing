@@ -316,6 +316,13 @@ run's evidence too large for the whole budget is discarded rather than granted
 an exception — an unbounded diagnostic aid is a disk that fills up quietly.
 The report names the key and never a path.
 
+A `--project` run that fails keeps evidence about **your** project: the Run
+Records, logs and Result Bundles of runs against it name its scheme, its tests
+and where it lives. The report itself still records only that a project was
+supplied. That is the trade — private, owner-only, bounded, and yours to delete
+— and it is the reason the evidence store is not somewhere the repository could
+ever reach.
+
 `--project <path>` additionally runs against a real Xcode project you own:
 
 ```bash

@@ -49,22 +49,18 @@ export type Layer4Options = ExecutionContext & {
    */
   project?: string
   /**
-   * When this gate invocation started, and therefore what its evidence is
-   * filed under if it fails (issue #73).
-   *
-   * Passed in rather than taken here, because it is the *report's* key: the
-   * correlation only holds if both sides derive it from the same instant.
-   */
-  startedAt: string
-  /**
    * What to do with a failed run's evidence.
    *
    * A port rather than a call to `forensics.ts`, because it is the one thing
    * in here that writes outside the workspace. Naming it in the signature is
    * what lets the gate decide the policy and a test observe the decision,
    * rather than this file reaching into the user's home on its own account.
+   *
+   * It is told where the evidence is and nothing else. Which run this is and
+   * when it started are the caller's own facts, and handing them back would
+   * make this file responsible for keeping them.
    */
-  keepEvidence(input: { source: string; startedAt: string }): void
+  keepEvidence(source: string): void
 }
 
 const SUPERVISOR_ENTRYPOINT = join(import.meta.dir, "..", "..", "src", "runner", "supervisor-entry.ts")
@@ -194,10 +190,7 @@ export async function runLayer4(
       // The storage root rather than the temp home above it, so the preserved
       // tree opens onto `roots/` and `registry/` instead of three levels of
       // `Library/Application Support` that say nothing.
-      options.keepEvidence({
-        source: storageFor(homeDir, workspace).toolRoot,
-        startedAt: options.startedAt,
-      })
+      options.keepEvidence(storageFor(homeDir, workspace).toolRoot)
     }
     rmSync(workspace, { recursive: true, force: true })
   }

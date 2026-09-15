@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 
-import { TOOL_DIRECTORY } from "../../src/runner/paths.ts"
+import { toolRootFor } from "../../src/runner/paths.ts"
 import type { Suite } from "./options.ts"
 import type { ScenarioName } from "./scenarios.ts"
 
@@ -120,7 +120,18 @@ export type RunReport = {
 
 /** The `reports` directory inside the tool-managed storage root. */
 export function reportDirectory(homeDir = homedir()): string {
-  return join(homeDir, "Library", "Application Support", TOOL_DIRECTORY, "reports")
+  return join(toolRootFor(homeDir), "reports")
+}
+
+/**
+ * The name a run's durable artifacts are filed under, from when it started.
+ *
+ * One rule, used by the report's filename and by the evidence store beside it.
+ * Written twice they would agree until one of them changed, and the whole
+ * point of the correlation is that nobody has to keep it accurate.
+ */
+export function keyFor(startedAt: string): string {
+  return startedAt.replace(/[:.]/g, "-")
 }
 
 /**
@@ -131,7 +142,7 @@ export function reportDirectory(homeDir = homedir()): string {
  * something that guessed the name.
  */
 export function reportPathFor(startedAt: string, homeDir = homedir()): string {
-  return join(reportDirectory(homeDir), `acceptance-${startedAt.replace(/[:.]/g, "-")}.json`)
+  return join(reportDirectory(homeDir), `acceptance-${keyFor(startedAt)}.json`)
 }
 
 export function writeReport(report: RunReport, homeDir = homedir()): string {

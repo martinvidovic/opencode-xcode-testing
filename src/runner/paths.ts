@@ -92,7 +92,7 @@ export function storageFor(homeDir: string, canonicalTrustedRoot: string): Stora
  * without the caller assembling directory names itself.
  */
 export function storageForRootKey(homeDir: string, rootKey: string): Storage {
-  const toolRoot = join(homeDir, "Library", "Application Support", TOOL_DIRECTORY)
+  const toolRoot = toolRootFor(homeDir)
   const registryDir = join(toolRoot, "registry")
   const rootDir = join(toolRoot, "roots", rootKey)
 
@@ -109,6 +109,17 @@ export function storageForRootKey(homeDir: string, rootKey: string): Storage {
     tombstonesDir: join(rootDir, "tombstones"),
     rootKey,
   }
+}
+
+/**
+ * The tool-managed storage root under a home directory.
+ *
+ * One place, because everything this tool keeps lives under it and a second
+ * spelling is a second thing to keep in step — the reports, the evidence store
+ * and every run's artifacts all have to agree about where "here" is.
+ */
+export function toolRootFor(homeDir: string): string {
+  return join(homeDir, "Library", "Application Support", TOOL_DIRECTORY)
 }
 
 /**
