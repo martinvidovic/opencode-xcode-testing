@@ -19,12 +19,12 @@ import { join } from "node:path"
 
 import { TOOL_IDS, descriptionFor } from "../../src/adapter/descriptions.ts"
 import { defaultConfigDirectory } from "../link-host-package.ts"
-import { safeDiagnostic } from "./diagnostic.ts"
 import { bounded, SERVER_BOOT_MS } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
+import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
@@ -108,7 +108,7 @@ export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
       name: SCENARIO["b1 host registration"],
       kind: "gating",
       status: "failed",
-      detail: `the headless instance could not be driven: ${safeDiagnostic(error)}`,
+      detail: `the headless instance could not be driven: ${safeFailure(error)}`,
     })
   } finally {
     process.chdir(previousCwd)

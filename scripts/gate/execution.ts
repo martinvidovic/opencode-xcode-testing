@@ -27,10 +27,10 @@ import {
   STUB_PROVIDER_ID,
   type StubProvider,
 } from "./provider.ts"
-import { safeDiagnostic } from "./diagnostic.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
+import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
@@ -110,7 +110,7 @@ export async function runExecutionGate(
     // Beside what already ran, not instead of it. Every scenario this suite
     // finished is already in the report, so a failure here adds a reason
     // rather than replacing eleven results with one.
-    record(failure(SCENARIO["b2 execution"], `the stub-provider route could not be driven: ${safeDiagnostic(error)}`))
+    record(failure(SCENARIO["b2 execution"], `the stub-provider route could not be driven: ${safeFailure(error)}`))
   } finally {
     stub?.stop()
     process.chdir(previousCwd)

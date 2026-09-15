@@ -37,6 +37,7 @@ import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index
 import { createRunDirectory, runDirectory, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
+import { digestOf } from "./scenarios.ts"
 
 const RUN = "run-lazy"
 
@@ -158,7 +159,7 @@ async function retained<T>(work: (box: Sandbox) => Promise<T>): Promise<T> {
       runId: RUN,
       state: "completed",
       completedAt: "2026-09-13T12:00:00.000Z",
-      bundleDigest: bundleDigest(bundle),
+      bundleDigest: digestOf(bundle),
     })
     writeFileSync(join(runDirectory(box.storage, RUN), INDEX_ARTIFACT), JSON.stringify(index()), {
       mode: 0o600,

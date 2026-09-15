@@ -16,6 +16,7 @@ import { join } from "node:path"
 import { bundleDigest, DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
 import { withJumpingWallClock } from "../wall-clock.ts"
+import { digestOf } from "./scenarios.ts"
 
 /** A bundle holding one file far larger than any chunk of it. */
 function bundleWithLargeFile(box: Sandbox, bytes: number): string {
@@ -40,7 +41,7 @@ describe("digesting a large Result Bundle", () => {
       // Four chunks and a bit, so the streaming path runs several times and
       // ends part-way through a read rather than exactly on a boundary.
       const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 4 + 11)
-      const digest = bundleDigest(bundle)
+      const digest = digestOf(bundle)
 
       expect(digest).toBeDefined()
       expect(digest).toHaveLength(64)
@@ -49,8 +50,8 @@ describe("digesting a large Result Bundle", () => {
 
   test("is deterministic over content it read in pieces", async () => {
     await withSandbox((box) => {
-      const first = bundleDigest(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 2 + 7))
-      const second = bundleDigest(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 2 + 7))
+      const first = digestOf(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 2 + 7))
+      const second = digestOf(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 2 + 7))
 
       // Chunking is an implementation detail of reading, not of the digest:
       // two machines that split a file differently must still agree.
@@ -60,11 +61,11 @@ describe("digesting a large Result Bundle", () => {
 
   test("notices a change in the last partial chunk", async () => {
     await withSandbox((box) => {
-      const before = bundleDigest(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES + 5))
+      const before = digestOf(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES + 5))
       const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES + 5)
       writeFileSync(join(bundle, "Extra"), "one more byte")
 
-      expect(bundleDigest(bundle)).not.toBe(before)
+      expect(digestOf(bundle)).not.toBe(before)
     })
   })
 
@@ -75,7 +76,7 @@ describe("digesting a large Result Bundle", () => {
       // A budget of zero expires on the first chunk. Checking only between
       // files would let one large file overrun the whole budget unnoticed,
       // which is exactly where an overrun would matter.
-      expect(bundleDigest(bundle, 0)).toBeUndefined()
+      expect(digestOf(bundle, 0)).toBeUndefined()
     })
   })
 
@@ -84,7 +85,7 @@ describe("digesting a large Result Bundle", () => {
       const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 4)
       // Verification is never skipped and never guessed at: `undefined` is how
       // an incomplete one reaches the caller.
-      expect(bundleDigest(bundle, 0)).toBeUndefined()
+      expect(digestOf(bundle, 0)).toBeUndefined()
     })
   })
 })
@@ -98,10 +99,10 @@ describe("a wall clock that moves under a digest in progress", () => {
       // reported as an unfinished verification of a bundle that is fine.
       const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 2)
 
-      const digest = withJumpingWallClock(() => bundleDigest(bundle, 30_000))
+      const digest = withJumpingWallClock(() => digestOf(bundle, 30_000))
 
       expect(digest).toBeDefined()
-      expect(digest).toBe(bundleDigest(bundle, 30_000))
+      expect(digest).toBe(digestOf(bundle, 30_000))
     })
   })
 })

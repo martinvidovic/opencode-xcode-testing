@@ -39,6 +39,7 @@ import { DEFAULT_BUDGET } from "./budget.ts"
 import { block, field, PRIORITY } from "./document.ts"
 import { serialize } from "./budget.ts"
 import { renderTestToolResult } from "./output.ts"
+import { safeFailure } from "./sanitize.ts"
 
 /** Covers #3's bounded termination window — roughly 25s escalation plus drain. */
 export const ABORT_WAIT_MS = 30_000
@@ -114,9 +115,26 @@ export type ToolDeps = {
 
 // --- xcode_test -----------------------------------------------------------
 
-/** The budget for this call, defaulting when the host told us nothing. */
+/**
+ * The budget for this call, defaulting when the host told us nothing.
+ *
+ * And defaulting when it could not be asked. Reading a host's configured
+ * limits is a call into somebody else's code, and a throw from it would take
+ * down a response that was otherwise finished — a tool that failed to answer
+ * because it could not find out how long its answer was allowed to be. The
+ * default is conservative, so falling back to it can only make a response
+ * smaller (issue #77).
+ *
+ * Guarded here rather than at each call site, so there is one rule instead of
+ * three and no caller can forget it.
+ */
 async function budgetFor(deps: ToolDeps): Promise<Budget> {
-  return deps.budget === undefined ? DEFAULT_BUDGET : await deps.budget()
+  if (deps.budget === undefined) return DEFAULT_BUDGET
+  try {
+    return await deps.budget()
+  } catch {
+    return DEFAULT_BUDGET
+  }
 }
 
 export async function executeTest(
@@ -250,8 +268,56 @@ export async function executeInspect(
   deps: ToolDeps,
 ): Promise<string> {
   const request = toInspectRunRequest(args)
-  const response = await deps.service.inspect(request)
-  return serialize(renderInspection(request, response), await budgetFor(deps)).text
+
+  // The last boundary (issue #77). Everything below reads a filesystem that
+  // another process, a full volume, or a permission change can alter between
+  // one call and the next, and an exception from any of it used to leave here
+  // as a thrown host error — with whatever path the operating system put in
+  // its message, straight into a model's context.
+  //
+  // A defect is an answer about the evidence, not a crash: a caller is told
+  // the retained evidence could not be read, which is exactly what happened,
+  // and the domain outcome stays an ordinary tool response.
+  try {
+    const response = await deps.service.inspect(request)
+    return serialize(renderInspection(request, response), await budgetFor(deps)).text
+  } catch (error) {
+    const annotation = `the retained evidence could not be read: ${safeFailure(error)}`
+    try {
+      return serialize(renderInspection(request, contained(annotation)), await budgetFor(deps)).text
+    } catch {
+      // The last resort, and it has to be one: a boundary whose handler can
+      // itself throw is not a boundary. Rendering and fitting are ordinary
+      // code over a response this function just built, so this should never
+      // run — which is exactly the kind of thing that does.
+      return `Inspection of ${request.facet} for run ${request.runId}: incomplete\n\n${annotation}`
+    }
+  }
+}
+
+/**
+ * What an unexpected defect looks like to a caller.
+ *
+ * `incomplete`, because that is what it is: the evidence may be perfectly
+ * sound and this read of it was not. Saying `unsupported` would tell a caller
+ * their run never produced the facet, and saying nothing at all would be the
+ * thrown error this exists to replace.
+ *
+ * Takes the annotation already made rather than the error, so the text is
+ * built once and the last-resort path below can print the same words.
+ */
+function contained(annotation: string): InspectionResponse<unknown> {
+  return {
+    status: "incomplete",
+    data: undefined,
+    truncation: {
+      fieldTruncated: false,
+      collectionTruncated: false,
+      responseTruncated: false,
+      hasMore: false,
+    },
+    annotation,
+  }
 }
 
 export function renderInspection(
@@ -283,10 +349,15 @@ export function renderInspection(
           //
           // In the envelope block rather than beside the records, so the
           // budget drops facts before it drops the reason there are fewer of
-          // them. Every annotation in this tool is a literal written in this
+          // them.
+          //
+          // Almost every annotation here is a literal written in this
           // repository — no failure text from `xcresulttool`, no field value
-          // from a payload — which is what makes printing it safe rather than
-          // merely sanitized.
+          // from a payload — which is what makes printing one safe rather
+          // than merely sanitized. The exception is a contained defect (issue
+          // #77), which carries an error's kind through `safeFailure`: paths,
+          // home-relative paths and private identifiers removed, first line
+          // only, bounded.
           ...(response.annotation === undefined ? [] : ["", response.annotation]),
         ),
         block(PRIORITY.facts, ...recordLines(response.data), ...truncationLines(response.truncation)),
@@ -411,7 +482,14 @@ export async function executeRecover(
   _context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
-  const outcome = await deps.service.recover()
+  // Contained for the same reason as inspection, and with more at stake:
+  // recovery walks storage a crash left behind, so an unreadable lock, a
+  // vanished run directory or a full volume is the *expected* environment
+  // rather than the surprising one (issue #77).
+  const outcome = await deps.service
+    .recover()
+    .catch((error: unknown) => ({ status: "failed" as const, message: safeFailure(error) }))
+
   return serialize(
     [
       block(PRIORITY.envelope, `Recovery: ${outcome.status}`),

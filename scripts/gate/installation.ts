@@ -19,11 +19,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { TOOL_IDS } from "../../src/adapter/descriptions.ts"
-import { safeDiagnostic } from "./diagnostic.ts"
 import { bootHost, toolIds } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
+import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
@@ -66,7 +66,7 @@ export async function runInstallationGate(record: ScenarioSink): Promise<void> {
     )
   } catch (error) {
     record(
-      scenario(started, "failed", `the documented installation could not be exercised: ${safeDiagnostic(error)}`),
+      scenario(started, "failed", `the documented installation could not be exercised: ${safeFailure(error)}`),
     )
   } finally {
     rmSync(workspace, { recursive: true, force: true })

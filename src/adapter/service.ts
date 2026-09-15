@@ -1320,9 +1320,14 @@ async function lazyDetailFor(
   // that verification is never skipped, only reported as unfinished.
   const record = readRunRecord(environment.storage, index.runId)
   if (record?.bundleDigest === undefined) return INCOMPLETE_DIGEST
-  const digest = bundleDigest(bundlePath, Math.max(0, deadline - environment.now()))
-  if (digest === undefined) return TIMED_OUT
-  if (digest !== record.bundleDigest) return INCOMPLETE_MUTATED
+  const digested = bundleDigest(bundlePath, Math.max(0, deadline - environment.now()))
+  // Two different answers, and they ask different things: a deadline means try
+  // again, an unreadable tree means something on this machine needs looking
+  // at. Collapsing them told a caller to retry a permission problem.
+  if (digested.status !== "digested") {
+    return digested.reason === "deadline" ? TIMED_OUT : INCOMPLETE_UNREADABLE
+  }
+  if (digested.digest !== record.bundleDigest) return INCOMPLETE_MUTATED
   if (expired()) return TIMED_OUT
 
   const response = await tool.run(
@@ -1370,6 +1375,8 @@ export const LAZY_ANNOTATIONS = {
   noDigest:
     "no bundle digest was recorded for this Test Run, so detail cannot be trusted to describe it",
   mutated: "the Result Bundle no longer matches the digest recorded for this Test Run",
+  unreadable:
+    "the Result Bundle could not be read through completely, so it cannot be verified as the one this Test Run produced",
   noAssociation: "this diagnostic is not associated with a retained test occurrence",
   ambiguous:
     "more than one retained occurrence matches this test's configuration, device and identity",
@@ -1390,6 +1397,10 @@ const INCOMPLETE_DIGEST: LazyOutcome = {
 const INCOMPLETE_MUTATED: LazyOutcome = {
   status: "incomplete",
   annotation: LAZY_ANNOTATIONS.mutated,
+}
+const INCOMPLETE_UNREADABLE: LazyOutcome = {
+  status: "incomplete",
+  annotation: LAZY_ANNOTATIONS.unreadable,
 }
 
 /**
@@ -1591,19 +1602,21 @@ function stabilize(
 ): { record: RunRecord; verified: "yes" | "no" | "unknown" } {
   if (!existsSync(bundlePath)) return { record, verified: "unknown" }
 
-  const digest = bundleDigest(bundlePath, budgetMs)
-  if (digest === undefined) {
-    // Verification is never skipped, but it is bounded. Saying `unknown` is
-    // how an unfinished check reaches the caller instead of a guess.
+  const digested = bundleDigest(bundlePath, budgetMs)
+  if (digested.status !== "digested") {
+    // Verification is never skipped, but it is bounded — and it is now also
+    // allowed to fail. Saying `unknown` is how an unfinished check reaches the
+    // caller instead of a guess, and an unreadable tree is unfinished for a
+    // different reason rather than a different answer.
     return { record, verified: "unknown" }
   }
-  if (record.bundleDigest !== undefined && record.bundleDigest !== digest) {
+  if (record.bundleDigest !== undefined && record.bundleDigest !== digested.digest) {
     // The bundle changed under us. What was read is still what was read; it is
     // the next read that can no longer be trusted to describe the same thing.
     return { record, verified: "no" }
   }
 
-  const next = { ...record, bundleDigest: digest }
+  const next = { ...record, bundleDigest: digested.digest }
   writeRunRecord(storage, next)
   return { record: next, verified: "yes" }
 }
@@ -1645,10 +1658,22 @@ export const DIGEST_CHUNK_BYTES = 1024 * 1024
  * between them, because a single large file is exactly where an overrun would
  * otherwise go unnoticed.
  *
- * Returns `undefined` when the budget runs out. Verification is never skipped;
- * an unfinished one is reported as unfinished.
+ * Never returns a digest for a tree it did not finish walking (issue #77). A
+ * directory it could not read, an entry that vanished mid-walk, a file it
+ * could not open: each of those is a *different* bundle from the one on disk,
+ * and a digest computed over what happened to be readable would compare
+ * unequal to the recorded one — reporting a permission problem as evidence
+ * that somebody tampered with the bundle.
+ *
+ * Which is why the answer is typed rather than `undefined`. A deadline means
+ * try again; an unreadable tree means something is wrong with the machine, and
+ * a caller told the first will keep trying.
  */
-export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string | undefined {
+export type BundleDigest =
+  | { status: "digested"; digest: string }
+  | { status: "incomplete"; reason: "deadline" | "unreadable" }
+
+export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): BundleDigest {
   const hash = createHash("sha256")
 
   // Monotonic, and a *duration* from the caller rather than an instant. The
@@ -1656,39 +1681,57 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): string 
   // an instant would mean two clocks in one deadline, and a wall clock would
   // mean a deadline an NTP step can move while the walk is still running.
   const deadline = monotonicNow() + budgetMs
-  let expired = false
+  let incomplete: "deadline" | "unreadable" | undefined
 
   const walk = (current: string) => {
-    if (expired) return
+    if (incomplete !== undefined) return
+
     let entries: string[]
     try {
       entries = readdirSync(current).sort()
     } catch {
+      // Was swallowed, and the walk carried on. That produced a digest over a
+      // subtree, which is a perfectly good digest of something that is not
+      // this bundle.
+      incomplete = "unreadable"
       return
     }
+
     for (const entry of entries) {
       if (monotonicNow() >= deadline) {
-        expired = true
+        incomplete = "deadline"
         return
       }
       const child = join(current, entry)
       hash.update(entry)
 
-      // A link is hashed as the text it holds, never followed. Following one
-      // would make a bundle's identity depend on bytes outside it, and a link
-      // to an ancestor would make the walk depend on the budget to end.
-      const stats = lstatSync(child)
-      if (stats.isSymbolicLink()) hash.update(readlinkSync(child))
-      else if (stats.isDirectory()) walk(child)
-      else if (stats.isFile() && !hashFile(hash, child, deadline)) {
-        expired = true
+      try {
+        // A link is hashed as the text it holds, never followed. Following one
+        // would make a bundle's identity depend on bytes outside it, and a
+        // link to an ancestor would make the walk depend on the budget to end.
+        const stats = lstatSync(child)
+        if (stats.isSymbolicLink()) hash.update(readlinkSync(child))
+        else if (stats.isDirectory()) walk(child)
+        else if (stats.isFile() && !hashFile(hash, child, deadline)) {
+          incomplete = "deadline"
+          return
+        }
+      } catch {
+        // An entry that was listed a moment ago and cannot be examined now:
+        // removed underneath us, or never readable in the first place. Both
+        // are the same answer — this is not a tree we finished looking at.
+        incomplete = "unreadable"
         return
       }
+
+      if (incomplete !== undefined) return
     }
   }
 
   walk(path)
-  return expired ? undefined : hash.digest("hex")
+  return incomplete === undefined
+    ? { status: "digested", digest: hash.digest("hex") }
+    : { status: "incomplete", reason: incomplete }
 }
 
 /**
