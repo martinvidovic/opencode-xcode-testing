@@ -25,9 +25,53 @@ import type {
   XcresultResponse,
   XcresultTool,
 } from "../../src/interpreter/ports.ts"
+import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { REQUESTED_SCHEMA_VERSION } from "../../src/interpreter/schema.ts"
 
 export const FIXTURE_DIR = join(import.meta.dir, "..", "fixtures", "xcresult")
+
+/**
+ * A minimal index, valid in every field, for tests about what a *reader* does
+ * with one.
+ *
+ * Interpreting a fixture is the right way to test what the interpreter
+ * produces; it is a slow and indirect way to ask what happens to a hundred
+ * stack frames. This is here rather than in one test file because two of them
+ * already wanted it, and two hand-built indexes drift apart in exactly the
+ * fields nobody is looking at.
+ */
+export function syntheticIndex(overrides: Partial<NormalizedIndex> = {}): NormalizedIndex {
+  return {
+    indexVersion: INDEX_VERSION,
+    runId: "run-1",
+    decoderVersion: 1,
+    schemaVersion: "0.1.0",
+    occurrences: [],
+    testFailures: [],
+    buildErrors: [],
+    attestations: [],
+    scopeVerdict: "unverifiable",
+    scopeDigest: "d",
+    requestedSelectionCount: 0,
+    observedOutsideScope: 0,
+    build: { completeness: "complete" },
+    tests: { completeness: "complete" },
+    diagnostics: { completeness: "complete" },
+    fullMessages: {},
+    toolchain: {
+      developerDirectory: "/x",
+      xcodeVersion: "26.4.1",
+      xcodeBuild: "17E202",
+      xcresulttoolPath: "/x/t",
+      xcresulttoolVersion: "24757",
+      xcresulttoolDigest: "digest",
+      schemaVersion: "0.1.0",
+    },
+    log: { availability: "unavailable", retainedBytesExact: false },
+    bundleDigestVerified: "yes",
+    ...overrides,
+  }
+}
 
 /** The structured provenance every fixture must carry. */
 export type FixtureProvenance = {

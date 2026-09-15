@@ -60,6 +60,20 @@ export const ATTACHMENT_TEXT_CHAR_CAP = 500
 export const STACK_FRAME_TEXT_CHAR_CAP = 1_000
 
 /**
+ * Characters of a message retained with its line structure (issue #75).
+ *
+ * Derived from what can ever be read out of it rather than chosen: at most
+ * `FOCUSED_STACK_FRAME_CAP` frames survive a focused response, and each
+ * frame's text is cut at `STACK_FRAME_TEXT_CHAR_CAP`. Text past that cannot
+ * reach a caller under any response, so keeping it only makes the index
+ * slower to read on every inspection — and this index is read whole.
+ *
+ * Cutting mid-line is safe by construction: a frame pattern is anchored to a
+ * whole line, so a half-line at the end matches nothing and is not a frame.
+ */
+export const DETAIL_MESSAGE_CHAR_CAP = FOCUSED_STACK_FRAME_CAP * STACK_FRAME_TEXT_CHAR_CAP
+
+/**
  * The longest stack-frame path that will be shown.
  *
  * A separate name because it is a separate rule. The cap above is a length

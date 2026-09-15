@@ -103,10 +103,15 @@ export type NormalizedIndex = {
    * normalized text, under the same caps; this exists so the trace can be read
    * from the shape it arrived in.
    *
-   * Optional, and sparse. Absent for the single-line failures that are most of
-   * them, and absent altogether from an index written before this existed —
-   * where the reader falls back to the normalized text and reports, correctly,
-   * that no trace could be recognized.
+   * Sparse: no entry for the single-line failures that are most of them.
+   *
+   * Optional only on the read side. Every index this decoder writes carries
+   * the field, possibly empty; what the `?` is for is the indexes already on
+   * disk, written before it existed. Bumping `indexVersion` for an additive
+   * private field would have made every retained run unpageable, which is a
+   * steep price for a field the reader can simply do without — and doing
+   * without it, it recognizes no trace and says so, which for text that no
+   * longer has lines is correct.
    */
   detailMessages?: Record<string, string>
   /**

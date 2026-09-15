@@ -47,7 +47,7 @@ describe("every index this interpreter publishes", () => {
 
   for (const name of names) {
     test(`decodes: ${name}`, async () => {
-      const interpreted = await interpretFixture(name, { execution: FAILED_EXIT })
+      const interpreted = await interpretFixture(name, { request: { execution: FAILED_EXIT } })
 
       // Through JSON, because that is the journey the index actually makes.
       // A field holding `undefined` in memory is a field that is absent on
@@ -64,7 +64,7 @@ describe("an occurrence with retries", () => {
     // Named separately because it is the case a tightened rule gets wrong in
     // the most plausible way: ordinals read as positions, positions start at
     // one, and these do not.
-    const interpreted = await interpretFixture("attempts", { execution: FAILED_EXIT })
+    const interpreted = await interpretFixture("attempts", { request: { execution: FAILED_EXIT } })
     const retried = interpreted.index.occurrences.find((entry) => entry.attempts.length > 1)
 
     expect(retried).toBeDefined()

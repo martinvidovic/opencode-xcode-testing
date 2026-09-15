@@ -8,7 +8,8 @@
     "xcodeBuild": "17E202",
     "scenario": "multiline-diagnostics",
     "observedShape": "failure messages and build errors carrying an indented backtrace across several lines",
-    "note": "the shape a real XCTest or Swift Testing failure arrives in. A frame is a line, so normalization that collapses whitespace destroys every trace before anything can read it (issue #75). The failure's `at` line is absolute, as XCTest emits it, and the build error's is repository-relative \u2014 so both safe-location outcomes are exercised: reduced to a path inside the trusted root, and reduced to a bare basename."
+    "note": "a stack frame is a line, so a failure's trace must survive the normalization that collapses whitespace for display",
+    "defect": "collapsed-frames"
   },
   "payloads": {
     "metadata get": {
@@ -81,7 +82,7 @@
                       "children": [
                         {
                           "nodeType": "Failure Message",
-                          "name": "XCTAssertEqual failed: (\"denied\") is not equal to (\"granted\")\n    0   AppTests                            0x0000000104a2b1c4 LoginTests.testRejectsBadPassword() + 132\n    1   XCTestCore                          0x00000001049117ac XCTestCase.invokeTest() + 88\n    at /workspace/Sources/App/Login.swift:42:9",
+                          "name": "XCTAssertEqual failed: (\"denied\") is not equal to (\"granted\")\n    0   AppTests                            0x0000000104a2b1c4 LoginTests.testRejectsBadPassword() + 132\n    1   XCTestCore                          0x00000001049117ac XCTestCase.invokeTest() + 88\n    at /workspace/Sources/App/Login.swift:42:9\n    at /elsewhere/Private/Secret.swift:7:1",
                           "children": [
                             {
                               "nodeType": "Source Code Reference",

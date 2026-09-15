@@ -21,7 +21,8 @@ import {
 import type { ActivityNode, DiagnosticSummary } from "../../src/domain/inspection.ts"
 import { extractFrames } from "../../src/interpreter/frames.ts"
 import { focusedDiagnostic, type LazyDetail } from "../../src/interpreter/focus.ts"
-import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
+import { type NormalizedIndex } from "../../src/interpreter/index-model.ts"
+import { syntheticIndex } from "./harness.ts"
 
 const ROOT = "/workspace/example"
 
@@ -33,35 +34,7 @@ const DIAGNOSTIC: DiagnosticSummary = {
 }
 
 function indexWith(fullMessage: string): NormalizedIndex {
-  return {
-    indexVersion: INDEX_VERSION,
-    runId: "run-1",
-    decoderVersion: 1,
-    schemaVersion: "0.1.0",
-    occurrences: [],
-    testFailures: [DIAGNOSTIC],
-    buildErrors: [],
-    attestations: [],
-    scopeVerdict: "unverifiable",
-    scopeDigest: "d",
-    requestedSelectionCount: 0,
-    observedOutsideScope: 0,
-    build: { completeness: "complete" },
-    tests: { completeness: "complete" },
-    diagnostics: { completeness: "complete" },
-    fullMessages: { "diag-1": fullMessage },
-    toolchain: {
-      developerDirectory: "/x",
-      xcodeVersion: "26.4.1",
-      xcodeBuild: "17E202",
-      xcresulttoolPath: "/x/t",
-      xcresulttoolVersion: "24757",
-      xcresulttoolDigest: "digest",
-      schemaVersion: "0.1.0",
-    },
-    log: { availability: "unavailable", retainedBytesExact: false },
-    bundleDigestVerified: "yes",
-  }
+  return syntheticIndex({ testFailures: [DIAGNOSTIC], fullMessages: { "diag-1": fullMessage } })
 }
 
 const TRACE = [

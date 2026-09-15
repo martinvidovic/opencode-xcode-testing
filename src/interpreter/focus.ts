@@ -114,13 +114,10 @@ export function focusedDiagnostic(
   const full = index.fullMessages[diagnostic.id] ?? diagnostic.message
   const message = capTo(full, FOCUSED_MESSAGE_CHAR_CAP)
 
-  // Frames are read from the text as it arrived, with its lines intact, and
-  // the message shown is still built from the normalized one (issue #75). A
-  // frame *is* a line, so reading them out of collapsed text recognized
-  // nothing — and reported that as "no trace could be read" rather than as
-  // "we collapsed it". Absent for a single-line failure, and for an index
-  // written before this was kept, where the fallback recognizes nothing and
-  // says so, which is the honest answer for text that no longer has lines.
+  // Frames come from the text as it arrived, with its lines intact; the
+  // message shown is still built from the normalized one. `detailMessages`
+  // says why. The fallback recognizes nothing, which for text that no longer
+  // has lines is the honest answer rather than a failure to try.
   const detail = index.detailMessages?.[diagnostic.id] ?? full
   const extracted = extractFrames(detail, trustedRoot)
   const outcomes = extracted.frames.map(capFrame)
