@@ -21,6 +21,20 @@ import type { XcresultTool } from "../../src/interpreter/ports.ts"
 import type { XcresultCommand } from "../../src/interpreter/anomalies.ts"
 import type { ServiceEnvironment } from "../../src/adapter/service.ts"
 
+/**
+ * The digest, or `undefined` when the walk did not finish.
+ *
+ * The typed outcome is what the production callers act on — a deadline and an
+ * unreadable tree ask different things — but a test comparing two digests for
+ * equality is not about that distinction, and spelling it out at every call
+ * site would bury what each of these is checking.
+ */
+function digestOf(path: string, budgetMs?: number): string | undefined {
+  const outcome = budgetMs === undefined ? bundleDigest(path) : bundleDigest(path, budgetMs)
+  return outcome.status === "digested" ? outcome.digest : undefined
+}
+
+
 function fixtureReader(name: string): XcresultTool {
   const fixture = loadFixture(name)
   return {
@@ -76,7 +90,7 @@ describe("the bundle digest", () => {
     await withSandbox((box) => {
       const a = seedWithBundle(box, "run-a", "same")
       const b = seedWithBundle(box, "run-b", "same")
-      expect(bundleDigest(a)).toBe(bundleDigest(b))
+      expect(digestOf(a)).toBe(digestOf(b))
     })
   })
 
@@ -84,7 +98,7 @@ describe("the bundle digest", () => {
     await withSandbox((box) => {
       const a = seedWithBundle(box, "run-a", "one")
       const b = seedWithBundle(box, "run-b", "two")
-      expect(bundleDigest(a)).not.toBe(bundleDigest(b))
+      expect(digestOf(a)).not.toBe(digestOf(b))
     })
   })
 
@@ -95,12 +109,12 @@ describe("the bundle digest", () => {
 
       const bundle = seedWithBundle(box, "run-a", "same")
       symlinkSync(outside, join(bundle, "link"))
-      const before = bundleDigest(bundle)
+      const before = digestOf(bundle)
 
       // A digest that followed the link would change here, and a Test Run's
       // identity would then be editable by anything that can write this file.
       writeFileSync(outside, "second, and much longer than the first")
-      expect(bundleDigest(bundle)).toBe(before)
+      expect(digestOf(bundle)).toBe(before)
     })
   })
 })
@@ -113,7 +127,7 @@ describe("re-verification before a later read", () => {
         ...(readRunRecord(box.storage, "run-same") as NonNullable<
           ReturnType<typeof readRunRecord>
         >),
-        bundleDigest: bundleDigest(bundle),
+        bundleDigest: digestOf(bundle),
       })
 
       await finalizeRecovered(environmentFor(box), "run-same")
@@ -184,7 +198,7 @@ describe("re-verification before a later read", () => {
     // reaches the caller as unfinished rather than as a guess.
     await withSandbox((box) => {
       const bundle = seedWithBundle(box, "run-slow", "bytes")
-      expect(bundleDigest(bundle, 0)).toBeUndefined()
+      expect(digestOf(bundle, 0)).toBeUndefined()
     })
   })
 })

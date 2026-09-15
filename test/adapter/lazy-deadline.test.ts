@@ -38,6 +38,20 @@ import { createRunDirectory, runDirectory, RUN_ARTIFACTS } from "../../src/runne
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
 
+/**
+ * The digest, or `undefined` when the walk did not finish.
+ *
+ * The typed outcome is what the production callers act on — a deadline and an
+ * unreadable tree ask different things — but a test comparing two digests for
+ * equality is not about that distinction, and spelling it out at every call
+ * site would bury what each of these is checking.
+ */
+function digestOf(path: string, budgetMs?: number): string | undefined {
+  const outcome = budgetMs === undefined ? bundleDigest(path) : bundleDigest(path, budgetMs)
+  return outcome.status === "digested" ? outcome.digest : undefined
+}
+
+
 const RUN = "run-lazy"
 
 /**
@@ -158,7 +172,7 @@ async function retained<T>(work: (box: Sandbox) => Promise<T>): Promise<T> {
       runId: RUN,
       state: "completed",
       completedAt: "2026-09-13T12:00:00.000Z",
-      bundleDigest: bundleDigest(bundle),
+      bundleDigest: digestOf(bundle),
     })
     writeFileSync(join(runDirectory(box.storage, RUN), INDEX_ARTIFACT), JSON.stringify(index()), {
       mode: 0o600,

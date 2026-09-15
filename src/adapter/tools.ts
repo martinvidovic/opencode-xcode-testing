@@ -39,6 +39,7 @@ import { DEFAULT_BUDGET } from "./budget.ts"
 import { block, field, PRIORITY } from "./document.ts"
 import { serialize } from "./budget.ts"
 import { renderTestToolResult } from "./output.ts"
+import { safeFailure } from "./sanitize.ts"
 
 /** Covers #3's bounded termination window — roughly 25s escalation plus drain. */
 export const ABORT_WAIT_MS = 30_000
@@ -250,8 +251,52 @@ export async function executeInspect(
   deps: ToolDeps,
 ): Promise<string> {
   const request = toInspectRunRequest(args)
-  const response = await deps.service.inspect(request)
-  return serialize(renderInspection(request, response), await budgetFor(deps)).text
+
+  // The last boundary (issue #77). Everything below reads a filesystem that
+  // another process, a full volume, or a permission change can alter between
+  // one call and the next, and an exception from any of it used to leave here
+  // as a thrown host error — with whatever path the operating system put in
+  // its message, straight into a model's context.
+  //
+  // A defect is an answer about the evidence, not a crash: a caller is told
+  // the retained evidence could not be read, which is exactly what happened,
+  // and the domain outcome stays an ordinary tool response.
+  try {
+    const response = await deps.service.inspect(request)
+    return serialize(renderInspection(request, response), await budgetFor(deps)).text
+  } catch (error) {
+    return serialize(
+      renderInspection(request, contained(error)),
+      await budgetFor(deps).catch(() => DEFAULT_BUDGET),
+    ).text
+  }
+}
+
+/**
+ * What an unexpected defect looks like to a caller.
+ *
+ * `incomplete`, because that is what it is: the evidence may be perfectly
+ * sound and this read of it was not. Saying `unsupported` would tell a caller
+ * their run never produced the facet, and saying nothing at all would be the
+ * thrown error this exists to replace.
+ *
+ * The operation is named and the machine is not. `safeFailure` keeps the
+ * error's kind and its first line with anything path-shaped removed — enough
+ * to tell a permission denial from a missing file, and nothing that says where
+ * this machine keeps things.
+ */
+function contained(error: unknown): InspectionResponse<unknown> {
+  return {
+    status: "incomplete",
+    data: undefined,
+    truncation: {
+      fieldTruncated: false,
+      collectionTruncated: false,
+      responseTruncated: false,
+      hasMore: false,
+    },
+    annotation: `the retained evidence could not be read: ${safeFailure(error)}`,
+  }
 }
 
 export function renderInspection(
@@ -411,13 +456,20 @@ export async function executeRecover(
   _context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
-  const outcome = await deps.service.recover()
+  // Contained for the same reason as inspection, and with more at stake:
+  // recovery walks storage a crash left behind, so an unreadable lock, a
+  // vanished run directory or a full volume is the *expected* environment
+  // rather than the surprising one (issue #77).
+  const outcome = await deps.service
+    .recover()
+    .catch((error: unknown) => ({ status: "failed" as const, message: safeFailure(error) }))
+
   return serialize(
     [
       block(PRIORITY.envelope, `Recovery: ${outcome.status}`),
       block(PRIORITY.reason, ...(outcome.message === undefined ? [] : ["", outcome.message])),
     ],
-    await budgetFor(deps),
+    await budgetFor(deps).catch(() => DEFAULT_BUDGET),
   ).text
 }
 
