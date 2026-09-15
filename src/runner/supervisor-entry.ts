@@ -69,6 +69,26 @@ class ControlChannel {
       this.#lost = true
       this.#onSpec?.(undefined)
     })
+
+    // The write side needs listeners for exactly the same reason, and needs
+    // them more (issue #78). A write to a descriptor whose far end has gone
+    // fails asynchronously with `EPIPE`, and an `error` event with nobody
+    // listening is a throw out of the event loop — which kills the supervisor.
+    //
+    // At that moment the supervisor may already have authorized a detached
+    // `xcodebuild` process group, and killing the one process that holds the
+    // deadline, the cancellation and the obligation to publish leaves that
+    // group running with nothing watching it: no timeout, no cancellation, no
+    // terminal outcome, and a slot held until somebody notices. The adapter
+    // going away is precisely the case this supervisor exists to survive.
+    //
+    // One listener, not two: a writer that has been closed or ended answers a
+    // later write with an `error` of its own, so `close` needs no handler to
+    // be survivable — and treating it as loss would declare the channel gone
+    // every time a healthy run ended by closing it.
+    this.#writer.on("error", () => {
+      this.#lost = true
+    })
   }
 
   get aborted(): boolean {
@@ -92,13 +112,31 @@ class ControlChannel {
     })
   }
 
+  /**
+   * Publish a message, or record that the channel is gone.
+   *
+   * Never throws. A synchronous refusal — a writer already ended, a descriptor
+   * already closed — is the same fact as an asynchronous `EPIPE` and is
+   * recorded the same way. Backpressure is not an error and needs no answer:
+   * these are five short frames over the life of a run, the stream buffers
+   * them, and a supervisor that paused its own supervision to wait for a
+   * drain would be waiting on the very process that has gone.
+   */
   send(message: Parameters<typeof encodeMessage>[0]): void {
-    this.#writer.write(encodeMessage(message))
+    try {
+      this.#writer.write(encodeMessage(message))
+    } catch {
+      this.#lost = true
+    }
   }
 
   close(): void {
     this.#stream.destroy()
-    this.#writer.end()
+    try {
+      this.#writer.end()
+    } catch {
+      this.#lost = true
+    }
   }
 
   #consume(chunk: string): void {
@@ -153,6 +191,20 @@ export async function main(): Promise<number> {
     if (record === undefined) return EXIT_PROTOCOL
 
     channel.send({ type: "ready", runId: spec.runId })
+
+    // Nothing has been spawned yet, so a channel already known to be gone can
+    // still be answered by doing nothing at all (issue #78). This is the cheap
+    // half of the rule and it catches only loss that is *already* known here:
+    // the `EPIPE` this very write earns is delivered a turn or more later, by
+    // which time a child exists.
+    //
+    // The other half is what actually carries the guarantee, and it is the
+    // opposite instruction. Past this point the supervisor may have authorized
+    // a detached process group, and it is the only thing holding that group's
+    // deadline, its cancellation and its terminal outcome — so loss becomes
+    // something to survive rather than to stop for. A group nobody is watching
+    // is worse than an adapter with nobody to tell.
+    if (channel.lost) return EXIT_PROTOCOL
 
     const result = await superviseRun(
       {

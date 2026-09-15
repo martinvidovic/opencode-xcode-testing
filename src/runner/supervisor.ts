@@ -184,7 +184,8 @@ export async function superviseRun(
   // trigger, and only if nothing already fixed one.
   // `fix` is already first-wins, so a channel that dropped while a cancelled
   // run was being torn down cannot rewrite what happened.
-  if (ports.channelLost?.() === true && trigger.fix("toolFailure")) {
+  const channelLost = ports.channelLost?.() === true
+  if (channelLost && trigger.fix("toolFailure")) {
     durableStateUncertain = !persistTrigger(ports, record, trigger) || durableStateUncertain
   }
 
@@ -209,6 +210,11 @@ export async function superviseRun(
     ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
     ...(exit.signal === undefined ? {} : { signal: exit.signal }),
     ...(quarantine === undefined ? {} : { quarantined: true, quarantineReason: quarantine }),
+    // Recorded whether or not it became the trigger. Losing it when something
+    // else fixed the outcome first would leave recovery unable to tell an
+    // unpublished run from one whose adapter was no longer there to publish
+    // it, which is the one thing that distinguishes them.
+    ...(channelLost ? { controlChannelLost: true } : {}),
   })
 
   return {
