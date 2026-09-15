@@ -273,6 +273,21 @@ export function renderInspection(
           header,
           "",
           "The retained evidence is known to be partial, so an empty page does not prove there are zero records.",
+          // Why, when there is a why (issue #76). Every typed cause — a
+          // deadline that expired, a bundle that was deleted, a bundle that no
+          // longer matches its digest, an association that could not be made
+          // or was ambiguous, a record too large to return — was computed and
+          // then thrown away here, leaving one sentence to stand for all of
+          // them. They ask different things of a caller: one means wait, one
+          // means it is gone for good, one means ask for less.
+          //
+          // In the envelope block rather than beside the records, so the
+          // budget drops facts before it drops the reason there are fewer of
+          // them. Every annotation in this tool is a literal written in this
+          // repository — no failure text from `xcresulttool`, no field value
+          // from a payload — which is what makes printing it safe rather than
+          // merely sanitized.
+          ...(response.annotation === undefined ? [] : ["", response.annotation]),
         ),
         block(PRIORITY.facts, ...recordLines(response.data), ...truncationLines(response.truncation)),
       ]

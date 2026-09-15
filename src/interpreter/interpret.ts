@@ -342,7 +342,23 @@ async function gather(
   // detail it carries and never overturns the authoritative facets.
   if (cancelled() || expired()) return state
   const summaryResponse = await request.tool.run("get test-results summary", remaining())
-  if (summaryResponse.ok) {
+  if (!summaryResponse.ok) {
+    // A read that did not happen is not a read that found nothing (issue #76).
+    // Whatever failures the summary would have supplemented are unaccounted
+    // for, so an empty failures page no longer proves there were none — and
+    // saying otherwise is the one direction a caller cannot detect.
+    //
+    // The counts are untouched. This degrades the *diagnostic* record, which
+    // is precisely the distinction `diagnostics.completeness` exists to carry.
+    state.diagnosticsDegraded = true
+    anomalies.record({
+      command: "get test-results summary",
+      fieldPath: "",
+      observedShape: summaryResponse.message,
+      normalizationApplied: "summary unavailable",
+      lossy: true,
+    })
+  } else {
     const decoded = decodeTestSummary(summaryResponse.payload, anomalies)
     if (!decoded.ok) {
       // The summary is gone, so any failure it would have supplemented is
@@ -651,7 +667,16 @@ function availabilityOf(index: NormalizedIndex): InspectionAvailability {
   const tests = facetAvailability(index.tests.completeness)
   return {
     scope: tests,
-    failures: tests,
+    // Failures answer to the diagnostic record, not to the test counts (issue
+    // #76). A run can count every test correctly and still lose its failure
+    // detail — a failed supplemental read is the usual way — and saying
+    // `available` on the strength of the counts advertises an empty failures
+    // page as authoritative when it is nothing of the kind.
+    //
+    // The same rule as `facetCompleteness` in `paging.ts`, and it has to be:
+    // this is the summary's advertisement of a facet, that is the facet, and a
+    // caller that believed the first would be contradicted by the second.
+    failures: facetAvailability(index.diagnostics.completeness),
     tests,
     buildErrors: facetAvailability(index.build.completeness),
     log: index.log.availability,
