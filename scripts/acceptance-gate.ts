@@ -36,7 +36,8 @@ import {
   scenarioSink,
   type Observations,
 } from "./gate/observations.ts"
-import { renderReport, writeReport } from "./gate/report.ts"
+import { preserveEvidence } from "./gate/forensics.ts"
+import { renderReport, writeReport, type RunReport } from "./gate/report.ts"
 
 /**
  * Exported so the report-writing paths can be exercised without a simulator.
@@ -167,7 +168,19 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     // Wrapped so the report can tell "this suite ran four scenarios" from
     // "this suite ran four scenarios and then stopped".
     bundle = await asSuite(observed, "layer4", () =>
-      runLayer4({ ...context, ...(project === undefined ? {} : { project }) }, record),
+      runLayer4(
+        {
+          ...context,
+          ...(project === undefined ? {} : { project }),
+          startedAt: observed.startedAt,
+          // The policy lives here, where the report is written, so the two
+          // cannot disagree about whether anything was kept.
+          keepEvidence: (input) => {
+            observed.evidence = describeEvidence(input)
+          },
+        },
+        record,
+      ),
     )
   }
   if (suites.includes("b1")) {
@@ -203,6 +216,25 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   })
 
   return finish(gating.some((scenario) => scenario.status === "failed") ? "failed" : "passed")
+}
+
+/**
+ * Keep a failed Layer 4 run's evidence, and say what became of it.
+ *
+ * Never throws. This runs on the failing path, often the exceptional one, and
+ * an evidence store that cannot be written to is a worse report rather than a
+ * worse outcome — losing the account of *why* the run failed in the course of
+ * trying to keep more of it would be the wrong trade every time.
+ */
+function describeEvidence(input: { source: string; startedAt: string }): RunReport["evidence"] {
+  try {
+    const kept = preserveEvidence(input.source, { startedAt: input.startedAt })
+    return kept.status === "preserved"
+      ? { key: kept.key, bytes: kept.bytes }
+      : { unavailable: kept.reason }
+  } catch (error) {
+    return { unavailable: safeDiagnostic(error) }
+  }
 }
 
 /**

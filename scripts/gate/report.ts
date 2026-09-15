@@ -94,6 +94,20 @@ export type RunReport = {
   scenarios: ScenarioResult[]
   outcome: "passed" | "failed"
   /**
+   * The key a failed run's private evidence was filed under (issue #73).
+   *
+   * A key, never a path. The evidence is in the tool-managed storage root
+   * under exactly this name, which is derived from `startedAt` by the same
+   * rule as this report's own filename — so the correlation holds because of
+   * where things are rather than because someone wrote it down correctly.
+   *
+   * Absent on a pass, where there is nothing to keep. Present and negative
+   * when a run failed and its evidence could not be kept: a reader who goes
+   * looking needs to be told it is not there and why, rather than left to
+   * conclude the run was fine.
+   */
+  evidence?: { key: string; bytes: number } | { unavailable: string }
+  /**
    * Why the run ended as it did, when there is something to say — redacted of
    * anything path-shaped before it gets here.
    *
@@ -167,6 +181,18 @@ export function renderReport(report: RunReport, path: string): string {
   if (report.registryProblems !== undefined && report.registryProblems.length > 0) {
     // Printed, not only serialized. A check nobody reads is not a check.
     lines.push("", `registry      ${report.registryProblems.join("; ")}`)
+  }
+
+  if (report.evidence !== undefined) {
+    // Named in the terminal too. Evidence a reader does not know exists is
+    // evidence that gets pruned before anyone looks at it. The key, and never
+    // the path: a report is read by people who did not run the gate.
+    lines.push(
+      "",
+      "unavailable" in report.evidence
+        ? `evidence      not kept: ${report.evidence.unavailable}`
+        : `evidence      kept under ${report.evidence.key} (${report.evidence.bytes} bytes)`,
+    )
   }
 
   if (report.unreached !== undefined && report.unreached.length > 0) {

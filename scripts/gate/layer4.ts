@@ -48,6 +48,23 @@ export type Layer4Options = ExecutionContext & {
    * it. So these scenarios gate when they run, and only run when asked for.
    */
   project?: string
+  /**
+   * When this gate invocation started, and therefore what its evidence is
+   * filed under if it fails (issue #73).
+   *
+   * Passed in rather than taken here, because it is the *report's* key: the
+   * correlation only holds if both sides derive it from the same instant.
+   */
+  startedAt: string
+  /**
+   * What to do with a failed run's evidence.
+   *
+   * A port rather than a call to `forensics.ts`, because it is the one thing
+   * in here that writes outside the workspace. Naming it in the signature is
+   * what lets the gate decide the policy and a test observe the decision,
+   * rather than this file reaching into the user's home on its own account.
+   */
+  keepEvidence(input: { source: string; startedAt: string }): void
 }
 
 const SUPERVISOR_ENTRYPOINT = join(import.meta.dir, "..", "..", "src", "runner", "supervisor-entry.ts")
@@ -74,6 +91,16 @@ export async function runLayer4(
   const homeDir = join(workspace, "home")
   mkdirSync(homeDir, { recursive: true })
 
+  // Watched on the way past rather than asked for at the end, for the same
+  // reason the sink exists: the end is what a run that throws does not reach,
+  // and a throw is precisely when the evidence is worth keeping.
+  let anyFailed = false
+  const watch: ScenarioSink = (result) => {
+    if (countsAsFailure(result)) anyFailed = true
+    record(result)
+  }
+  let threw = false
+
   try {
     const passing = prepareProject(join(workspace, "passing"), "passing", options)
     const broken = prepareProject(join(workspace, "build-failed"), "buildFailed", options)
@@ -83,7 +110,7 @@ export async function runLayer4(
     const passed = await timed(SCENARIO["passing run"], () =>
       service.start(scoped(FIXTURE.passingSuite), noop).result,
     )
-    record(
+    watch(
       expect(passed, SCENARIO["passing run"], (result) =>
         outcomeOf(result) === "passed"
           ? undefined
@@ -94,7 +121,7 @@ export async function runLayer4(
     const failed = await timed(SCENARIO["failing run"], () =>
       service.start(scoped(FIXTURE.failingSuite), noop).result,
     )
-    record(
+    watch(
       expect(failed, SCENARIO["failing run"], (result) =>
         outcomeOf(result) === "testFailed"
           ? undefined
@@ -105,7 +132,7 @@ export async function runLayer4(
     const zeroMatch = await timed(SCENARIO["zero-match detection"], () =>
       service.start(scoped("NoSuchSuiteExists"), noop).result,
     )
-    record(
+    watch(
       expect(zeroMatch, SCENARIO["zero-match detection"], (result) => {
         // The exact contract, not merely "not passed". Xcode exits zero here,
         // so an exit-code wrapper reports a green empty run — but so does a
@@ -130,7 +157,7 @@ export async function runLayer4(
     const buildFailed = await timed(SCENARIO["buildFailed"], () =>
       brokenService.start({ requestedScope: { kind: "all" } }, noop).result,
     )
-    record(
+    watch(
       expect(buildFailed, SCENARIO["buildFailed"], (result) =>
         outcomeOf(result) === "buildFailed"
           ? undefined
@@ -138,26 +165,55 @@ export async function runLayer4(
       ),
     )
 
-    record(await inspectionScenario(service, failed))
-    record(await pagingScenario(service, passed))
+    watch(await inspectionScenario(service, failed))
+    watch(await pagingScenario(service, passed))
 
     // Report-only, per ADR 0001: these are timing-sensitive by nature, and
     // #11's stub suite already proves the supervision machinery deterministically.
-    record(await cancellationScenario(service))
-    record(await timeoutScenario(service))
+    watch(await cancellationScenario(service))
+    watch(await timeoutScenario(service))
 
     if (options.project !== undefined) {
       for (const scenario of await projectScenarios(options.project, homeDir, options)) {
-        record(scenario)
+        watch(scenario)
       }
     }
 
     // Examined here, while the bundle still exists.
     const bundlePath = bundleOf(homeDir, passing, passed)
     return bundlePath === undefined ? undefined : examineBundle(bundlePath)
+  } catch (error) {
+    threw = true
+    throw error
   } finally {
+    // A passing run leaves nothing: its workspace is regenerable and its
+    // evidence proves only what the report already says. A failing one leaves
+    // the Run Records, logs, index and Result Bundles that are the difference
+    // between knowing something broke and knowing what.
+    if (anyFailed || threw) {
+      // The storage root rather than the temp home above it, so the preserved
+      // tree opens onto `roots/` and `registry/` instead of three levels of
+      // `Library/Application Support` that say nothing.
+      options.keepEvidence({
+        source: storageFor(homeDir, workspace).toolRoot,
+        startedAt: options.startedAt,
+      })
+    }
     rmSync(workspace, { recursive: true, force: true })
   }
+}
+
+/**
+ * Whether this result makes the run one worth keeping evidence for.
+ *
+ * Report-only results are deliberately excluded, and that is the whole reason
+ * this is a named rule rather than a condition. Cancellation and timeout are
+ * report-only per ADR 0001 because they are timing-sensitive by nature, and a
+ * run whose only disappointment was one of those has *passed* — keeping a
+ * Result Bundle for it would fill the store from green runs.
+ */
+export function countsAsFailure(result: ScenarioResult): boolean {
+  return result.kind === "gating" && result.status === "failed"
 }
 
 /** Where the passing run's Result Bundle was retained, if it produced one. */

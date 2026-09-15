@@ -57,6 +57,8 @@ export const UNOBSERVED_TOOLCHAIN = {
  */
 export type Observations = {
   startedAt: string
+  /** Set when a failed Layer 4 run's evidence was kept, or could not be. */
+  evidence?: RunReport["evidence"]
   selected: Suite[]
   project?: boolean
   toolchain?: RunReport["toolchain"]
@@ -170,6 +172,7 @@ export function reportFrom(
     schemaVersion: 1,
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
+    ...(observed.evidence === undefined ? {} : { evidence: observed.evidence }),
     selected: observed.selected,
     // Only what a reader needs. `from` and `to` are how this file attributes
     // scenarios to suites, and a durable record is not the place for the
