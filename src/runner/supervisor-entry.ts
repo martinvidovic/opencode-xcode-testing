@@ -117,10 +117,13 @@ class ControlChannel {
    *
    * Never throws. A synchronous refusal — a writer already ended, a descriptor
    * already closed — is the same fact as an asynchronous `EPIPE` and is
-   * recorded the same way. Backpressure is not an error and needs no answer:
-   * these are five short frames over the life of a run, the stream buffers
-   * them, and a supervisor that paused its own supervision to wait for a
-   * drain would be waiting on the very process that has gone.
+   * recorded the same way.
+   *
+   * `write`'s return value is deliberately unread. A `false` is backpressure,
+   * not failure — the frame is buffered and will go — and this channel carries
+   * a handful of short frames over the life of a run. A supervisor that paused
+   * to wait for a drain would be suspending the supervision of a live process
+   * group in order to wait on the very process that may have gone.
    */
   send(message: Parameters<typeof encodeMessage>[0]): void {
     try {
@@ -190,21 +193,15 @@ export async function main(): Promise<number> {
     const record = readRunRecord(storage, spec.runId)
     if (record === undefined) return EXIT_PROTOCOL
 
+    // Published, and then not waited on (issue #78). The `EPIPE` this write
+    // earns when the adapter has gone arrives a turn or more later, so there
+    // is no instant at which stopping here would be the answer — and stopping
+    // would be the wrong answer anyway. From the next line on, the supervisor
+    // may hold a detached process group's deadline, its cancellation and its
+    // only route to a terminal outcome, and channel loss becomes something to
+    // survive rather than to stop for: a group nobody is watching is worse
+    // than an adapter with nobody to tell.
     channel.send({ type: "ready", runId: spec.runId })
-
-    // Nothing has been spawned yet, so a channel already known to be gone can
-    // still be answered by doing nothing at all (issue #78). This is the cheap
-    // half of the rule and it catches only loss that is *already* known here:
-    // the `EPIPE` this very write earns is delivered a turn or more later, by
-    // which time a child exists.
-    //
-    // The other half is what actually carries the guarantee, and it is the
-    // opposite instruction. Past this point the supervisor may have authorized
-    // a detached process group, and it is the only thing holding that group's
-    // deadline, its cancellation and its terminal outcome — so loss becomes
-    // something to survive rather than to stop for. A group nobody is watching
-    // is worse than an adapter with nobody to tell.
-    if (channel.lost) return EXIT_PROTOCOL
 
     const result = await superviseRun(
       {
