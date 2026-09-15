@@ -1109,8 +1109,27 @@ function runSupervisor(
       const { messages, rest } = decodeMessages(buffer)
       buffer = rest
       for (const message of messages) {
-        if (message.type === "ready") {
+        // A handshake for this run, on a descriptor only the supervisor we
+        // spawned holds. Both halves are the authentication: the channel says
+        // who is speaking, and the identifier says what they are speaking
+        // about. A frame naming some other run is a protocol error, and
+        // treating it as this run's hello would disarm a deadline on the
+        // strength of somebody else's startup.
+        if (message.type === "ready" && message.runId === input.runId) {
+          // The startup deadline governs startup and nothing else (issue #72).
+          // Left armed, it fires part-way through a perfectly healthy Test Run
+          // — `SIGKILL` to the supervisor, and a run that was passing reported
+          // as a launching-phase runner failure — for the sole reason that the
+          // suite ran longer than the supervisor was given to say hello.
+          //
+          // Disarmed here and nowhere else, permanently. A handshake cannot be
+          // taken back, and everything after it belongs to the Test Run's own
+          // timeout and to cancellation. Deliberately the only thing standing
+          // between a healthy supervisor and that `SIGKILL`: a second guard
+          // inside the timer would read as prudence and would in fact mean no
+          // test could tell whether this line still worked.
           handshook = true
+          clearTimeout(handshakeTimer)
           input.onState("supervisorReady")
         }
         if (message.type === "state") input.onState(message.state as ProtocolState)
