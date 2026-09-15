@@ -49,7 +49,17 @@ incoming.on("data", (chunk) => {
       // Explicitly kept alive rather than relying on an inherited descriptor:
       // what is under test is the adapter giving up, and a stub that exited on
       // its own would quietly test nothing.
-      setInterval(() => {}, 1_000)
+      //
+      // Bounded, though. The adapter normally kills this stub at its handshake
+      // deadline, but the tests that stub out `killProcess` to prove the tool
+      // handles a refused signal mean nothing ever kills it — and an unbounded
+      // `setInterval` then outlives the test run, the suite, and the day. Six
+      // per `bun test` had accumulated into hundreds before anyone looked.
+      //
+      // `HANG_BUDGET_MS` is two orders above any deadline these tests use, so
+      // the adapter still gives up first and the stub still tests what it
+      // tested. It is a leak bound, not a behaviour.
+      setTimeout(() => process.exit(0), HANG_BUDGET_MS)
       continue
     }
 
@@ -86,6 +96,14 @@ async function serve(spec: Spec, mode: string): Promise<never> {
   control.write(encodeMessage({ type: "completed", exitCode: 0 }))
   process.exit(mode === "crash" ? 70 : 0)
 }
+
+/**
+ * How long a `hang` stub stays up before giving up on being killed.
+ *
+ * Long enough that no test can reach it — the deadlines they set are in the
+ * hundreds of milliseconds — and short enough that nothing survives the suite.
+ */
+const HANG_BUDGET_MS = 60_000
 
 /** Milliseconds a `ready-then-linger:MS` mode asks for; zero for any other. */
 function lingerOf(mode: string): number {
