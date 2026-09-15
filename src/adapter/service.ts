@@ -1351,21 +1351,45 @@ async function lazyDetailFor(
   }
 }
 
+/**
+ * Why a lazy detail read came back short, in the caller's words.
+ *
+ * Gathered into one object so there is a place to *look* at them together, and
+ * exported so a test can require them to be distinct rather than assert that
+ * each of them is printed — printing them all is satisfied just as well by
+ * printing the same sentence four times. They ask different things: a deadline
+ * means try again, a bundle retention deleted means it is gone for good.
+ *
+ * Every one is a literal written here. Nothing in this file interpolates a
+ * path, a payload value or another process's output into an annotation, which
+ * is what makes rendering one safe rather than merely sanitized.
+ */
+export const LAZY_ANNOTATIONS = {
+  deadlineExpired: "the lazy detail deadline expired before the detail could be read",
+  bundleGone: "the Result Bundle is no longer retained, so no further detail can be read from it",
+  noDigest:
+    "no bundle digest was recorded for this Test Run, so detail cannot be trusted to describe it",
+  mutated: "the Result Bundle no longer matches the digest recorded for this Test Run",
+  noAssociation: "this diagnostic is not associated with a retained test occurrence",
+  ambiguous:
+    "more than one retained occurrence matches this test's configuration, device and identity",
+} as const
+
 const TIMED_OUT: LazyOutcome = {
   status: "incomplete",
-  annotation: "the lazy detail deadline expired before the detail could be read",
+  annotation: LAZY_ANNOTATIONS.deadlineExpired,
 }
 const INCOMPLETE_NO_BUNDLE: LazyOutcome = {
   status: "incomplete",
-  annotation: "the Result Bundle is no longer retained, so no further detail can be read from it",
+  annotation: LAZY_ANNOTATIONS.bundleGone,
 }
 const INCOMPLETE_DIGEST: LazyOutcome = {
   status: "incomplete",
-  annotation: "no bundle digest was recorded for this Test Run, so detail cannot be trusted to describe it",
+  annotation: LAZY_ANNOTATIONS.noDigest,
 }
 const INCOMPLETE_MUTATED: LazyOutcome = {
   status: "incomplete",
-  annotation: "the Result Bundle no longer matches the digest recorded for this Test Run",
+  annotation: LAZY_ANNOTATIONS.mutated,
 }
 
 /**
@@ -1392,7 +1416,7 @@ function occurrenceFor(
   if (occurrence === undefined) {
     // A build error belongs to no occurrence, and nothing in the bundle's
     // test details describes it. That is not a failure to read anything.
-    return { status: "unresolved", outcome: { status: "incomplete", annotation: NO_ASSOCIATION } }
+    return { status: "unresolved", outcome: { status: "incomplete", annotation: LAZY_ANNOTATIONS.noAssociation } }
   }
 
   const siblings = index.occurrences.filter(
@@ -1402,15 +1426,12 @@ function occurrenceFor(
       entry.deviceId === occurrence.deviceId,
   )
   if (siblings.length !== 1) {
-    return { status: "unresolved", outcome: { status: "incomplete", annotation: AMBIGUOUS } }
+    return { status: "unresolved", outcome: { status: "incomplete", annotation: LAZY_ANNOTATIONS.ambiguous } }
   }
 
   return { status: "found", subject: occurrence.identity.canonical }
 }
 
-const NO_ASSOCIATION = "this diagnostic is not associated with a retained test occurrence"
-const AMBIGUOUS =
-  "more than one retained occurrence matches this test's configuration, device and identity"
 
 /**
  * One bounded window of the retained raw log.
