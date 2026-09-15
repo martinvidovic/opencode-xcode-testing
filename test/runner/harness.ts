@@ -7,6 +7,7 @@
  * mock would only prove that the mock agrees with itself.
  */
 
+import { spawn, type ChildProcess } from "node:child_process"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -106,3 +107,38 @@ export function monotonic(): () => number {
 }
 
 export const STUB_PROCESS = join(import.meta.dir, "stub", "stub-process.ts")
+
+export type ProcessEnd = { exitCode: number | null; signal: NodeJS.Signals | null; stderr: string }
+
+/**
+ * Run a script under this runtime with a private control channel, and report
+ * how it ended.
+ *
+ * The channel is the supervisor's own shape — fd 3 to read, fd 4 to answer —
+ * because the properties these tests are about are properties of descriptors.
+ * `stderr` comes back with the status because the thing most worth knowing
+ * about a process that chose its own exit code is whether it chose it: an
+ * unheard `error` event leaves through the default handler, which is a
+ * non-zero status *and* a throw on stderr.
+ */
+export function spawnWithControlChannel(
+  entrypoint: string,
+  options: { cwd: string },
+): { child: ChildProcess; ended: Promise<ProcessEnd> } {
+  const child = spawn(process.execPath, [entrypoint], {
+    cwd: options.cwd,
+    env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+    stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+  })
+
+  let stderr = ""
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8")
+  })
+
+  const ended = new Promise<ProcessEnd>((resolve) => {
+    child.on("exit", (exitCode, signal) => resolve({ exitCode, signal, stderr }))
+  })
+
+  return { child, ended }
+}

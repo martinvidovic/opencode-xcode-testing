@@ -88,6 +88,17 @@ export type RunRecord = {
   quarantineReason?: string
   /** Set when the caller cancelled while interpretation was already running. */
   cancelledDuringInterpretation?: boolean
+  /**
+   * The private control channel went before the run finished (issue #78).
+   *
+   * Recorded as a fact rather than as an outcome, and separately from
+   * `terminationTrigger`, because it is only sometimes the reason a run ended.
+   * A channel that dropped while a cancelled run was being torn down did not
+   * cause anything — but recovery still needs to know the adapter was gone, to
+   * read a missing terminal summary as something nobody was there to publish
+   * rather than as a run that never reached one.
+   */
+  controlChannelLost?: boolean
   derivedDataMode?: "shared" | "isolated"
   /**
    * The runtime that ran this run's supervisor, and the host that asked for
