@@ -19,7 +19,6 @@ import type { Destination } from "../../src/domain/request.ts"
 import type { ExecutionContext } from "./context.ts"
 import { byteLength, lineCount, resolveBudget } from "../../src/adapter/budget.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
-import { defaultConfigDirectory } from "../link-host-package.ts"
 import {
   startStubProvider,
   stubProviderConfig,
@@ -27,6 +26,7 @@ import {
   STUB_PROVIDER_ID,
   type StubProvider,
 } from "./provider.ts"
+import { loadSdk, PLUGIN_NOT_LINKED, type OpencodeClient } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
@@ -37,50 +37,25 @@ const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
 const STUB_PORT = 45_795
 const HOST_PORT = 45_796
 
-type Client = {
-  session: {
-    create(options: unknown): Promise<{ data?: { id: string } }>
-    prompt(options: unknown): Promise<unknown>
-    messages(options: unknown): Promise<{ data?: Array<{ parts?: ToolPart[] }> }>
-  }
-}
-
-type ToolPart = {
-  type: string
-  tool?: string
-  state?: { status?: string; output?: string; error?: string }
-}
-
 /** Records each scenario as it finishes; see `ScenarioSink`. */
 export async function runExecutionGate(
   options: ExecutionContext,
   record: ScenarioSink,
 ): Promise<void> {
-  const sdkPath = join(
-    defaultConfigDirectory(),
-    "node_modules",
-    "@opencode-ai",
-    "sdk",
-    "dist",
-    "index.js",
-  )
-  if (!existsSync(sdkPath)) {
-    record(failure(SCENARIO["b2 execution"], "@opencode-ai/sdk was not found under the OpenCode config directory"))
+  // The same loader b1 uses, and for the same reason (issue #80): an
+  // unguarded dynamic import here would take the whole execution suite down
+  // from inside another package's top-level code.
+  const loaded = await loadSdk()
+  if (loaded.status !== "loaded") {
+    record(failure(SCENARIO["b2 execution"], loaded.detail))
     return
   }
   if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
-    record(
-      failure(
-        SCENARIO["b2 execution"],
-        "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`.",
-      ),
-    )
+    record(failure(SCENARIO["b2 execution"], PLUGIN_NOT_LINKED))
     return
   }
 
-  const { createOpencode } = (await import(sdkPath)) as {
-    createOpencode(options: unknown): Promise<{ client: Client; server: { close(): void } }>
-  }
+  const { createOpencode } = loaded.sdk
 
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-"))
   const previousCwd = process.cwd()
@@ -119,7 +94,7 @@ export async function runExecutionGate(
 }
 
 async function scenarios(
-  client: Client,
+  client: OpencodeClient,
   stub: StubProvider,
   roots: { passing: string; broken: string },
   record: ScenarioSink,
@@ -246,7 +221,7 @@ function inspectionResult(rendered: string, runId: string): ScenarioResult {
 
 /** Script one call, drive one turn, and return the rendered tool output. */
 async function invoke(
-  client: Client,
+  client: OpencodeClient,
   stub: StubProvider,
   directory: string,
   call: { tool: string; args: unknown },

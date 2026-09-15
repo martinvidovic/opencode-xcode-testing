@@ -18,8 +18,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { TOOL_IDS, descriptionFor } from "../../src/adapter/descriptions.ts"
-import { defaultConfigDirectory } from "../link-host-package.ts"
-import { bounded, SERVER_BOOT_MS } from "./host.ts"
+import { bounded, loadSdk, PLUGIN_NOT_LINKED, SERVER_BOOT_MS, type OpencodeClient } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
@@ -33,47 +32,18 @@ const TEMPLATES = join(REPO, "examples", "agent")
 /** A port nothing else is likely to hold, so the gate never adopts a running server. */
 const GATE_PORT = 45_729
 
-/**
- * The SDK is host-managed test infrastructure, not a repository dependency, so
- * it is resolved from the host's own config directory when it is not otherwise
- * importable.
- */
-async function loadSdk(): Promise<Sdk | undefined> {
-  const candidate = join(
-    defaultConfigDirectory(),
-    "node_modules",
-    "@opencode-ai",
-    "sdk",
-    "dist",
-    "index.js",
-  )
-  if (!existsSync(candidate)) return undefined
-  return (await import(candidate)) as Sdk
-}
-
 /** Records each scenario as it finishes; see `ScenarioSink`. */
 export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
-  const sdk = await loadSdk()
-  if (sdk === undefined) {
-    record({
-      name: SCENARIO["b1 host registration"],
-      kind: "gating",
-      status: "failed",
-      detail:
-        "@opencode-ai/sdk was not found under the OpenCode config directory; the gate looked there because the SDK is host-managed test infrastructure rather than a repository dependency.",
-    })
-    return
+  const bootstrapFailed = (detail: string) => {
+    record({ name: SCENARIO["b1 host registration"], kind: "gating", status: "failed", detail })
   }
 
+  const loaded = await loadSdk()
+  if (loaded.status !== "loaded") return bootstrapFailed(loaded.detail)
+  const sdk = loaded.sdk
+
   if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
-    record({
-      name: SCENARIO["b1 host registration"],
-      kind: "gating",
-      status: "failed",
-      detail:
-        "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`.",
-    })
-    return
+    return bootstrapFailed(PLUGIN_NOT_LINKED)
   }
 
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b1-"))

@@ -23,7 +23,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -33,18 +33,32 @@ const REPO = join(import.meta.dir, "..", "..")
 const SENTINEL = "---b1-orchestration---"
 
 /**
- * What `runB1Suite` reported, with no host SDK to be found.
+ * What `runB1Suite` reported, run against the home it is given.
  *
  * In a subprocess because the SDK is looked for under the user's home, and
  * `os.homedir()` is fixed for the life of a process — so the only way to run
- * the real lookup against a home that has no SDK in it is to start somewhere
- * that has one.
+ * the real lookup against a home whose SDK is absent, or broken, is to start
+ * somewhere that has one.
  */
-function b1WithoutAnSdk(home: string): {
-  scenarios: Array<[string, string]>
-  disagreements: string[]
-} {
+type Observed = { scenarios: Array<[string, string]>; disagreements: string[] }
+
+function b1Under(home: string): Observed {
+  return runB1(home, REPO)
+}
+
+/**
+ * Run `runB1Suite` in a subprocess under `home`, from `cwd`, after `prelude`.
+ *
+ * The prelude is how a test arranges something the suite cannot arrange for
+ * itself — removing the working directory out from under it, for instance,
+ * which no API exposes and which is exactly the shape of an unanticipated
+ * throw.
+ */
+function runB1(home: string, cwd: string, prelude = ""): Observed {
   const script = `
+    import { rmSync } from "node:fs"
+    ${prelude}
+
     import { runB1Suite } from ${JSON.stringify(join(REPO, "scripts", "gate", "b1.ts"))}
     import {
       asSuite,
@@ -64,7 +78,7 @@ function b1WithoutAnSdk(home: string): {
   `
 
   const result = spawnSync("bun", ["-e", script], {
-    cwd: REPO,
+    cwd,
     encoding: "utf8",
     env: { ...process.env, HOME: home },
   })
@@ -84,7 +98,19 @@ function b1WithoutAnSdk(home: string): {
     throw new Error(`the b1 subprocess produced no result: ${result.stdout ?? ""}`)
   }
 
-  return JSON.parse(payload) as { scenarios: Array<[string, string]>; disagreements: string[] }
+  return JSON.parse(payload) as Observed
+}
+
+/**
+ * The same, from a working directory that is removed before the suite runs.
+ *
+ * Its own directory rather than the repository's, because the subprocess
+ * deletes it — and `import.meta.dir` paths are absolute, so the imports still
+ * resolve from a directory that no longer exists.
+ */
+function b1WithADeletedWorkingDirectory(home: string): Observed {
+  const doomed = mkdtempSync(join(tmpdir(), "xcode-test-doomed-cwd-"))
+  return runB1(home, doomed, `rmSync(${JSON.stringify(doomed)}, { recursive: true, force: true })`)
 }
 
 describe("a b1 run that cannot find a host SDK", () => {
@@ -93,7 +119,7 @@ describe("a b1 run that cannot find a host SDK", () => {
     // host-boot timeouts to learn the same thing twice.
     const home = mkdtempSync(join(tmpdir(), "xcode-test-empty-home-"))
     try {
-      const observed = b1WithoutAnSdk(home)
+      const observed = b1Under(home)
 
       // The ordering that matters, taken from the production path rather than
       // asserted into existence: the bootstrap failure, and then an
@@ -108,6 +134,39 @@ describe("a b1 run that cannot find a host SDK", () => {
       // runnable, `unreached` says so, and saying it again here would turn an
       // honest bootstrap failure into a page of drift warnings — on every
       // machine without a host SDK, which is most of them.
+      expect(observed.disagreements).toEqual([])
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 120_000)
+})
+
+describe("a b1 run whose registration gate ends unexpectedly", () => {
+  test("still runs the installation check, which has nothing to do with it", async () => {
+    // Not a failure the registration gate reports — one it does not survive.
+    // `runRegistrationGate` reads `process.cwd()` before its own handler is in
+    // scope, so a working directory that has been removed underneath it raises
+    // past everything it knows how to say. That is the shape of any
+    // unanticipated throw, and what matters is what happens to its *peer*:
+    // the installation gate checks a symlink described in the README and has
+    // no stake in any of this.
+    //
+    // A well-formed stub SDK is planted so the gate gets that far. With no
+    // SDK it would report a bootstrap failure and return, which is the case
+    // above and proves nothing about a throw.
+    const home = mkdtempSync(join(tmpdir(), "xcode-test-throwing-home-"))
+    try {
+      const dist = join(home, ".config", "opencode", "node_modules", "@opencode-ai", "sdk", "dist")
+      mkdirSync(dist, { recursive: true })
+      writeFileSync(join(dist, "index.js"), "export function createOpencode() { return {} }\n")
+
+      const observed = b1WithADeletedWorkingDirectory(home)
+
+      expect(observed.scenarios.map(([name]) => name)).toEqual([
+        "b1 host registration",
+        "b1 documented installation path",
+      ])
+      expect(observed.scenarios[0]?.[1]).toBe("failed")
       expect(observed.disagreements).toEqual([])
     } finally {
       rmSync(home, { recursive: true, force: true })

@@ -9,6 +9,11 @@
  */
 
 import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
+
+import { safeFailure } from "../../src/adapter/sanitize.ts"
+import { defaultConfigDirectory } from "../link-host-package.ts"
 
 /**
  * How long the host may take to come up with this plugin loaded.
@@ -112,3 +117,147 @@ function listening(child: ReturnType<typeof spawn>): Promise<void> {
     child.on("exit", (code) => settle(new Error(`the host exited with ${code ?? "no code"}`)))
   })
 }
+
+
+// --- the host-managed SDK ---------------------------------------------------
+
+/**
+ * The part of the OpenCode SDK these gates use.
+ *
+ * Declared rather than assumed. The module is imported from the host's own
+ * installation at run time, so nothing checks it for us — and `as Sdk` against
+ * an identifier that was never defined checked exactly as much (issue #80).
+ * Bun strips types rather than checking them, so that read as working code.
+ */
+export type Sdk = {
+  createOpencode(options: {
+    port: number
+    timeout?: number
+    config: Record<string, unknown>
+  }): Promise<{ client: OpencodeClient; server: { close(): void } }>
+}
+
+/**
+ * The part of the host's client these gates call, derived from the calls.
+ *
+ * Narrow on purpose, and narrow with a cost: it is this repository's reading
+ * of somebody else's type, so it can be *wrong* in a way nothing here would
+ * notice. What it buys is that a call this gate makes and the SDK no longer
+ * offers is a mistake where it is written. What it does not buy is any
+ * assurance that the shapes are right — `loadSdk` checks one function exists,
+ * and the acceptance gate booting a real host is what checks the rest.
+ */
+export type OpencodeClient = {
+  session: {
+    create(input: unknown): Promise<{ data?: { id: string } }>
+    prompt(input: unknown): Promise<unknown>
+    messages(input: unknown): Promise<{ data?: Array<{ parts?: MessagePart[] }> }>
+  }
+  tool: {
+    ids(input: { query: { directory: string } }): Promise<{ data?: string[] }>
+    list(input: unknown): Promise<{
+      data?: Array<{ id: string; description?: string; parameters?: unknown }>
+    }>
+  }
+  app: {
+    agents(input: { query: { directory: string } }): Promise<{
+      data?: Array<Record<string, unknown>>
+    }>
+  }
+}
+
+/**
+ * One part of a host message, as the execution gate reads them.
+ *
+ * `type` and `tool` are how a tool call is picked out of a turn; `state` is
+ * where the tool's own answer ends up. Nothing else here is read, so nothing
+ * else is declared.
+ */
+export type MessagePart = {
+  type: string
+  tool?: string
+  state?: { status?: string; output?: string; error?: string }
+}
+
+/**
+ * What became of the attempt to load the SDK.
+ *
+ * Three answers, not two. "It is not installed" is a machine nobody has set
+ * up; "it is there and would not load" is a machine whose host packages are
+ * broken; "it loaded and does not fit" is a third. All three fail their gate,
+ * and a reader fixing one does something different from a reader fixing
+ * another — which is the whole reason to tell them apart.
+ */
+export type SdkLoad = { status: "loaded"; sdk: Sdk } | { status: "unusable"; detail: string }
+
+/**
+ * Load the host-managed SDK, or say why not.
+ *
+ * The SDK is host-managed test infrastructure rather than a repository
+ * dependency, so it is resolved from the host's own config directory.
+ *
+ * Nothing here escapes (issue #80). A dynamic import runs another package's
+ * top-level code, which may throw for any reason it likes — and a throw from
+ * this line used to leave the gate that called it, and then the suite,
+ * cancelling peers that have nothing to do with the SDK.
+ */
+export async function loadSdk(): Promise<SdkLoad> {
+  const candidate = join(
+    defaultConfigDirectory(),
+    "node_modules",
+    "@opencode-ai",
+    "sdk",
+    "dist",
+    "index.js",
+  )
+
+  if (!existsSync(candidate)) {
+    return {
+      status: "unusable",
+      detail:
+        "@opencode-ai/sdk was not found under the OpenCode config directory; the gate looked there because the SDK is host-managed test infrastructure rather than a repository dependency.",
+    }
+  }
+
+  let module: unknown
+  try {
+    module = await import(candidate)
+  } catch (error) {
+    // Sanitized: an import error quotes the module's own absolute path, and
+    // that path is under the user's home by construction.
+    return {
+      status: "unusable",
+      detail: `@opencode-ai/sdk was found under the OpenCode config directory but could not be imported: ${safeFailure(error)}.`,
+    }
+  }
+
+  // A module that loaded is not a module that fits. Called through a cast this
+  // failed later, inside the host boot, and was reported as a host that would
+  // not start — which is a different machine to go and look at.
+  if (!isSdk(module)) {
+    return {
+      status: "unusable",
+      detail:
+        "@opencode-ai/sdk was found under the OpenCode config directory but does not export `createOpencode`.",
+    }
+  }
+
+  return { status: "loaded", sdk: module }
+}
+
+function isSdk(value: unknown): value is Sdk {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Sdk).createOpencode === "function"
+  )
+}
+
+/**
+ * The one wording for a checkout whose host package is not linked.
+ *
+ * Both gates hit it and both said the same thing in their own words, which is
+ * one edit away from saying two different things about one condition.
+ */
+export const PLUGIN_NOT_LINKED =
+  "@opencode-ai/plugin is not resolvable from this checkout, so the plugin would fail to load silently. Run `bun scripts/link-host-package.ts`."
