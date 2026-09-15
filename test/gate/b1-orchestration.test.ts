@@ -23,7 +23,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -33,14 +33,14 @@ const REPO = join(import.meta.dir, "..", "..")
 const SENTINEL = "---b1-orchestration---"
 
 /**
- * What `runB1Suite` reported, with no host SDK to be found.
+ * What `runB1Suite` reported, run against the home it is given.
  *
  * In a subprocess because the SDK is looked for under the user's home, and
  * `os.homedir()` is fixed for the life of a process — so the only way to run
- * the real lookup against a home that has no SDK in it is to start somewhere
- * that has one.
+ * the real lookup against a home whose SDK is absent, or broken, is to start
+ * somewhere that has one.
  */
-function b1WithoutAnSdk(home: string): {
+function b1Under(home: string): {
   scenarios: Array<[string, string]>
   disagreements: string[]
 } {
@@ -93,7 +93,7 @@ describe("a b1 run that cannot find a host SDK", () => {
     // host-boot timeouts to learn the same thing twice.
     const home = mkdtempSync(join(tmpdir(), "xcode-test-empty-home-"))
     try {
-      const observed = b1WithoutAnSdk(home)
+      const observed = b1Under(home)
 
       // The ordering that matters, taken from the production path rather than
       // asserted into existence: the bootstrap failure, and then an
@@ -108,6 +108,32 @@ describe("a b1 run that cannot find a host SDK", () => {
       // runnable, `unreached` says so, and saying it again here would turn an
       // honest bootstrap failure into a page of drift warnings — on every
       // machine without a host SDK, which is most of them.
+      expect(observed.disagreements).toEqual([])
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 120_000)
+})
+
+describe("a b1 run whose host SDK will not load", () => {
+  test("still runs the installation check, which has nothing to do with the SDK", async () => {
+    // The same guarantee as above, reached the other way (issue #80). A
+    // package under someone's home directory, broken in a way this repository
+    // cannot see or fix, used to end the suite from inside a dynamic import —
+    // cancelling a check about a symlink in the README.
+    const home = mkdtempSync(join(tmpdir(), "xcode-test-broken-sdk-"))
+    try {
+      const dist = join(home, ".config", "opencode", "node_modules", "@opencode-ai", "sdk", "dist")
+      mkdirSync(dist, { recursive: true })
+      writeFileSync(join(dist, "index.js"), "throw new Error('the sdk is broken')\n")
+
+      const observed = b1Under(home)
+
+      expect(observed.scenarios.map(([name]) => name)).toEqual([
+        "b1 host registration",
+        "b1 documented installation path",
+      ])
+      expect(observed.scenarios[0]?.[1]).toBe("failed")
       expect(observed.disagreements).toEqual([])
     } finally {
       rmSync(home, { recursive: true, force: true })

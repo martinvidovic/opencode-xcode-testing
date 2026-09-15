@@ -16,13 +16,35 @@
 import { runInstallationGate } from "./installation.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { runRegistrationGate } from "./registration.ts"
+import { SCENARIO } from "./scenarios.ts"
+import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 /**
  * `runInstallationGate` runs whatever happened to registration, on purpose:
  * its check is the one that proves the README's instructions work, and a host
  * failure is no reason to stop asking.
+ *
+ * "Whatever happened" includes a throw (issue #80). The registration gate
+ * reports its own failures and is not expected to raise, but expecting is not
+ * the same as guaranteeing — and the guarantee belongs here, because this file
+ * is where the independence of the two gates is asserted. One that let its
+ * first gate's exception cancel its second would be asserting the opposite,
+ * on the machines least able to tell.
  */
 export async function runB1Suite(record: ScenarioSink): Promise<void> {
-  await runRegistrationGate(record)
+  try {
+    await runRegistrationGate(record)
+  } catch (error) {
+    // A last resort with a worse diagnostic than the gate's own, which is
+    // what makes it a last resort: anything that reaches here got past the
+    // handler that knows what it was doing.
+    record({
+      name: SCENARIO["b1 host registration"],
+      kind: "gating",
+      status: "failed",
+      detail: `the registration gate ended unexpectedly: ${safeFailure(error)}`,
+    })
+  }
+
   await runInstallationGate(record)
 }

@@ -34,11 +34,69 @@ const TEMPLATES = join(REPO, "examples", "agent")
 const GATE_PORT = 45_729
 
 /**
+ * The part of the OpenCode SDK this gate uses.
+ *
+ * Declared rather than assumed. The module is imported from the host's own
+ * installation at run time, so nothing checks it for us — and `as Sdk` against
+ * an identifier that was never defined checked exactly as much (issue #80).
+ * Bun strips types rather than checking them, so that read as working code.
+ */
+type Sdk = {
+  createOpencode(options: {
+    port: number
+    timeout: number
+    config: { plugin: string[] }
+  }): Promise<{ client: OpencodeClient; server: { close(): void } }>
+}
+
+/**
+ * The part of the host's client this gate calls, derived from the calls.
+ *
+ * Narrow on purpose. A fuller declaration would be this repository's guess at
+ * somebody else's type, kept in step by hand; what these gates need is the
+ * three groups of methods they actually use, so an SDK that stopped offering
+ * one of them is a mistake where it is written rather than at run time.
+ */
+export type OpencodeClient = {
+  session: {
+    create(input: { query: { directory: string }; body: { title: string } }): Promise<unknown>
+    prompt(input: unknown): Promise<unknown>
+    messages(input: unknown): Promise<{ data?: unknown }>
+  }
+  tool: {
+    ids(input: { query: { directory: string } }): Promise<{ data?: string[] }>
+    list(input: unknown): Promise<{ data?: unknown }>
+  }
+  app: {
+    agents(input: { query: { directory: string } }): Promise<{ data?: unknown }>
+  }
+}
+
+/**
+ * What became of the attempt to load the SDK.
+ *
+ * Three answers, not two. "It is not installed" is a machine that has not been
+ * set up; "it is there and would not load" is a machine whose host packages
+ * are broken. Both fail registration, and a reader fixing one does something
+ * different from a reader fixing the other.
+ */
+type SdkLoad =
+  | { status: "loaded"; sdk: Sdk }
+  | { status: "missing" }
+  | { status: "unusable"; detail: string }
+
+/**
  * The SDK is host-managed test infrastructure, not a repository dependency, so
  * it is resolved from the host's own config directory when it is not otherwise
  * importable.
+ *
+ * Nothing here escapes. A dynamic import runs another package's top-level
+ * code, which may throw for any reason it likes — and a throw from this line
+ * used to leave the whole suite, taking the installation gate with it. That
+ * gate has nothing to do with the SDK: it checks that the README's symlink
+ * registers the tool family, on a machine that may have no SDK at all.
  */
-async function loadSdk(): Promise<Sdk | undefined> {
+async function loadSdk(): Promise<SdkLoad> {
   const candidate = join(
     defaultConfigDirectory(),
     "node_modules",
@@ -47,23 +105,50 @@ async function loadSdk(): Promise<Sdk | undefined> {
     "dist",
     "index.js",
   )
-  if (!existsSync(candidate)) return undefined
-  return (await import(candidate)) as Sdk
+  if (!existsSync(candidate)) return { status: "missing" }
+
+  let module: unknown
+  try {
+    module = await import(candidate)
+  } catch (error) {
+    // Sanitized: the message routinely quotes the module's own absolute path,
+    // and the path is under the user's home by construction.
+    return { status: "unusable", detail: `it could not be imported: ${safeFailure(error)}` }
+  }
+
+  // A module that loaded is not a module that fits. Calling through a cast
+  // would fail later, inside the host boot, and be reported as a host that
+  // would not start — which is a different machine to go and look at.
+  if (!isSdk(module)) {
+    return { status: "unusable", detail: "it does not export `createOpencode`" }
+  }
+  return { status: "loaded", sdk: module }
+}
+
+function isSdk(value: unknown): value is Sdk {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Sdk).createOpencode === "function"
+  )
 }
 
 /** Records each scenario as it finishes; see `ScenarioSink`. */
 export async function runRegistrationGate(record: ScenarioSink): Promise<void> {
-  const sdk = await loadSdk()
-  if (sdk === undefined) {
+  const loaded = await loadSdk()
+  if (loaded.status !== "loaded") {
     record({
       name: SCENARIO["b1 host registration"],
       kind: "gating",
       status: "failed",
       detail:
-        "@opencode-ai/sdk was not found under the OpenCode config directory; the gate looked there because the SDK is host-managed test infrastructure rather than a repository dependency.",
+        loaded.status === "missing"
+          ? "@opencode-ai/sdk was not found under the OpenCode config directory; the gate looked there because the SDK is host-managed test infrastructure rather than a repository dependency."
+          : `@opencode-ai/sdk was found under the OpenCode config directory but ${loaded.detail}.`,
     })
     return
   }
+  const sdk = loaded.sdk
 
   if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
     record({
