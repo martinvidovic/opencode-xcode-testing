@@ -332,6 +332,31 @@ async function gather(
   } else if (state.build.completeness === "complete" && (state.build.errorCount ?? 0) > 0) {
     // The only situation in which testing provably never began.
     state.testingReached = false
+  } else if (
+    state.build.completeness === "complete" &&
+    (state.build.errorCount ?? 0) === 0 &&
+    request.execution.successfulExit === "yes"
+  ) {
+    // Testing was reached and produced nothing to report (issue #84).
+    //
+    // `hasTestResults` is the bundle saying whether a test-results section
+    // exists, and for a run whose selection matched nothing Xcode does not
+    // reliably write one — sometimes it does, sometimes it does not, which is
+    // why this failed intermittently rather than always. Read as "we cannot
+    // say whether testing began", it made a zero-match run indistinguishable
+    // from one that never got past building. And the scope check, which is
+    // the whole of how a zero-match run becomes `scopeMismatch`, is consulted
+    // only when testing was reached — so the run that most needs a scope
+    // verdict was the one guaranteed not to get one. What a caller saw
+    // instead was `resultBundleIncomplete`: their evidence blamed, for a
+    // selection that simply matched nothing.
+    //
+    // The inference is the exact converse of the rule above and no weaker. A
+    // build that completed with no errors is a build `xcodebuild` proceeded
+    // past, and a process that then exited successfully ran the test action to
+    // completion. Both halves are required: a build that did not complete says
+    // nothing, and a process that failed may have died before testing.
+    state.testingReached = true
   }
 
   // Summary: diagnostics and cross-check only. A defect here degrades the
