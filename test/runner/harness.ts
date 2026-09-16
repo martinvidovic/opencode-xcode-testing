@@ -8,6 +8,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process"
+import type { Readable, Writable } from "node:stream"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -124,7 +125,14 @@ export type ProcessEnd = { exitCode: number | null; signal: NodeJS.Signals | nul
 export function spawnWithControlChannel(
   entrypoint: string,
   options: { cwd: string },
-): { child: ChildProcess; ended: Promise<ProcessEnd> } {
+): {
+  child: ChildProcess
+  /** fd 3 — what the supervisor reads. Writable from here. */
+  toSupervisor: Writable | undefined
+  /** fd 4 — what the supervisor answers on. Readable from here. */
+  fromSupervisor: Readable | undefined
+  ended: Promise<ProcessEnd>
+} {
   const child = spawn(process.execPath, [entrypoint], {
     cwd: options.cwd,
     env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
@@ -140,5 +148,17 @@ export function spawnWithControlChannel(
     child.on("exit", (exitCode, signal) => resolve({ exitCode, signal, stderr }))
   })
 
-  return { child, ended }
+  // Named here rather than indexed at each use. `child.stdio` is typed as the
+  // five standard entries with union element types, because `spawn` in general
+  // may be handed anything; this call was handed a fixed list two lines above,
+  // so which of these is readable and which writable was decided there.
+  const [, , , toSupervisor, fromSupervisor] = child.stdio as unknown as [
+    unknown,
+    unknown,
+    unknown,
+    Writable | undefined,
+    Readable | undefined,
+  ]
+
+  return { child, toSupervisor, fromSupervisor, ended }
 }

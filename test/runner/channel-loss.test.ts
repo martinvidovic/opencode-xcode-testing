@@ -25,11 +25,7 @@ import { encodeMessage } from "../../src/runner/control.ts"
 import { systemProbe } from "../../src/runner/identity.ts"
 import { createRunDirectory } from "../../src/runner/paths.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
-import {
-  CONTROL_READ_FD,
-  CONTROL_WRITE_FD,
-  EXIT_PROTOCOL,
-} from "../../src/runner/supervisor-entry.ts"
+import { EXIT_PROTOCOL } from "../../src/runner/supervisor-entry.ts"
 import { sandbox, seedRun, sleep, spawnWithControlChannel } from "./harness.ts"
 
 const ENTRYPOINT = join(import.meta.dir, "..", "..", "src", "runner", "supervisor-entry.ts")
@@ -51,15 +47,17 @@ describe("a supervisor whose adapter has gone", () => {
       createRunDirectory(box.storage, runId)
       seedRun(box.storage, { runId, timeoutSeconds: 60 })
 
-      const { child, ended } = spawnWithControlChannel(ENTRYPOINT, { cwd: trustedRoot })
+      const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(ENTRYPOINT, {
+        cwd: trustedRoot,
+      })
 
       // Closed before `hello` goes, so there is no window in which the reply
       // lands in a pipe buffer and the write quietly succeeds. The `EPIPE` it
       // earns is delivered a turn or more later — while a child is running,
       // which is the ordering that used to be fatal.
-      child.stdio[CONTROL_WRITE_FD]?.destroy()
+      fromSupervisor?.destroy()
 
-      child.stdio[CONTROL_READ_FD]?.write(
+      toSupervisor?.write(
         encodeMessage({
           type: "hello",
           secret: "s".repeat(32),
@@ -166,9 +164,11 @@ describe("a supervisor whose adapter has gone", () => {
     // supervisor that never learned what to run must not invent one.
     const trustedRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
     try {
-      const { child, ended } = spawnWithControlChannel(ENTRYPOINT, { cwd: trustedRoot })
-      child.stdio[CONTROL_WRITE_FD]?.destroy()
-      child.stdio[CONTROL_READ_FD]?.end()
+      const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(ENTRYPOINT, {
+        cwd: trustedRoot,
+      })
+      fromSupervisor?.destroy()
+      toSupervisor?.end()
 
       const end = await ended
 

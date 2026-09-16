@@ -37,6 +37,7 @@ import {
   oneOf,
 } from "../domain/json.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
+import type { NormalizedAttempt, NormalizedFailure } from "./occurrences.ts"
 
 /**
  * Versioned independently of the public `schemaVersion: 1` and of Xcode's
@@ -258,7 +259,7 @@ function isTestIdentity(value: unknown): boolean {
   )
 }
 
-function isNormalizedFailure(value: unknown): boolean {
+function isNormalizedFailure(value: unknown): value is NormalizedFailure {
   if (!isRecord(value)) return false
   return (
     typeof value.message === "string" &&
@@ -267,7 +268,7 @@ function isNormalizedFailure(value: unknown): boolean {
   )
 }
 
-function isAttempt(value: unknown): boolean {
+function isAttempt(value: unknown): value is NormalizedAttempt {
   if (!isRecord(value)) return false
   return (
     // A count, because attempts are numbered from zero here — the first
@@ -382,7 +383,19 @@ function isCounts(value: unknown): value is TestCounts | undefined {
   if (!isRecord(value)) return false
 
   const { total, passed, failed, skipped, expectedFailure, unknown } = value
-  if (![total, passed, failed, skipped, expectedFailure, unknown].every(isCount)) return false
+  // Field by field rather than `every` over an array of them: `every` proves
+  // the array, and it is each of these that has to be a count before the set
+  // can be rebuilt from them.
+  if (
+    !isCount(total) ||
+    !isCount(passed) ||
+    !isCount(failed) ||
+    !isCount(skipped) ||
+    !isCount(expectedFailure) ||
+    !isCount(unknown)
+  ) {
+    return false
+  }
 
   // Rebuilt rather than asserted: the checks above prove each field, and an
   // assertion would claim the whole shape on the strength of that.

@@ -194,7 +194,9 @@ function provenanced(value: string, provenance: string): string {
 }
 
 function scopeText(scope: ScopeEvidence): string {
-  const parts = [scope.kind, scope.verdict]
+  // Annotated, because the first two entries are narrow literal unions and
+  // everything appended after them is ordinary text.
+  const parts: string[] = [scope.kind, scope.verdict]
   if (scope.kind === "selected") parts.push(count(scope.requestedSelectionCount, "selection"))
   if (scope.observedOutsideScope !== undefined) {
     parts.push(`${scope.observedOutsideScope} observed outside scope`)

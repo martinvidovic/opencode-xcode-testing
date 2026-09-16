@@ -18,6 +18,7 @@
  */
 
 import { spawn } from "node:child_process"
+import type { Readable, Writable } from "node:stream"
 import { openSync } from "node:fs"
 
 import type { EvidenceFact } from "../domain/evidence.ts"
@@ -95,9 +96,19 @@ export function spawnGatedChild(options: GateOptions): GatedChild {
     },
   )
 
-  const recordStream = child.stdio[3]
-  const authorizeStream = child.stdio[4]
-  const execStream = child.stdio[5]
+  // `child.stdio` is typed as the five standard entries with union element
+  // types, because `spawn` in general may be handed anything. This call was
+  // handed a fixed six-entry list three lines above, so what each of these is
+  // was decided there. Stated once, beside the spawn that justifies it,
+  // rather than asserted at each use (issue #74).
+  const [, , , recordStream, authorizeStream, execStream] = child.stdio as unknown as [
+    unknown,
+    unknown,
+    unknown,
+    Readable | undefined,
+    Writable | undefined,
+    Readable | undefined,
+  ]
 
   let resolveRecorded: (event: ChildRecordEvent) => void = () => {}
   let rejectRecorded: (error: Error) => void = () => {}

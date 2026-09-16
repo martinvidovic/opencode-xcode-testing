@@ -26,6 +26,7 @@ import { readQueue, writeQueue } from "../../src/runner/queue.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { identityFor, loadFixture, RESOLVED } from "../interpreter/harness.ts"
 import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
+import { infrastructureReason, summaryOf as runSummary } from "./scenarios.ts"
 
 const RUN = "run-pre-launch"
 
@@ -82,10 +83,10 @@ describe("a run that never reached launch authorization", () => {
       if (!isTestRunSummary(summary)) throw new Error("expected a Test Run summary")
 
       expect(summary.outcome).toBe("infrastructureFailed")
-      expect(summary.reason).toBe("runnerFailure")
+      expect(infrastructureReason(summary)).toBe("runnerFailure")
       // Nothing ran, and the summary says so rather than leaving a reader to
       // infer it from a zero count that could equally mean "all passed".
-      expect(summary.execution.execObserved).toBe("no")
+      expect(runSummary(summary).execution.execObserved).toBe("no")
     })
   })
 
@@ -187,8 +188,8 @@ describe("a run that never reached launch authorization", () => {
         const summary = summaryOf(box)
         if (!isTestRunSummary(summary)) throw new Error(`expected a summary for ${state}`)
         expect(summary.outcome).toBe("infrastructureFailed")
-        expect(summary.reason).toBe("runnerFailure")
-        expect(summary.execution.execObserved).toBe("no")
+        expect(infrastructureReason(summary)).toBe("runnerFailure")
+        expect(runSummary(summary).execution.execObserved).toBe("no")
       })
     }
   })

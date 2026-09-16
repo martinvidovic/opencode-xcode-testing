@@ -113,7 +113,7 @@ export function lintFile(display: string, text: string): HygieneViolation[] {
 
     for (const match of rawLine.matchAll(XCODE_ARTIFACT)) {
       const name = match[1]
-      if (!GENERIC_IDENTIFIERS.has(name)) {
+      if (name !== undefined && !GENERIC_IDENTIFIERS.has(name)) {
         push(
           "privateIdentifier",
           match[0],

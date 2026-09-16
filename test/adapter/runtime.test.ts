@@ -11,7 +11,12 @@
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
 
-import { cacheIsValid, resolveRuntime, type RuntimeProbe } from "../../src/adapter/runtime.ts"
+import {
+  cacheIsValid,
+  resolveRuntime,
+  type RuntimeCacheEntry,
+  type RuntimeProbe,
+} from "../../src/adapter/runtime.ts"
 
 const TRUSTED_ROOT = "/workspace/example"
 
@@ -134,7 +139,10 @@ describe("when nothing works", () => {
 })
 
 describe("the probe cache", () => {
-  const entry = { path: "/opt/bun", mtimeMs: 1_000, size: 42 }
+  // A full entry, because that is what the cache holds: `source` is recorded
+  // rather than re-derived from the path, so an entry without one is a shape
+  // the cache never produces.
+  const entry: RuntimeCacheEntry = { path: "/opt/bun", mtimeMs: 1_000, size: 42, source: "host" }
 
   test("is valid only when path, mtime and size all still agree", () => {
     expect(cacheIsValid(entry, { ...entry })).toBe(true)

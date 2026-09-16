@@ -103,7 +103,16 @@ export type InspectionResponse<T> =
   | { status: "available"; completeness: EvidenceCompleteness; data: T; truncation: TruncationState }
   | {
       status: "incomplete"
-      data: T
+      /**
+       * Possibly nothing (issue #74).
+       *
+       * This is the one status that may have no data to carry: evidence that
+       * could not be read has no page, and the response exists to say so.
+       * Declared `T` alone, it was satisfiable only while `T` was `unknown` —
+       * so the producers that answer with nothing typechecked by accident and
+       * the callers that must handle nothing were never told to.
+       */
+      data: T | undefined
       truncation: TruncationState
       /**
        * Why this is incomplete, when there is something specific to say —

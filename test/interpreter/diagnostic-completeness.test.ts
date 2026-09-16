@@ -19,7 +19,6 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { isTestRunSummary } from "../../src/domain/result.ts"
 import { inspectIndex, UNREADABLE_BY_THIS_TOOLCHAIN } from "../../src/interpreter/paging.ts"
 import { FAILED_EXIT, interpretFixture, TRUSTED_ROOT } from "./harness.ts"
 
@@ -56,7 +55,6 @@ describe("a run whose supplemental failure read failed", () => {
 
   test("advertises its failures facet as incomplete, not available", async () => {
     const { summary } = await withoutTheSummary()
-    if (!isTestRunSummary(summary)) throw new Error(`expected a Test Run: ${summary.outcome}`)
 
     expect(summary.inspection.failures).toBe("incomplete")
     // And only that facet. The counts really were complete, and a summary that
@@ -81,7 +79,6 @@ describe("a run whose evidence is whole", () => {
     const { summary } = await interpretFixture("test-failed", {
       request: { execution: FAILED_EXIT },
     })
-    if (!isTestRunSummary(summary)) throw new Error(`expected a Test Run: ${summary.outcome}`)
 
     expect(summary.inspection.failures).toBe("available")
   })
@@ -92,7 +89,6 @@ describe("the advertisement and the facet", () => {
     const { summary, index } = await interpretFixture("test-failed", {
       request: { execution: FAILED_EXIT },
     })
-    if (!isTestRunSummary(summary)) throw new Error(`expected a Test Run: ${summary.outcome}`)
 
     expect(summary.inspection.failures).toBe("available")
     expect(facetStatus(index)).toBe("available")
@@ -103,7 +99,6 @@ describe("the advertisement and the facet", () => {
     // it: a caller who read the summary and acted on it was contradicted by
     // the thing they acted on.
     const { summary, index } = await withoutTheSummary()
-    if (!isTestRunSummary(summary)) throw new Error(`expected a Test Run: ${summary.outcome}`)
 
     expect(summary.inspection.failures).toBe("incomplete")
     expect(facetStatus(index)).toBe("incomplete")

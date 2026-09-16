@@ -42,13 +42,23 @@ import {
 } from "../domain/limits.ts"
 import { blockingFields, halve, responseBytes } from "./cap.ts"
 import type { IndexedOccurrence } from "./diagnostics.ts"
+import type { RawAttachment } from "./decode.ts"
 import { extractFrames } from "./frames.ts"
 import type { NormalizedIndex } from "./index-model.ts"
 
 /** Bundle-backed detail, when a lazy read was possible. */
 export type LazyDetail = {
   activities: ActivityNode[]
-  attachments: AttachmentMetadata[]
+  /**
+   * As the bundle reported them, before `capAttachment` has been near them.
+   *
+   * Not `AttachmentMetadata`, which carries `contentAccessible: false` — a
+   * promise nothing has made yet at this point. Stamping it is the last thing
+   * `capAttachment` does, and typing the input as the output claimed the
+   * guarantee about data that had not been through the function that makes it
+   * true (issue #74).
+   */
+  attachments: RawAttachment[]
 }
 
 /**
@@ -213,8 +223,16 @@ export function focusedTest(
  * barely fits still answers the question the caller most likely asked, and the
  * start of a truncated message is always what survives.
  */
-function fit<T extends { message?: string }>(view: T, truncation: TruncationState): Focused<T> {
-  const current: Record<string, unknown> = { ...view }
+/**
+ * `T extends object`, not `{ message?: string }`.
+ *
+ * The narrower constraint was a guess at what the shedding steps need, and it
+ * was wrong in both directions: they work through a `Record<string, unknown>`
+ * copy and touch keys this constraint never mentions, while a focused *test*
+ * carries no message at all and so satisfied nothing (issue #74).
+ */
+function fit<T extends object>(view: T, truncation: TruncationState): Focused<T> {
+  const current: Record<string, unknown> = { ...(view as Record<string, unknown>) }
   let shedCollection = false
   let shortenedField = false
 
@@ -431,7 +449,7 @@ function capActivities(nodes: ActivityNode[]): Capped<ActivityNode[]> {
  * legibility. That makes shortening the right call — but not a silent one.
  * Every cap that bites is reported.
  */
-function capAttachment(attachment: AttachmentMetadata): Capped<AttachmentMetadata> {
+function capAttachment(attachment: RawAttachment): Capped<AttachmentMetadata> {
   const name = capTo(attachment.name, ATTACHMENT_TEXT_CHAR_CAP)
   const mediaType =
     attachment.mediaType === undefined

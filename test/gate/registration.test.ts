@@ -69,7 +69,6 @@ describe("a registration run interrupted between its checks", () => {
     // Ordering, stated directly. The check is decided from `tool.ids`, and
     // nothing between deciding it and recording it may be able to fail.
     const seen: string[] = []
-    const observed = newObservations("2026-09-14T01:00:00.000Z")
 
     const client = {
       session: { create: async () => ({ data: { id: "session-1" } }) },

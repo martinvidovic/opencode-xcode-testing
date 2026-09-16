@@ -159,6 +159,7 @@ export function layerOf(root: string, path: string): Layer | undefined {
   const rel = relative(root, path)
   if (rel.startsWith("..") || rel === "") return undefined
   const head = rel.split(sep)[0]
+  if (head === undefined) return undefined
   return (LAYERS as readonly string[]).includes(head) ? (head as Layer) : undefined
 }
 

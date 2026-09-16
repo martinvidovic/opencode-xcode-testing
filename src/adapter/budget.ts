@@ -39,12 +39,40 @@ export type HostOutputLimits = { max_lines?: number; max_bytes?: number } | unde
  * which is the conservative reading of both.
  */
 export async function readOutputLimits(client: {
-  config: { get(): Promise<{ data?: { tool_output?: HostOutputLimits } }> }
+  config: { get(): Promise<{ data?: unknown }> }
 }): Promise<HostOutputLimits> {
   try {
-    return (await client.config.get()).data?.tool_output
+    return outputLimitsIn((await client.config.get()).data)
   } catch {
     return undefined
+  }
+}
+
+/**
+ * `tool_output`, if what came back has one this shape (issue #74).
+ *
+ * Narrowed rather than asserted, because the declared shape and the real one
+ * do not agree. The `Config` the linked `@opencode-ai/plugin` client returns
+ * has **no `tool_output` at all**; the SDK's own v2 types do declare it. So a
+ * signature naming the field was describing a payload the installed types say
+ * cannot contain it, and only Bun's willingness to strip the claim kept it
+ * from being an error.
+ *
+ * Which of the two is right about the host this adapter runs against is #82's
+ * question. What this can do is stop asserting an answer: it reads whatever
+ * arrives, takes the numbers if they are numbers, and otherwise says it could
+ * not be read — which `resolveBudget` already treats as "apply the documented
+ * defaults", the conservative reading either way.
+ */
+function outputLimitsIn(config: unknown): HostOutputLimits {
+  if (typeof config !== "object" || config === null) return undefined
+  const limits = (config as { tool_output?: unknown }).tool_output
+  if (typeof limits !== "object" || limits === null) return undefined
+
+  const { max_lines: maxLines, max_bytes: maxBytes } = limits as Record<string, unknown>
+  return {
+    ...(typeof maxLines === "number" ? { max_lines: maxLines } : {}),
+    ...(typeof maxBytes === "number" ? { max_bytes: maxBytes } : {}),
   }
 }
 

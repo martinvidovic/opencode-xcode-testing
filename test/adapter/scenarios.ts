@@ -12,9 +12,10 @@ import type {
   RequestCancelled,
   RequestRejected,
   RequestResolutionFailed,
+  TestRunSummary,
   TestToolResult,
 } from "../../src/domain/result.ts"
-import { SCHEMA_VERSION } from "../../src/domain/result.ts"
+import { isTestRunSummary, SCHEMA_VERSION } from "../../src/domain/result.ts"
 import { FAILED_EXIT, interpretFixture, type ScenarioOverrides } from "../interpreter/harness.ts"
 import { bundleDigest } from "../../src/adapter/service.ts"
 
@@ -115,7 +116,48 @@ export const SCENARIOS: Scenario[] = [
  * every call site would bury what each of those is checking. The tests that
  * *are* about it discriminate on the union directly.
  */
+/**
+ * `{ bundleDigest }`, or nothing when the walk did not finish.
+ *
+ * Spread into a seeded record rather than assigned, because a record field
+ * that is present and `undefined` is a different shape from one that is
+ * absent — and only the absent one survives a round trip through JSON, which
+ * is the journey every one of these records makes.
+ */
+export function recordedDigest(path: string): { bundleDigest?: string } {
+  const digest = digestOf(path)
+  return digest === undefined ? {} : { bundleDigest: digest }
+}
+
 export function digestOf(path: string, budgetMs?: number): string | undefined {
   const outcome = budgetMs === undefined ? bundleDigest(path) : bundleDigest(path, budgetMs)
   return outcome.status === "digested" ? outcome.digest : undefined
+}
+
+/**
+ * The run's infrastructure-failure reason, asserted rather than assumed.
+ *
+ * `TestRunSummary` is a union and `reason` lives only on the arm that has one.
+ * A test reading it after checking `outcome` with `expect` is reading a field
+ * the type does not offer — `expect` is a runtime assertion, and nothing about
+ * it narrows the value for the line below (issue #74).
+ */
+export function infrastructureReason(result: TestToolResult): string {
+  if (!isTestRunSummary(result)) throw new Error(`expected a Test Run, got ${result.outcome}`)
+  if (result.outcome !== "infrastructureFailed") {
+    throw new Error(`expected infrastructureFailed, got ${result.outcome}`)
+  }
+  return result.reason
+}
+
+/** The summary, asserted to be one, so its Test Run fields are readable. */
+export function summaryOf(result: TestToolResult): TestRunSummary {
+  if (!isTestRunSummary(result)) throw new Error(`expected a Test Run, got ${result.outcome}`)
+  return result
+}
+
+/** The phase an interruption was reported in, on a run that reports one. */
+export function interruption(result: TestToolResult): string | undefined {
+  if (!isTestRunSummary(result)) throw new Error(`expected a Test Run, got ${result.outcome}`)
+  return result.outcome === "cancelled" ? result.interruptionPhase : undefined
 }

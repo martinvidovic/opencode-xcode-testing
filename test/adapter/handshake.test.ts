@@ -19,6 +19,7 @@ import { QUARANTINE_REASONS, readQueue } from "../../src/runner/queue.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
+import { infrastructureReason, summaryOf } from "./scenarios.ts"
 
 const STUB_SUPERVISOR = join(import.meta.dir, "..", "runner", "stub", "stub-supervisor.ts")
 
@@ -121,9 +122,9 @@ describe("a supervisor that never completes its handshake", () => {
 
       if (!isTestRunSummary(result)) throw new Error(`expected a Test Run: ${result.outcome}`)
       expect(result.outcome).toBe("infrastructureFailed")
-      expect(result.reason).toBe("runnerFailure")
+      expect(infrastructureReason(result)).toBe("runnerFailure")
       // It was never authorized to start anything, so nothing executed.
-      expect(result.execution.execObserved).toBe("no")
+      expect(summaryOf(result).execution.execObserved).toBe("no")
     })
   })
 
@@ -236,7 +237,7 @@ describe("a supervisor that handshakes and then keeps working", () => {
       // one. `resultBundleMissing` is a publication fact, reached only by a
       // supervisor that was left alone to finish. `runnerFailure` is where an
       // armed timer would have put it, and it is a different phase entirely.
-      expect(result.reason).toBe("resultBundleMissing")
+      expect(infrastructureReason(result)).toBe("resultBundleMissing")
 
       // And said again in what the supervisor reported: a handshake, then a
       // completion it could only send by being alive to send it.

@@ -14,13 +14,13 @@
  * about the run's result.
  */
 
-import type { EvidenceFact, ExecutionEvidence, TerminationEvidence } from "../domain/evidence.ts"
+import type { EvidenceFact, ExecutionEvidence, ProcessTerminationTrigger, TerminationEvidence } from "../domain/evidence.ts"
 import type {
   DeadlineCrossedPhase,
   InfrastructureReason,
   InterruptionPhase,
-  ProcessTerminationTrigger,
 } from "../domain/outcome.ts"
+import { isCancelled } from "../domain/cancellation.ts"
 import type { ChildExit, GatedChild } from "./gate.ts"
 import { signallingIsSafe, type ProcessProbe } from "./identity.ts"
 import type { Storage } from "./paths.ts"
@@ -91,7 +91,7 @@ export async function superviseRun(
   })
 
   // Cancelled before there is anything to terminate: no trigger, no request.
-  if (ports.cancellation?.aborted === true) {
+  if (isCancelled(ports.cancellation)) {
     return cancelledBeforeLaunch(record, trigger)
   }
 
@@ -121,7 +121,7 @@ export async function superviseRun(
 
   // Cancelling here terminates a gated child that never executed Xcode, which
   // is a cooperative exit rather than a termination request.
-  if (ports.cancellation?.aborted === true) {
+  if (isCancelled(ports.cancellation)) {
     child.abandon()
     await child.exited
     return cancelledBeforeLaunch(record, trigger)

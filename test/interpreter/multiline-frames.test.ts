@@ -29,7 +29,7 @@ import type { DiagnosticSummary } from "../../src/domain/inspection.ts"
 import { buildBuildErrors } from "../../src/interpreter/diagnostics.ts"
 import { focusedDiagnostic } from "../../src/interpreter/focus.ts"
 import { isNormalizedIndex, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
-import { FAILED_EXIT, interpretFixture, syntheticIndex, TRUSTED_ROOT } from "./harness.ts"
+import { FAILED_EXIT, TRUSTED_ROOT, interpretFixture, present, syntheticIndex } from "./harness.ts"
 
 /**
  * Interpret the fixture and read it back the way an inspection does.
@@ -77,7 +77,7 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
   test("returns the failure's frames", () => {
     const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, TRUSTED_ROOT, undefined)
 
-    expect(focused.focused.stackFrames).toEqual([
+    expect(present(focused).stackFrames).toEqual([
       { symbol: "LoginTests.testRejectsBadPassword()", module: "AppTests" },
       { symbol: "XCTestCase.invokeTest()", module: "XCTestCore" },
       // Absolute in the payload, as XCTest emits it, and reduced here to a
@@ -102,7 +102,7 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
       undefined,
     )
 
-    expect(focused.focused.stackFrames).toEqual([
+    expect(present(focused).stackFrames).toEqual([
       { symbol: "Driver.run()", module: "SwiftDriver" },
       // Repository-relative in the payload, so containment cannot be shown
       // lexically and it reduces to a bare basename too. Lossy, and the safe
@@ -117,7 +117,7 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
     const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, TRUSTED_ROOT, undefined)
 
     expect((FAILURE as DiagnosticSummary).message).not.toContain("\n")
-    expect(focused.focused.message).not.toContain("\n")
+    expect(present(focused).message).not.toContain("\n")
   })
 
   test("exposes no raw address, and no path it could not place", () => {
@@ -125,8 +125,8 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
     // them. An address is what #7 forbids exposing.
     const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, TRUSTED_ROOT, undefined)
 
-    expect(JSON.stringify(focused.focused.stackFrames)).not.toContain("0x")
-    for (const frame of focused.focused.stackFrames) {
+    expect(JSON.stringify(present(focused).stackFrames)).not.toContain("0x")
+    for (const frame of present(focused).stackFrames) {
       expect(frame.location?.path.startsWith("/")).not.toBe(true)
     }
   })
@@ -143,7 +143,7 @@ describe("a single-line failure", () => {
 
     const focused = focusedDiagnostic(index, diagnostic, TRUSTED_ROOT, undefined)
 
-    expect(focused.focused.stackFrames).toEqual([])
+    expect(present(focused).stackFrames).toEqual([])
     expect(focused.truncation.collectionTruncated).toBe(true)
   })
 
@@ -191,7 +191,7 @@ describe("a trace larger than a response can carry", () => {
       undefined,
     )
 
-    expect(focused.focused.stackFrames).toHaveLength(FOCUSED_STACK_FRAME_CAP)
+    expect(present(focused).stackFrames).toHaveLength(FOCUSED_STACK_FRAME_CAP)
     expect(focused.truncation.collectionTruncated).toBe(true)
   })
 

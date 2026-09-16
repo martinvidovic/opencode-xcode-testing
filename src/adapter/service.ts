@@ -13,6 +13,7 @@
  */
 
 import { spawn } from "node:child_process"
+import type { Readable, Writable } from "node:stream"
 import { createHash, type Hash } from "node:crypto"
 import {
   closeSync,
@@ -21,7 +22,6 @@ import {
   lstatSync,
   openSync,
   readdirSync,
-  readFileSync,
   readlinkSync,
   readSync,
 } from "node:fs"
@@ -734,7 +734,7 @@ async function finalizePreLaunch(
   // before handing the run here, but this function is reachable on its own,
   // and releasing a root with a live gated child on it is precisely what
   // quarantine exists to prevent.
-  const survivor = attributableChild(environment, record)
+  const survivor = attributableChild(record)
   const finished =
     survivor === undefined
       ? record
@@ -800,10 +800,7 @@ function publishRecovered(
 }
 
 /** The gated child, if one was recorded and is still identifiably running. */
-function attributableChild(
-  environment: ServiceEnvironment,
-  record: RunRecord,
-): ChildRecord | undefined {
+function attributableChild(record: RunRecord): ChildRecord | undefined {
   if (record.child === undefined) return undefined
   return signallingIsSafe(systemProbe, {
     pgid: record.child.pgid,
@@ -1017,8 +1014,15 @@ function runSupervisor(
       stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
     })
 
-    const toSupervisor = child.stdio[3]
-    const fromSupervisor = child.stdio[4]
+    // Typed from the fixed stdio list two lines above rather than from
+    // `spawn`'s general shape, which cannot know what was passed (issue #74).
+    const [, , , toSupervisor, fromSupervisor] = child.stdio as unknown as [
+      unknown,
+      unknown,
+      unknown,
+      Writable | undefined,
+      Readable | undefined,
+    ]
 
     let settled = false
     let handshook = false
@@ -1514,9 +1518,11 @@ function readLogWindow(path: string, window: LogWindow): { bytes: Buffer; totalB
  * tool did not write and cannot vouch for, and quoting it would be quoting
  * whatever wrote it.
  */
-function damagedEvidence(annotation: string): InspectionResponse<unknown> {
+function damagedEvidence<T>(annotation: string): InspectionResponse<T> {
   return {
     status: "incomplete",
+    // No data, whatever `T` is. An `incomplete` response is allowed to carry
+    // none, which is exactly what this one has to say.
     data: undefined,
     truncation: {
       fieldTruncated: false,
@@ -1540,8 +1546,8 @@ function corruptedIndex(): InspectionResponse<unknown> {
  * different things to have found, and a reader deciding whether to go and look
  * at their machine needs to know which.
  */
-function untrustworthyEvidence(): InspectionResponse<unknown> {
-  return damagedEvidence("the retained evidence for this Test Run is not trustworthy")
+function untrustworthyEvidence<T>(): InspectionResponse<T> {
+  return damagedEvidence<T>("the retained evidence for this Test Run is not trustworthy")
 }
 
 function tombstoneExists(storage: Storage, runId: string): boolean {

@@ -10,11 +10,11 @@
 
 import { join } from "node:path"
 
-import type { EvidenceFact } from "../domain/evidence.ts"
+import type { EvidenceFact, ProcessTerminationTrigger } from "../domain/evidence.ts"
 import { isRecord } from "../domain/json.ts"
 import type { ResolvedTestRun } from "../domain/request.ts"
 import type { RequestedScope } from "../domain/scope.ts"
-import type { ProcessTerminationTrigger } from "../domain/outcome.ts"
+
 import type { ProcessIdentity } from "./identity.ts"
 import {
   isRootKey,
@@ -207,5 +207,11 @@ function isProcessIdentity(value: unknown): value is ProcessIdentity {
  * the user may signal.
  */
 function isChildRecord(value: unknown): value is ChildRecord {
-  return isProcessIdentity(value) && Number.isInteger(value.pgid) && (value.pgid as number) > 1
+  if (!isProcessIdentity(value)) return false
+  // Read off the record rather than off the narrowed identity: narrowing to
+  // `ProcessIdentity` says what the value *has*, not what else is on it, and
+  // a `pgid` reached through that type is a property the type does not
+  // declare (issue #74).
+  const { pgid } = value as Partial<ChildRecord>
+  return Number.isInteger(pgid) && (pgid as number) > 1
 }

@@ -272,6 +272,37 @@ scripts/          fixture generation, freshness check
 examples/agent/   restricted-agent templates
 ```
 
+### The local quality gate
+
+Two commands, and both have to pass before a change is done:
+
+```bash
+bun test          # the unit and lint suite
+bun run typecheck # the TypeScript contract, over src, test and scripts
+```
+
+**Why the type check is a separate command and not a formality.** Bun strips
+types rather than checking them, so a strict `tsconfig.json` sitting in a
+repository nothing ever compiles is a configuration everybody can see and
+nobody can fail. This one had been that for its whole life, and 240 errors had
+accumulated behind it — including a scenario-name union that had collapsed to
+`never`, two acceptance-gate types naming identifiers nothing defined, and a
+validator reading a field off a type with no such field. None of it could fail
+a test, because none of it runs.
+
+The compiler is pinned to an exact version and run through Bun rather than
+through its own shebang: this repository needs nothing but Bun, and a `node`
+shim on the path is enough to stop the bare binary. CI is a separate decision;
+what this establishes is that the check exists, is repeatable, and is green.
+
+**It is a development dependency, and the distinction matters.** The
+zero-runtime-dependency rule is about the *plugin*: it is loaded from source
+and resolves its imports from its own location, so anything it imports has to
+be there on a user's machine. A compiler and a set of type declarations run on
+a developer's machine and are never imported by shipped code. `dependencies`
+stays empty; `devDependencies` holds exactly `typescript` and `@types/bun`,
+and a test asserts both of those facts so the line cannot drift.
+
 Two more commands are worth knowing:
 
 ```bash

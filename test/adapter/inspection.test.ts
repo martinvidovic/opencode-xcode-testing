@@ -121,7 +121,7 @@ describe("the log facet", () => {
         expect(cursor).not.toContain("8")
         expect(cursor).not.toContain(RUN)
 
-        const second = chunkOf(await inspect({ facet: "log", maxBytes: 8, cursor }))
+        const second = chunkOf(await inspect({ facet: "log", maxBytes: 8, ...(cursor === undefined ? {} : { cursor }) }))
         expect(second.byteOffset).toBe(chunkOf(first).byteLength)
         expect(chunkOf(first).text + second.text).toBe(
           log.subarray(0, chunkOf(first).byteLength + second.byteLength).toString("utf8"),
@@ -137,7 +137,7 @@ describe("the log facet", () => {
       async (inspect) => {
         const page = await inspect({ facet: "log", maxBytes: 8 })
         const cursor = page.status === "available" ? page.truncation.nextCursor : undefined
-        expect(await inspect({ facet: "tests", cursor })).toMatchObject({ status: "invalid" })
+        expect(await inspect({ facet: "tests", ...(cursor === undefined ? {} : { cursor }) })).toMatchObject({ status: "invalid" })
       },
       log,
     )
@@ -210,7 +210,11 @@ describe("the response cap", () => {
 
         // The cursor must point at the first record that was *not* returned.
         // Pointing past the dropped ones would skip evidence silently.
-        const next = await inspect({ facet: "scope", cursor: response.truncation.nextCursor })
+        const nextCursor = response.truncation.nextCursor
+        const next = await inspect({
+          facet: "scope",
+          ...(nextCursor === undefined ? {} : { cursor: nextCursor }),
+        })
         if (next.status !== "available") throw new Error("expected a page")
         expect((next.data as { records: unknown[] }).records[0]).toEqual(
           bulkyAttestations(100)[records.length] as never,
@@ -487,7 +491,9 @@ describe("bundle-backed detail", () => {
       // empty activities list means there were none, and here it means
       // nobody could look.
       expect(response.status).toBe("incomplete")
-      const focused = (response.data as { focused: { activities: unknown[]; message: string } }).focused
+      if (response.status !== "incomplete") throw new Error("expected an incomplete response")
+      const focused = (response.data as { focused: { activities: unknown[]; message: string } })
+        .focused
       expect(focused.activities).toEqual([])
 
       // The indexed part does not degrade with it: the full message was
