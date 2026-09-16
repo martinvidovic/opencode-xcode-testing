@@ -237,13 +237,11 @@ function read(input: StagedRead): Promise<XcresultResponse> {
     // full volume, a descriptor that went away. Told the same sentence, a
     // reader cannot tell which happened, and the two send them to look at
     // completely different things.
-    sink.on("error", () => {
-      // An error once the stream has been told to end is a failure to let go
-      // of the descriptor, not a failure to write (issue #84). The payload is
-      // already on disk — `end`'s callback is what decodes it — and this
-      // runtime raises `EBADF: bad file descriptor, close` here often enough
-      // to matter: closing an `fd` the stream was handed, after it has
-      // finished with it, races the runtime's own bookkeeping.
+    sink.on("error", (error: NodeJS.ErrnoException) => {
+      // Failing to let go of the descriptor is not failing to write (issue
+      // #84). This runtime raises `EBADF: bad file descriptor, close` here
+      // often enough to matter: closing an `fd` the stream was handed, after
+      // it has finished with it, races the runtime's own bookkeeping.
       //
       // Reported, it became `resultBundleUnreadable` for a Test Run whose
       // evidence had been read perfectly well — the tool blaming a caller's
@@ -251,7 +249,15 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       // because it is a race, and visible only inside the OpenCode host
       // process, where there is enough else happening for the ordering to
       // vary.
-      if (sink.writableEnded || payloadComplete) return
+      //
+      // Discriminated by syscall rather than by "the child has exited",
+      // because the two are not the same claim. The child exiting says the
+      // payload was handed over; it does not say the bytes reached the disk,
+      // and the last of them are still being flushed by `end`. A `write` that
+      // fails there — a full volume — is a staging failure whatever the child
+      // did, and swallowing it would surface as an unparseable payload: the
+      // same two-causes-one-wording confusion this guard exists to end.
+      if (payloadComplete && error.syscall !== "write") return
 
       finish({
         ok: false,

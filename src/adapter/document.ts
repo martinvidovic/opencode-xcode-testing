@@ -56,6 +56,24 @@ export function field(label: string, value: string): string {
   return `${label.padEnd(LABEL_WIDTH)}${value}`
 }
 
+/**
+ * Whether a rendered line is one of the `label   value` fields above.
+ *
+ * Here rather than at the one call site that reads a rendered document back
+ * (the acceptance gate, which quotes the reason under a mismatched headline),
+ * because a reader that reverse-engineers this layout from somewhere else goes
+ * quietly wrong the moment `LABEL_WIDTH` changes, and nothing fails.
+ */
+export function isField(line: string): boolean {
+  const label = line.slice(0, LABEL_WIDTH)
+  return (
+    line.length > LABEL_WIDTH &&
+    label.trimEnd().length > 0 &&
+    label.endsWith(" ") &&
+    line[LABEL_WIDTH] !== " "
+  )
+}
+
 /** Indented continuation, for the lines beneath a diagnostic. */
 export function indent(depth: number, text: string): string {
   return `${"  ".repeat(depth)}${text}`

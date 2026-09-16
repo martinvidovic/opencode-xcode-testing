@@ -17,6 +17,7 @@ import { join } from "node:path"
 
 import type { ExecutionContext } from "./context.ts"
 import { byteLength, lineCount, resolveBudget } from "../../src/adapter/budget.ts"
+import { isField } from "../../src/adapter/document.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
 import {
   startStubProvider,
@@ -418,14 +419,17 @@ function expectOutcome(name: ScenarioName, output: string, expected: string): Sc
   // only what the report chose to keep.
   //
   // Found by shape rather than by position: the renderer puts the run id and
-  // the resolved contract in `key   value` lines, and the reason is the first
-  // prose line among them.
+  // the resolved contract in `label   value` lines, and the reason is the
+  // first prose line among them. The shape is asked of the renderer rather
+  // than reconstructed here, so that a change to its column width cannot
+  // quietly turn every reason into an empty string.
   const reason =
     output
       .split("\n")
       .slice(1)
+      .filter((line) => !isField(line))
       .map((line) => line.trim())
-      .find((line) => line.length > 0 && !/^\S+\s{2,}\S/.test(line)) ?? ""
+      .find((line) => line.length > 0) ?? ""
   return failure(
     name,
     `expected a headline of "${expected}", got "${headline || "(no tool output)"}"${
