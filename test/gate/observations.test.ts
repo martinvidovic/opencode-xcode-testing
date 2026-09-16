@@ -25,7 +25,6 @@ import {
   asSuite,
   newObservations,
   reportFrom,
-  registryDisagreements,
   scenarioSink,
   UNOBSERVED_TOOLCHAIN,
   type Observations,
@@ -101,7 +100,7 @@ describe("a gate that throws after establishing something", () => {
     const report = () => reportFrom(observed, "failed", "Error: boom")
 
     expect(report().scenarios).toHaveLength(0)
-    observed.scenarios.push({ name: "late", kind: "gating", status: "passed", detail: "" })
+    observed.scenarios.push({ name: "b1 tool ids register", kind: "gating", status: "passed", detail: "" })
     expect(report().scenarios).toHaveLength(1)
   })
 })
@@ -311,8 +310,8 @@ describe("a suite that throws part-way through", () => {
     const observed = newObservations(STARTED_AT)
     const record = scenarioSink(observed)
 
-    record({ name: "first", kind: "gating", status: "passed", detail: "" })
-    expect(observed.scenarios.map((s) => s.name)).toEqual(["first"])
+    record({ name: "b1 tool ids register", kind: "gating", status: "passed", detail: "" })
+    expect(observed.scenarios.map((s) => s.name)).toEqual(["b1 tool ids register"])
   })
 })
 

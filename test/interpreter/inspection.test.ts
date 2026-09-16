@@ -10,7 +10,12 @@ import { INSPECTION_PAGE_MAX } from "../../src/domain/limits.ts"
 import { CURSOR_ORDERING_VERSION, decodeCursor, encodeCursor } from "../../src/interpreter/cursor.ts"
 import type { NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { inspectIndex } from "../../src/interpreter/paging.ts"
-import { FAILED_EXIT, interpretFixture } from "./harness.ts"
+import {
+  FAILED_EXIT,
+  TRUSTED_ROOT,
+  interpretFixture,
+  recordsOf,
+} from "./harness.ts"
 
 const SECRET = Buffer.alloc(32, 7)
 
@@ -24,6 +29,7 @@ function inspect(index: NormalizedIndex, request: Partial<InspectRunRequest>) {
     index,
     { runId: index.runId, facet: "failures", ...request } as InspectRunRequest,
     SECRET,
+    TRUSTED_ROOT,
   )
 }
 
@@ -57,7 +63,7 @@ describe("facet paging", () => {
       const response = inspect(index, { limit: 10, ...(cursor === undefined ? {} : { cursor }) })
       expect(response.status).toBe("available")
       if (response.status !== "available") break
-      seen.push(...response.data.records.map((record) => (record as { id: string }).id))
+      seen.push(...recordsOf(response.data).map((record) => record.id))
       cursor = response.truncation.nextCursor
       if (cursor === undefined) break
     }
@@ -81,7 +87,7 @@ describe("facet paging", () => {
   test("defaults to twenty records and refuses more than a hundred", async () => {
     const index = await manyFailures()
     const defaulted = inspect(index, {})
-    expect(defaulted.status === "available" && defaulted.data.records).toHaveLength(20)
+    expect(defaulted.status === "available" && recordsOf(defaulted.data)).toHaveLength(20)
     expect(inspect(index, { limit: INSPECTION_PAGE_MAX + 1 })).toMatchObject({ status: "invalid" })
     expect(inspect(index, { limit: 0 })).toMatchObject({ status: "invalid" })
   })
@@ -90,7 +96,7 @@ describe("facet paging", () => {
     const { index } = await interpretFixture("passed")
     const response = inspect(index, { facet: "failures" })
     expect(response).toMatchObject({ status: "available", completeness: "complete" })
-    expect(response.status === "available" && response.data.records).toEqual([])
+    expect(response.status === "available" && recordsOf(response.data)).toEqual([])
   })
 
   test("reports an incomplete facet as incomplete, so an empty page proves nothing", async () => {
@@ -129,7 +135,7 @@ describe("focused records", () => {
       facet: "failures",
       focused: { id: summary?.id, kind: "testFailure", message: summary?.message },
     })
-    expect("records" in response.data).toBe(false)
+    expect("records" in (response.data ?? {})).toBe(false)
   })
 
   test("carry the identity the diagnostic belongs to", async () => {
@@ -264,7 +270,7 @@ describe("an inspection for another run", () => {
   test("is notFound, not an empty page", async () => {
     const index = await manyFailures()
     expect(
-      inspectIndex(index, { runId: "run-9999", facet: "failures" }, SECRET),
+      inspectIndex(index, { runId: "run-9999", facet: "failures" }, SECRET, TRUSTED_ROOT),
     ).toEqual({ status: "notFound", subject: "run" })
   })
 })

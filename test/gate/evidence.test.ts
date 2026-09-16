@@ -335,7 +335,9 @@ describe("Layer 4 itself", () => {
     // The path nobody plans for, and the one where the workspace is most
     // worth having: a throw says where it happened and nothing about what the
     // runs that led up to it had produced.
-    const { kept, threw } = await layer4With({ toolchain: undefined })
+    // `toolchain` removed rather than set to `undefined`: the option is not
+    // optional, and what this arranges is a suite that throws when it reads it.
+    const { kept, threw } = await layer4With({ toolchain: undefined as never })
 
     expect(threw).toBeDefined()
     expect(kept).toHaveLength(1)

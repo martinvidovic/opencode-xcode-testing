@@ -15,7 +15,6 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import type { Destination } from "../../src/domain/request.ts"
 import type { ExecutionContext } from "./context.ts"
 import { byteLength, lineCount, resolveBudget } from "../../src/adapter/budget.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
@@ -34,7 +33,7 @@ import {
   type OpencodeClient,
 } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
-import { SCENARIO } from "./scenarios.ts"
+import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
@@ -301,7 +300,7 @@ function scope(suite: string): unknown {
  * `testFailed`. The headline is the first line, and it is the sentence the
  * renderer contracts to produce, so that is what is compared.
  */
-function expectOutcome(name: string, output: string, expected: string): ScenarioResult {
+function expectOutcome(name: ScenarioName, output: string, expected: string): ScenarioResult {
   const headline = firstLine(output)
   return headline.startsWith(expected)
     ? success(name, headline)
@@ -317,10 +316,10 @@ function diagnosticExcerpt(output: string): string {
   return output.slice(at).split("\n").slice(0, 2).join(" ").replace(/\s+/g, " ").trim()
 }
 
-function success(name: string, detail: string): ScenarioResult {
+function success(name: ScenarioName, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "passed", detail }
 }
 
-function failure(name: string, detail: string): ScenarioResult {
+function failure(name: ScenarioName, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "failed", detail }
 }

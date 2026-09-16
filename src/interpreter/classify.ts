@@ -12,17 +12,11 @@
  * and withholding that because the test facet is missing helps nobody.
  */
 
-import type {
-  BuildEvidence,
-  ExecutionEvidence,
-  TestCounts,
-  TestEvidence,
-} from "../domain/evidence.ts"
+import type { BuildEvidence, ExecutionEvidence, ProcessTerminationTrigger, TestCounts, TestEvidence } from "../domain/evidence.ts"
 import type {
   DeadlineCrossedPhase,
   InfrastructureReason,
   InterruptionPhase,
-  ProcessTerminationTrigger,
   TestRunOutcome,
 } from "../domain/outcome.ts"
 import type { ScopeVerdict } from "../domain/scope.ts"

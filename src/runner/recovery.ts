@@ -32,6 +32,7 @@ import { withLock, withTryLock } from "./locks.ts"
 import { isRunId, RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue, type QueueState } from "./queue.ts"
 import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
+import { isCancelled } from "../domain/cancellation.ts"
 
 export type RecoveryStatus =
   | "recovered"
@@ -125,7 +126,7 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
   const { storage } = environment
   const report: RecoveryReport = emptyReport()
 
-  if (environment.signal?.aborted === true) return { ...report, status: "cancelled" }
+  if (isCancelled(environment.signal)) return { ...report, status: "cancelled" }
 
   let state: QueueState
   try {
@@ -149,7 +150,7 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
     // could not have issued is not a run of ours, and is left exactly alone.
     if (!isRunId(runId)) continue
 
-    if (environment.signal?.aborted === true) {
+    if (isCancelled(environment.signal)) {
       // Cancellation stops future work; it never undoes completed cleanup.
       return { ...report, status: "cancelled" }
     }

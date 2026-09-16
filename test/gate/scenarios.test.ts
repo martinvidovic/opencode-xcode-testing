@@ -15,10 +15,11 @@ import { describe, expect, test } from "bun:test"
 import {
   ALL_SCENARIOS,
   CONDITIONAL_NAMES,
-  registryProblems,
   SCENARIO,
-  standingOf,
+  registryProblems,
   standingFor,
+  standingOf,
+  type ScenarioName,
 } from "../../scripts/gate/scenarios.ts"
 import { SUITES } from "../../scripts/gate/options.ts"
 import {
@@ -28,6 +29,19 @@ import {
   reportFrom,
   scenarioSink,
 } from "../../scripts/gate/observations.ts"
+
+/**
+ * A name the registry does not know.
+ *
+ * `ScenarioName` exists so that naming a scenario the registry has never heard
+ * of is a mistake where it is written — which is precisely what these tests
+ * have to simulate, because the *runtime* check is their subject and a
+ * compiler that forbade the input outright would leave it untested. Cast in
+ * one place, with the reason attached, rather than at each use (issue #74).
+ */
+function unregistered(name: string): ScenarioName {
+  return name as ScenarioName
+}
 
 const STARTED_AT = "2026-09-14T01:00:00.000Z"
 
@@ -53,7 +67,7 @@ describe("the registry itself", () => {
   })
 
   test("addresses every name through `SCENARIO`, so an emitter cannot invent one", () => {
-    for (const name of ALL_SCENARIOS) expect(SCENARIO[name]).toBe(name)
+    for (const name of ALL_SCENARIOS) expect(SCENARIO[name as ScenarioName]).toBe(name as ScenarioName)
   })
 })
 
@@ -65,7 +79,7 @@ describe("a scenario the registry has never heard of", () => {
     // nothing to say so. Those are exactly the runs where it happens.
     const observed = newObservations(STARTED_AT)
     scenarioSink(observed)({
-      name: "a check nobody registered",
+      name: unregistered("a check nobody registered"),
       kind: "gating",
       status: "passed",
       detail: "",
@@ -82,7 +96,7 @@ describe("a scenario the registry has never heard of", () => {
     const observed = newObservations(STARTED_AT)
     observed.selected = []
     scenarioSink(observed)({
-      name: "a check nobody registered",
+      name: unregistered("a check nobody registered"),
       kind: "gating",
       status: "passed",
       detail: "",
@@ -368,7 +382,7 @@ describe("a conditional failure after the standing checks have run", () => {
       for (const name of standingOf("layer4")) {
         record({ name, kind: "gating", status: "passed", detail: "" })
       }
-      record({ name: "an unregistered check", kind: "gating", status: "passed", detail: "" })
+      record({ name: unregistered("an unregistered check"), kind: "gating", status: "passed", detail: "" })
       record({
         name: SCENARIO["supplied project run"],
         kind: "gating",
@@ -477,8 +491,8 @@ describe("a suite that never started", () => {
 
     await asSuite(observed, "b1", async () => {
       // The second standing check never reports; the third does.
-      record({ name: standingOf("b1")[0] as string, kind: "gating", status: "passed", detail: "" })
-      record({ name: standingOf("b1")[2] as string, kind: "gating", status: "passed", detail: "" })
+      record({ name: standingOf("b1")[0] as ScenarioName, kind: "gating", status: "passed", detail: "" })
+      record({ name: standingOf("b1")[2] as ScenarioName, kind: "gating", status: "passed", detail: "" })
       record({
         name: SCENARIO["b1 host registration"],
         kind: "gating",

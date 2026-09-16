@@ -20,7 +20,6 @@ import type { ScenarioSink } from "./observations.ts"
 import type { TestRunRequest } from "../../src/domain/request.ts"
 import type { ExecutionContext } from "./context.ts"
 import type { TestToolResult } from "../../src/domain/result.ts"
-import type { ToolchainIdentity } from "../../src/domain/toolchain.ts"
 import { isTestRunSummary } from "../../src/domain/result.ts"
 import type { TestToolOutcome } from "../../src/domain/outcome.ts"
 import { createTestToolService } from "../../src/adapter/service.ts"
@@ -29,7 +28,7 @@ import { prepareStorage, runDirectory, storageFor, RUN_ARTIFACTS } from "../../s
 import { loadCursorSecret } from "../../src/runner/secrets.ts"
 import { examineBundle, type BundleExamination } from "../freshness-check.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
-import { SCENARIO } from "./scenarios.ts"
+import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
@@ -578,7 +577,7 @@ function describe(result: TestToolResult): string {
 
 function expect(
   result: TestToolResult,
-  name: string,
+  name: ScenarioName,
   check: (result: TestToolResult) => string | undefined,
 ): ScenarioResult {
   const problem = check(result)
@@ -587,10 +586,10 @@ function expect(
     : { name, kind: "gating", status: "failed", detail: problem, durationMs: lastDurationMs }
 }
 
-function pass(name: string, detail: string): ScenarioResult {
+function pass(name: ScenarioName, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "passed", detail }
 }
 
-function fail(name: string, detail: string): ScenarioResult {
+function fail(name: ScenarioName, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "failed", detail }
 }

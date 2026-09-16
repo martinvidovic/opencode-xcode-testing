@@ -26,6 +26,7 @@ import {
   standingOf,
   registryProblems,
   standingFor,
+  type ScenarioName,
 } from "./scenarios.ts"
 import type { RunReport, ScenarioResult } from "./report.ts"
 
@@ -221,7 +222,7 @@ export function reportFrom(
  * that was never entered at all — because from the report's point of view they
  * are the same fact: this was going to be checked, and it was not.
  */
-export function unreachedScenarios(observed: Observations): string[] {
+export function unreachedScenarios(observed: Observations): ScenarioName[] {
   const recorded = new Set(observed.scenarios.map((scenario) => scenario.name))
   return standingFor(observed.selected).filter((name) => !recorded.has(name))
 }

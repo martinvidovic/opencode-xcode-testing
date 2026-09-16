@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -238,7 +238,10 @@ describe("the remembered runtime", () => {
     writeFileSync(binary, "#!/bin/sh\n")
 
     rememberRuntime(store, { status: "resolved", path: binary, source: "host" })
-    expect(cachedRuntime(store)?.source).toBe("host")
+    // Read off the cache entry rather than off the resolution union: only a
+    // resolved runtime has a source, and that is what was remembered.
+    const cached = cachedRuntime(store)
+    expect(cached?.status === "resolved" ? cached.source : undefined).toBe("host")
   })
 
   test("is absent when nothing has been remembered", () => {

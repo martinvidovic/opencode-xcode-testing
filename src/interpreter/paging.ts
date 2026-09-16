@@ -17,7 +17,7 @@ import type {
   TestRecord,
   TruncationState,
 } from "../domain/inspection.ts"
-import type { InspectionResponse, TruncationState } from "../domain/inspection.ts"
+import type { InspectionResponse } from "../domain/inspection.ts"
 import {
   INSPECTION_PAGE_DEFAULT,
   INSPECTION_PAGE_MAX,
@@ -535,19 +535,6 @@ const PARTIAL_EVIDENCE: Record<"scope" | "failures" | "buildErrors" | "tests", s
 export const UNREADABLE_BY_THIS_TOOLCHAIN =
   "the Xcode installation that wrote this Result Bundle is unavailable or is no longer the one that wrote it, so no further detail can be read from it"
 
-function single(data: FacetPage): InspectionResponse<FacetPage> {
-  return {
-    status: "available",
-    completeness: "complete",
-    data,
-    truncation: {
-      fieldTruncated: false,
-      collectionTruncated: false,
-      responseTruncated: false,
-      hasMore: false,
-    },
-  }
-}
 
 type Position = { ok: true; value: number } | { ok: false; response: InspectionResponse<FacetPage> }
 

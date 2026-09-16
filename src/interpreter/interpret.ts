@@ -16,12 +16,7 @@
  *   or `complete` and the in-progress ones are discarded.
  */
 
-import type {
-  BuildEvidence,
-  ExecutionEvidence,
-  TerminationEvidence,
-  TestEvidence,
-} from "../domain/evidence.ts"
+import type { BuildEvidence, ExecutionEvidence, ProcessTerminationTrigger, TerminationEvidence, TestEvidence } from "../domain/evidence.ts"
 import type { FacetAvailability, InspectionAvailability } from "../domain/inspection.ts"
 import {
   SCOPE_ATTESTATION_CAP,
@@ -33,7 +28,6 @@ import type {
   DeadlineCrossedPhase,
   InfrastructureReason,
   InterruptionPhase,
-  ProcessTerminationTrigger,
 } from "../domain/outcome.ts"
 import type { ResolvedTestRun } from "../domain/request.ts"
 import type {
@@ -47,6 +41,7 @@ import type {
 import { SCHEMA_VERSION } from "../domain/result.ts"
 import { requestedScopeDigest, type RequestedScope } from "../domain/scope.ts"
 import { normalizeRequestedScope } from "../domain/scope.ts"
+import { isCancelled } from "../domain/cancellation.ts"
 import type { Anomaly } from "./anomalies.ts"
 import { AnomalyLog } from "./anomalies.ts"
 import { attestScope } from "./attestation.ts"
@@ -172,7 +167,7 @@ async function gather(
   }
 
   const cancelled = () => {
-    if (request.signal?.aborted !== true) return false
+    if (!isCancelled(request.signal)) return false
     state.cancelledDuringInterpretation = true
     return true
   }

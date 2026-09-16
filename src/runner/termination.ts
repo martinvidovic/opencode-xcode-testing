@@ -10,8 +10,8 @@
  * makes a test tool untrustworthy.
  */
 
-import type { EvidenceFact } from "../domain/evidence.ts"
-import type { ProcessTerminationTrigger } from "../domain/outcome.ts"
+import type { EvidenceFact, ProcessTerminationTrigger } from "../domain/evidence.ts"
+
 
 /** `SIGINT`, then `SIGTERM`, then `SIGKILL`, with a bounded wait after each. */
 export const ESCALATION: ReadonlyArray<{ signal: NodeJS.Signals; waitMs: number }> = [

@@ -38,13 +38,17 @@ import { keyFor } from "./report.ts"
  * sets do it; bytes alone lets a set sit there for a year. All three apply,
  * and the byte budget is the one that makes the guarantee absolute.
  */
-export const EVIDENCE_POLICY = {
+export type EvidencePolicy = {
+  maxSets: number
+  maxAgeMs: number
+  maxBytes: number
+}
+
+export const EVIDENCE_POLICY: EvidencePolicy = {
   maxSets: 3,
   maxAgeMs: 7 * 24 * 60 * 60 * 1000,
   maxBytes: 2 * 1024 * 1024 * 1024,
-} as const
-
-export type EvidencePolicy = typeof EVIDENCE_POLICY
+}
 
 /** The `evidence` directory inside the tool-managed storage root. */
 export function evidenceDirectory(homeDir = homedir()): string {

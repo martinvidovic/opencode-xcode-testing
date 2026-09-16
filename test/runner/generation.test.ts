@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { discoverContainer, discoverScheme, scan } from "../../src/runner/discovery.ts"
+import { discoverContainer, discoverScheme } from "../../src/runner/discovery.ts"
 import {
   DELIBERATE_COMPILE_ERROR,
   FIXTURE,

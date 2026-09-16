@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { bundleDigest, finalizeRecovered } from "../../src/adapter/service.ts"
+import { finalizeRecovered } from "../../src/adapter/service.ts"
 import { createRunDirectory, runDirectory } from "../../src/runner/paths.ts"
 import { writeQueue } from "../../src/runner/queue.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
@@ -20,7 +20,7 @@ import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
 import type { XcresultTool } from "../../src/interpreter/ports.ts"
 import type { XcresultCommand } from "../../src/interpreter/anomalies.ts"
 import type { ServiceEnvironment } from "../../src/adapter/service.ts"
-import { digestOf } from "./scenarios.ts"
+import { digestOf, recordedDigest } from "./scenarios.ts"
 
 function fixtureReader(name: string): XcresultTool {
   const fixture = loadFixture(name)
@@ -114,7 +114,7 @@ describe("re-verification before a later read", () => {
         ...(readRunRecord(box.storage, "run-same") as NonNullable<
           ReturnType<typeof readRunRecord>
         >),
-        bundleDigest: digestOf(bundle),
+        ...recordedDigest(bundle),
       })
 
       await finalizeRecovered(environmentFor(box), "run-same")

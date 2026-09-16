@@ -28,7 +28,7 @@ import {
   type OpencodeClient,
 } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
-import { SCENARIO } from "./scenarios.ts"
+import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
@@ -266,10 +266,10 @@ function prepareRoot(path: string, options: { marker: boolean }): string {
   return path
 }
 
-function pass(name: string, detail: string): ScenarioResult {
+function pass(name: ScenarioName, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "passed", detail }
 }
 
-function fail(name: string, detail: string): ScenarioResult {
+function fail(name: ScenarioName, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "failed", detail }
 }

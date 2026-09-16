@@ -244,3 +244,32 @@ export const FAILED_EXIT = {
 } as const
 
 export { REQUESTED_SCHEMA_VERSION }
+
+/**
+ * The Focused Detail a test asking for one is about having.
+ *
+ * `Focused<T>.focused` is optional because an oversized record can be shed
+ * down to nothing — a real outcome, with tests of its own. Everywhere else its
+ * absence would mean the test never examined what it says it examines, so it
+ * is asserted once here rather than checked at every use or, worse, assumed.
+ */
+export function present<T>(view: { focused?: T }): T {
+  if (view.focused === undefined) throw new Error("expected a Focused Detail, and there was none")
+  return view.focused
+}
+
+/**
+ * The records on a facet page, which a test paging through one is about.
+ *
+ * `FacetPage` is a union — records, a Focused Detail, a Log Chunk, an omission —
+ * and only one arm has records. Narrowed here so a test that asked for a
+ * records page and got something else fails saying so, rather than reading a
+ * property off whichever arm arrived.
+ */
+export function recordsOf(page: unknown): Array<{ id: string }> {
+  const view = page as { view?: string; records?: Array<{ id: string }> }
+  if (view?.view !== "records" || view.records === undefined) {
+    throw new Error(`expected a records page, got ${String(view?.view)}`)
+  }
+  return view.records
+}

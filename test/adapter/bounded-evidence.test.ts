@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, openSync, closeSync, writeSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { bundleDigest, DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
+import { DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
 import { withJumpingWallClock } from "../wall-clock.ts"
 import { digestOf } from "./scenarios.ts"

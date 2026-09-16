@@ -353,9 +353,16 @@ function parseIdentifier(identifier: string): { suite?: string; test?: string } 
   const parts = stripIdentifierScheme(identifier)
     .split("/")
     .filter((part) => part.length > 0)
-  if (parts.length === 0) return undefined
-  if (parts.length === 1) return { test: parts[0] }
-  return { suite: parts[parts.length - 2], test: parts[parts.length - 1] }
+  const test = parts[parts.length - 1]
+  if (test === undefined) return undefined
+  if (parts.length === 1) return { test }
+
+  // Present or absent, never present-and-undefined. The difference is not
+  // cosmetic here: these land in a record that is written to disk and read
+  // back, and a key holding `undefined` serializes to a key that is missing —
+  // so a shape with one is a shape no round trip can produce.
+  const suite = parts[parts.length - 2]
+  return suite === undefined ? { test } : { suite, test }
 }
 
 /** Carry an occurrence's configuration or device only when one is known. */

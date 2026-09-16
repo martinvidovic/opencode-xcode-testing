@@ -17,6 +17,7 @@ import type { QueuedFailureReason } from "../domain/outcome.ts"
 import { identityMatches, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
 import { withLock } from "./locks.ts"
 import { isRunId, newRunId, readPrivateFile, type Storage, writePrivateFileAtomic } from "./paths.ts"
+import { isCancelled } from "../domain/cancellation.ts"
 
 /** Reconciliation runs before enrollment, under its own fixed deadline. */
 export const RECONCILIATION_DEADLINE_MS = 60_000
@@ -169,7 +170,7 @@ export async function admit(
   const enteredAt = environment.now()
   const queued = () => ({ queuedAt, queueDurationMs: environment.now() - enteredAt })
 
-  if (options.signal?.aborted === true) return { status: "cancelled", ...queued() }
+  if (isCancelled(options.signal)) return { status: "cancelled", ...queued() }
 
   if (environment.freeBytes() < MINIMUM_FREE_BYTES) {
     return { status: "failed", reason: "insufficientStorage", ...queued() }
@@ -205,7 +206,7 @@ export async function admit(
   }
 
   for (;;) {
-    if (options.signal?.aborted === true) return release({ status: "cancelled", ...queued() })
+    if (isCancelled(options.signal)) return release({ status: "cancelled", ...queued() })
 
     const attempt = withLock(storage.rootLock, (): AdmissionResult | undefined => {
       const state = reap(environment, readQueue(storage))

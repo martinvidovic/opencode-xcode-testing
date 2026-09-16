@@ -20,6 +20,7 @@ import { systemProbe } from "../../src/runner/identity.ts"
 import { readQueue } from "../../src/runner/queue.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
+import { infrastructureReason, interruption, summaryOf } from "./scenarios.ts"
 
 /** A trusted root with a container that exists, so nothing has to be discovered. */
 function project(): { root: string; dispose(): void } {
@@ -136,9 +137,7 @@ describe("a supervisor that fails after admission", () => {
       const result: TestToolResult = await h.service.start(REQUEST, noop).result
 
       expect(result.outcome).toBe("infrastructureFailed")
-      expect(isTestRunSummary(result)).toBe(true)
-      if (!isTestRunSummary(result)) return
-      expect(result.reason).toBe("runnerFailure")
+      expect(infrastructureReason(result)).toBe("runnerFailure")
     })
   }, 30_000)
 
@@ -180,7 +179,7 @@ describe("cancellation during interpretation", () => {
 
       expect(result.outcome).toBe("cancelled")
       if (!isTestRunSummary(result)) throw new Error("expected a Test Run summary")
-      expect(result.interruptionPhase).toBe("interpreting")
+      expect(interruption(result)).toBe("interpreting")
     })
   }, 30_000)
 
@@ -211,9 +210,8 @@ describe("a supervisor that never speaks the protocol", () => {
       const result = await h.service.start(REQUEST, noop).result
 
       expect(result.outcome).toBe("infrastructureFailed")
-      if (!isTestRunSummary(result)) throw new Error("expected a Test Run summary")
-      expect(result.reason).toBe("runnerFailure")
-      expect(result.execution.execObserved).toBe("no")
+      expect(infrastructureReason(result)).toBe("runnerFailure")
+      expect(summaryOf(result).execution.execObserved).toBe("no")
     })
   }, 30_000)
 
@@ -286,11 +284,10 @@ describe("a supervisor that handshakes and then dies", () => {
       const result = await h.service.start(REQUEST, noop).result
 
       expect(result.outcome).toBe("infrastructureFailed")
-      if (!isTestRunSummary(result)) throw new Error("expected a Test Run summary")
-      expect(result.reason).toBe("runnerFailure")
+      expect(infrastructureReason(result)).toBe("runnerFailure")
       // It got far enough to run something, so execution is unobserved rather
       // than provably absent.
-      expect(result.execution.execObserved).not.toBe("no")
+      expect(summaryOf(result).execution.execObserved).not.toBe("no")
       expect(readQueue(h.environment.storage).activeRunId).toBeUndefined()
     })
   }, 30_000)
@@ -304,8 +301,7 @@ describe("a supervisor that never answers", () => {
       const result = await h.service.start(REQUEST, noop).result
 
       expect(result.outcome).toBe("infrastructureFailed")
-      if (!isTestRunSummary(result)) throw new Error("expected a Test Run summary")
-      expect(result.reason).toBe("runnerFailure")
+      expect(infrastructureReason(result)).toBe("runnerFailure")
       // The Test Run timeout is 900s; this bound can only come from the
       // supervisor's own startup deadline.
       expect(Date.now() - started).toBeLessThan(15_000)

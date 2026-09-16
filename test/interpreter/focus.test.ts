@@ -22,7 +22,7 @@ import type { ActivityNode, DiagnosticSummary } from "../../src/domain/inspectio
 import { extractFrames } from "../../src/interpreter/frames.ts"
 import { focusedDiagnostic, type LazyDetail } from "../../src/interpreter/focus.ts"
 import { type NormalizedIndex } from "../../src/interpreter/index-model.ts"
-import { syntheticIndex } from "./harness.ts"
+import { present, syntheticIndex } from "./harness.ts"
 
 const ROOT = "/workspace/example"
 
@@ -43,6 +43,7 @@ const TRACE = [
   "1   XCTest      0x00000001049f0000 XCTestCase.invokeTest() + 44",
 ].join("\n")
 
+
 function focus(fullMessage: string, lazy?: LazyDetail) {
   return focusedDiagnostic(indexWith(fullMessage), DIAGNOSTIC, ROOT, lazy)
 }
@@ -50,12 +51,14 @@ function focus(fullMessage: string, lazy?: LazyDetail) {
 describe("the full message", () => {
   test("is the one the index retained, not the summary's capped copy", () => {
     const full = `XCTAssertEqual failed${" with a great deal more to say".repeat(50)}`
-    expect(focus(full).focused.message).toBe(full)
+    expect(present(focus(full)).message).toBe(full)
     expect(focus(full).truncation.fieldTruncated).toBe(false)
   })
 
   test("says so when it had to be cut", () => {
-    const { focused, truncation } = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP + 1))
+    const view = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP + 1))
+    const focused = present(view)
+    const { truncation } = view
 
     expect(focused.message).toHaveLength(FOCUSED_MESSAGE_CHAR_CAP)
     // Without this a caller cannot tell a shortened message from a short one.
@@ -63,7 +66,8 @@ describe("the full message", () => {
   })
 
   test("keeps its start, never its end", () => {
-    const { focused } = focus(`BEGIN ${"x".repeat(FOCUSED_MESSAGE_CHAR_CAP)} END`)
+    const view = focus(`BEGIN ${"x".repeat(FOCUSED_MESSAGE_CHAR_CAP)} END`)
+    const focused = present(view)
     expect(focused.message.startsWith("BEGIN ")).toBe(true)
     expect(focused.message.endsWith("END")).toBe(false)
   })
@@ -71,7 +75,8 @@ describe("the full message", () => {
 
 describe("stack frames", () => {
   test("are read from the failure text where a trace format is recognizable", () => {
-    const { focused } = focus(TRACE)
+    const view = focus(TRACE)
+    const focused = present(view)
     expect(focused.stackFrames).toEqual([
       { symbol: "LoginTests.testSignsIn()", module: "AppTests" },
       { symbol: "XCTestCase.invokeTest()", module: "XCTest" },
@@ -79,19 +84,23 @@ describe("stack frames", () => {
   })
 
   test("never carry a raw address", () => {
-    const { focused } = focus(TRACE)
+    const view = focus(TRACE)
+    const focused = present(view)
     expect(JSON.stringify(focused.stackFrames)).not.toContain("0x")
   })
 
   test("report a source line relative to the repository", () => {
-    const { focused } = focus(`failed\n  at ${ROOT}/Sources/App/Login.swift:42:9`)
+    const view = focus(`failed\n  at ${ROOT}/Sources/App/Login.swift:42:9`)
+    const focused = present(view)
     expect(focused.stackFrames).toEqual([
       { location: { path: "Sources/App/Login.swift", line: 42, column: 9 } },
     ])
   })
 
   test("are absent, and said to be absent, when no trace is recognizable", () => {
-    const { focused, truncation } = focus("XCTAssertEqual failed: no trace here at all")
+    const view = focus("XCTAssertEqual failed: no trace here at all")
+    const focused = present(view)
+    const { truncation } = view
 
     // "There were none" and "none could be read" are different facts, and #8
     // requires the second to be reported rather than presented as the first.
@@ -108,8 +117,8 @@ describe("stack frames", () => {
     )
     // A frame claims the failure passed through somewhere. A location alone
     // does not support that claim, whatever else it is good for.
-    expect(located.focused.stackFrames).toEqual([])
-    expect(located.focused.location).toEqual({ path: "Sources/App/Login.swift", line: 42 })
+    expect(present(located).stackFrames).toEqual([])
+    expect(present(located).location).toEqual({ path: "Sources/App/Login.swift", line: 42 })
   })
 
   test("read nothing out of ordinary prose that merely mentions a symbol", () => {
@@ -131,7 +140,7 @@ describe("the activity hierarchy", () => {
       activities: chain(FOCUSED_ACTIVITY_DEPTH_CAP + 10),
       attachments: [],
     })
-    expect(deepest(deep.focused.activities)).toBe(FOCUSED_ACTIVITY_DEPTH_CAP)
+    expect(deepest(present(deep).activities)).toBe(FOCUSED_ACTIVITY_DEPTH_CAP)
     expect(deep.truncation.collectionTruncated).toBe(true)
 
     const wide = focus("failed", {
@@ -141,26 +150,26 @@ describe("the activity hierarchy", () => {
       })),
       attachments: [],
     })
-    expect(wide.focused.activities).toHaveLength(FOCUSED_ACTIVITY_NODE_CAP)
+    expect(present(wide).activities).toHaveLength(FOCUSED_ACTIVITY_NODE_CAP)
     expect(wide.truncation.collectionTruncated).toBe(true)
   })
 
   test("keeps parents before children when it has to cut", () => {
-    const { focused } = focus("failed", {
+    const view = focus("failed", {
       activities: [{ title: "parent", children: chain(FOCUSED_ACTIVITY_NODE_CAP + 5) }],
       attachments: [],
     })
-    expect(focused.activities[0]?.title).toBe("parent")
+    expect(present(view).activities[0]?.title).toBe("parent")
   })
 })
 
 describe("attachments", () => {
   test("are metadata only, and say so", () => {
-    const { focused } = focus("failed", {
+    const view = focus("failed", {
       activities: [],
-      attachments: [{ name: "screenshot.png", mediaType: "public.png", byteSize: 1, contentAccessible: false }],
+      attachments: [{ name: "screenshot.png", mediaType: "public.png", byteSize: 1 }],
     })
-    expect(focused.attachments[0]).toEqual({
+    expect(present(view).attachments[0]).toEqual({
       name: "screenshot.png",
       mediaType: "public.png",
       byteSize: 1,
@@ -173,7 +182,9 @@ describe("attachments", () => {
       name: `file-${n}`,
       contentAccessible: false as const,
     }))
-    const { focused, truncation } = focus("failed", { activities: [], attachments: many })
+    const view = focus("failed", { activities: [], attachments: many })
+    const focused = present(view)
+    const { truncation } = view
 
     expect(focused.attachments).toHaveLength(ATTACHMENT_METADATA_CAP)
     expect(truncation.collectionTruncated).toBe(true)
@@ -194,7 +205,9 @@ describe("the response cap", () => {
   }
 
   test("holds even when every collection is individually within its own cap", () => {
-    const { focused, truncation } = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP), oversized)
+    const view = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP), oversized)
+    const focused = present(view)
+    const { truncation } = view
 
     expect(Buffer.byteLength(JSON.stringify(focused), "utf8")).toBeLessThanOrEqual(RESPONSE_BYTE_CAP)
     expect(truncation.responseTruncated).toBe(true)
@@ -218,7 +231,8 @@ describe("the response cap", () => {
   })
 
   test("sheds in reverse priority, so identity and message outlive attachments", () => {
-    const { focused } = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP), oversized)
+    const view = focus("x".repeat(FOCUSED_MESSAGE_CHAR_CAP), oversized)
+    const focused = present(view)
 
     // #7 fixes the order: envelope and identity, then the message, then
     // frames, then activities, then attachments. Attachments go first.

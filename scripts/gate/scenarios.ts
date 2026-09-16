@@ -84,8 +84,8 @@ export const STANDING = {
 } as const satisfies Record<Suite, Record<string, readonly string[]>>
 
 /** Every standing check of a suite, in the order its gates run them. */
-export function standingOf(suite: Suite): readonly string[] {
-  return Object.values(STANDING[suite]).flat() as readonly string[]
+export function standingOf(suite: Suite): readonly ScenarioName[] {
+  return Object.values(STANDING[suite]).flat() as readonly ScenarioName[]
 }
 
 /**
@@ -138,8 +138,27 @@ export function preventedBy(suite: Suite, name: string): readonly string[] {
  * than for CI — which is why `isRegistered` checks the same thing at runtime.
  */
 export type ScenarioName =
-  | (typeof STANDING)[Suite][keyof (typeof STANDING)[Suite]][number]
+  | { [S in Suite]: GateNames<(typeof STANDING)[S]> }[Suite]
   | keyof typeof CONDITIONAL
+
+/**
+ * Every name in one suite's gates.
+ *
+ * Mapped over `Suite` above rather than indexed by it, and that is the whole
+ * of the difference (issue #74). `STANDING[Suite]` is a *union* of three
+ * differently-shaped objects, and `keyof` a union is the keys they share —
+ * which for three suites with different gate names is none. So the standing
+ * half of this type was `never`, every `SCENARIO["b2 passing"]` in the gates
+ * was an index into a record that had no such key, and the union that is
+ * supposed to make a typo a mistake where it is written contained only the
+ * three conditional names.
+ *
+ * Nothing failed, because Bun strips types rather than checking them. The
+ * registry's own comment says a union is used "so an emitter naming something
+ * the registry does not know is a mistake at the point it is written"; for
+ * the names it mostly exists to protect, it was not.
+ */
+type GateNames<T> = T[keyof T] extends readonly (infer Name)[] ? Name : never
 
 const STANDING_NAMES: readonly string[] = SUITES.flatMap((suite) => standingOf(suite))
 
@@ -152,11 +171,11 @@ export function isRegistered(name: string): boolean {
 
 /** Whether this name is one of the suite's standing checks. */
 export function isStanding(suite: Suite, name: string): boolean {
-  return standingOf(suite).includes(name)
+  return (standingOf(suite) as readonly string[]).includes(name)
 }
 
 /** Every standing scenario the selected suites set out to run, in suite order. */
-export function standingFor(selected: readonly Suite[]): string[] {
+export function standingFor(selected: readonly Suite[]): ScenarioName[] {
   return selected.flatMap((suite) => [...standingOf(suite)])
 }
 

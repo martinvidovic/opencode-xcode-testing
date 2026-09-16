@@ -17,7 +17,6 @@ import {
   admit,
   MINIMUM_FREE_BYTES,
   readQueue,
-  releaseSlot,
   writeQueue,
   type AdmissionEnvironment,
 } from "../../src/runner/queue.ts"
