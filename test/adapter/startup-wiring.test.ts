@@ -108,7 +108,7 @@ describe("the output budget", () => {
   test("is derived from the host's effective limits, not from the defaults", () => {
     // The host does not materialize `tool_output` defaults, and it may well be
     // configured lower than ours. Ignoring it is how host truncation happens.
-    const budget = resolveBudget({ max_lines: 200, max_bytes: 8_192 })
+    const budget = resolveBudget({ status: "configured", maxLines: 200, maxBytes: 8_192 })
     expect(budget.maxLines).toBeLessThan(200)
     expect(budget.maxBytes).toBeLessThan(8_192)
   })

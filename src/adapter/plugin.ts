@@ -76,7 +76,21 @@ export const server: Plugin = async (input) => {
   // the host's configuration is not hot-reloaded, so two calls in one session
   // can never disagree — without the factory depending on a server that is
   // still starting.
-  const hostOutputLimits = once(() => readOutputLimits(input.client))
+  const hostOutputLimits = once(async () => {
+    const limits = await readOutputLimits(input.client)
+
+    // Announced, once, the first time it matters (issue #82). A conservative
+    // guess nobody is told about is still a guess: the adapter's invariant is
+    // that host truncation is unreachable, and without the limits it can only
+    // keep that under a floor it chose for itself. Saying so is what turns an
+    // assumption into something the person running it can act on.
+    if (limits.status === "unreadable") {
+      process.stderr.write(
+        `xcode-test: the host's output limits could not be read (${limits.detail}), so responses are held to a conservative floor. If your \`tool_output\` limits are lower than that, they may still be exceeded.\n`,
+      )
+    }
+    return limits
+  })
 
   const skew = hostVersionDiagnostic(outcome.hostVersion)
   if (skew !== undefined) process.stderr.write(`xcode-test: ${skew}\n`)

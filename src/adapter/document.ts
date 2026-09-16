@@ -23,7 +23,15 @@ export const PRIORITY = {
   diagnostics: 3,
   /** Provenance, timing, inspection availability. */
   context: 4,
-  /** Sampled observed tests: the first thing worth dropping. */
+  /**
+   * The first thing worth dropping, whatever it is.
+   *
+   * Sampled observed tests, and a log window's text — which a caller can ask
+   * for again, unlike the byte range that says where to ask from (issue #82).
+   * Named for its rank rather than for one of its occupants, because a
+   * priority whose comment lists a single facet stops describing the ladder
+   * the moment anything else needs the same rank.
+   */
   sample: 5,
 } as const
 

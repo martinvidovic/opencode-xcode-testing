@@ -79,6 +79,7 @@ export const STANDING = {
       "b2 buildFailed",
       "b2 inspection without rerun",
       "b2 log facet",
+      "b2 configured host limits",
     ],
   },
 } as const satisfies Record<Suite, Record<string, readonly string[]>>

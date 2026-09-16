@@ -87,6 +87,13 @@ export async function runExecutionGate(
       config: {
         plugin: [PLUGIN],
         provider: stubProviderConfig(stub.baseURL),
+        // Deliberately below the documented defaults (issue #82). The whole
+        // claim is that the adapter stays under *the host's* limits rather
+        // than under numbers it likes; a gate run against a host with nothing
+        // configured proves only that it stays under the defaults, which it
+        // would do by accident. These are the numbers everything below is
+        // measured against.
+        tool_output: CONFIGURED_LIMITS,
       },
     })
 
@@ -107,15 +114,54 @@ export async function runExecutionGate(
   }
 }
 
+/**
+ * Host limits this gate configures, chosen so that at least one of them binds.
+ *
+ * "Lower than the documented defaults" is not enough on its own. The adapter's
+ * self-caps are 1,900 lines and 32 KiB, and a real Test Run response here runs
+ * to about sixty lines and four and a half kilobytes — so against a host at
+ * 2,000/50 KiB, or at any limit above those, an adapter that ignored the host
+ * configuration entirely would pass. A check that cannot fail is not a check.
+ *
+ * **The byte limit is the one that binds.** At 4 KiB the adapter's budget
+ * becomes 2 KiB after its safety margin, and the largest response has to shed
+ * blocks to fit; an adapter reading the documented defaults instead would emit
+ * its natural ~4.5 KiB and exceed the host's limit. The line limit is
+ * deliberately comfortable: the margin is 50 lines, so any line limit close
+ * enough to bind leaves a budget of a handful of lines and shreds every
+ * response, which tests the last-resort path rather than this one.
+ */
+const CONFIGURED_LIMITS = { max_lines: 300, max_bytes: 4_096 } as const
+
 async function scenarios(
   client: OpencodeClient,
   stub: StubProvider,
   roots: { passing: string; broken: string },
   record: ScenarioSink,
 ): Promise<void> {
-  const budget = resolveBudget(undefined)
+  // The limits this gate configured on the host it is driving, resolved the
+  // way the adapter resolves them.
+  const budget = resolveBudget({
+    status: "configured",
+    maxLines: CONFIGURED_LIMITS.max_lines,
+    maxBytes: CONFIGURED_LIMITS.max_bytes,
+  })
 
-  const passed = await invoke(client, stub, roots.passing, {
+  /**
+   * Every tool response this suite provoked, kept for the limits check.
+   *
+   * All of them, not the largest or the last. The claim is about the tool's
+   * output, and one response staying under a limit says nothing about the
+   * other nine — the failure mode is a facet nobody thought to measure.
+   */
+  const responses: Array<{ what: string; text: string }> = []
+  const invoked = async (what: string, directory: string, call: { tool: string; args: unknown }) => {
+    const text = await invoke(client, stub, directory, call)
+    responses.push({ what, text })
+    return text
+  }
+
+  const passed = await invoked("passing run", roots.passing, {
     tool: "xcode_test",
     args: scope(FIXTURE.passingSuite),
   })
@@ -126,7 +172,7 @@ async function scenarios(
       : failure(SCENARIO["b2 driven by a model turn"], "the stub provider was never called"),
   )
 
-  const failed = await invoke(client, stub, roots.passing, {
+  const failed = await invoked("failing run", roots.passing, {
     tool: "xcode_test",
     args: scope(FIXTURE.failingSuite),
   })
@@ -145,7 +191,7 @@ async function scenarios(
       : failure(SCENARIO["b2 budget invariant"], "a real run exceeded the adapter's own output budget"),
   )
 
-  const zeroMatch = await invoke(client, stub, roots.passing, {
+  const zeroMatch = await invoked("zero-match", roots.passing, {
     tool: "xcode_test",
     args: scope("NoSuchSuiteExists"),
   })
@@ -156,7 +202,7 @@ async function scenarios(
     expectOutcome(SCENARIO["b2 zero-match"], zeroMatch, "Test Run infrastructureFailed: scopeMismatch"),
   )
 
-  const buildFailed = await invoke(client, stub, roots.broken, {
+  const buildFailed = await invoked("build failure", roots.broken, {
     tool: "xcode_test",
     args: { scope: { kind: "all" } },
   })
@@ -166,7 +212,7 @@ async function scenarios(
   if (runId === undefined) {
     record(failure(SCENARIO["b2 inspection without rerun"], "no run id was rendered to inspect"))
   } else {
-    const inspected = await invoke(client, stub, roots.passing, {
+    const inspected = await invoked("failures inspection", roots.passing, {
       tool: "xcode_test_inspect",
       args: { runId, facet: "failures" },
     })
@@ -175,12 +221,74 @@ async function scenarios(
     // The log facet reads a file rather than the index, and is the one facet
     // whose content is untrusted. Both facts have to survive the round trip
     // through the host, or a model reads project output as instruction.
-    const logged = await invoke(client, stub, roots.passing, {
+    const logged = await invoked("log inspection", roots.passing, {
       tool: "xcode_test_inspect",
-      args: { runId, facet: "log", maxBytes: 4096 },
+      // Sized to the budget the configured host limits leave, not to a round
+      // number (issue #82). A caller asking for more log than the host will
+      // carry gets the window's byte range and none of its text — which is
+      // the adapter doing the right thing, and no way to check that the text
+      // it *can* return is fenced and labelled.
+      args: { runId, facet: "log", maxBytes: 1024 },
     })
     record(logFacetResult(logged, runId))
+
+    // Deliberately more log than the host's configured limit will carry
+    // (issue #82). Its answer is not checked for content — the window above
+    // does that — and it exists so the limits check below has a response that
+    // *would* exceed the host if the adapter had helped itself to the
+    // documented defaults. Without it every response is naturally small, and
+    // an adapter ignoring the host configuration entirely would pass.
+    await invoked("oversized log window", roots.passing, {
+      tool: "xcode_test_inspect",
+      args: { runId, facet: "log", maxBytes: 65_536 },
+    })
   }
+
+  record(withinConfiguredLimits(responses, budget))
+}
+
+/**
+ * Every response this suite produced, against the limits the host was given.
+ *
+ * The invariant the adapter exists to keep: host truncation is unreachable,
+ * because a truncated response is replaced by a pointer to a directory the
+ * model cannot open. Checked against limits deliberately set **below** the
+ * documented defaults, so the host's number is the binding one — against a
+ * host with nothing configured, an adapter that ignored the configuration
+ * entirely would pass this (issue #82).
+ *
+ * The worst response is named on success as well as on failure. "All of them
+ * fit" is worth little without how close the closest came.
+ */
+function withinConfiguredLimits(
+  responses: ReadonlyArray<{ what: string; text: string }>,
+  budget: { maxLines: number; maxBytes: number },
+): ScenarioResult {
+  if (responses.length === 0) {
+    return failure(SCENARIO["b2 configured host limits"], "no tool response was produced to measure")
+  }
+
+  const over = responses.filter(
+    (response) =>
+      lineCount(response.text) > CONFIGURED_LIMITS.max_lines ||
+      byteLength(response.text) > CONFIGURED_LIMITS.max_bytes,
+  )
+  if (over.length > 0) {
+    const worst = over
+      .map((response) => `${response.what} (${lineCount(response.text)} lines, ${byteLength(response.text)} bytes)`)
+      .join("; ")
+    return failure(
+      SCENARIO["b2 configured host limits"],
+      `${over.length} response(s) exceeded the host's configured ${CONFIGURED_LIMITS.max_lines}/${CONFIGURED_LIMITS.max_bytes}: ${worst}`,
+    )
+  }
+
+  const widest = responses.reduce((a, b) => (lineCount(a.text) >= lineCount(b.text) ? a : b))
+  const heaviest = responses.reduce((a, b) => (byteLength(a.text) >= byteLength(b.text) ? a : b))
+  return success(
+    SCENARIO["b2 configured host limits"],
+    `${responses.length} response(s) under the host's configured ${CONFIGURED_LIMITS.max_lines} lines / ${CONFIGURED_LIMITS.max_bytes} bytes; widest ${lineCount(widest.text)} lines (${widest.what}), heaviest ${byteLength(heaviest.text)} bytes (${heaviest.what}); the adapter's own budget was ${budget.maxLines}/${budget.maxBytes}`,
+  )
 }
 
 /**
