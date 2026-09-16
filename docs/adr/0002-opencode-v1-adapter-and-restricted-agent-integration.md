@@ -126,6 +126,28 @@ The adapter cannot assume the documented 50 KiB / 2000 lines: `tool_output.max_l
 self-caps of ~1900 lines and ~32 KiB. #7's 65,536-byte domain-data cap remains separate and
 unchanged.
 
+**Amended (issue #82): the guarantee is unconditional only while the limits are readable.**
+"Unreachable by construction" is a claim about arithmetic — stay under the host's number — and it
+holds exactly as long as the host's number is known. Three answers are possible, and the first
+version of this collapsed two of them:
+
+| What the host said | Ceiling applied | Guarantee |
+| --- | --- | --- |
+| a `tool_output` block | its numbers | unconditional |
+| no `tool_output` block | the documented 2,000 lines / 50 KiB, which is what the host will apply | unconditional |
+| nothing readable | a conservative floor of 200 lines / 5 KiB | **conditional on that floor** |
+
+The third row is the amendment. A failed read used to be treated as the second, so the adapter
+helped itself to 2,000 lines on a machine whose owner may have configured 200 — the one situation
+the invariant exists to prevent, reached by assuming the best about a question nobody could ask.
+
+The floor is a policy, not a measurement. It covers every lowering anyone is likely to configure by
+hand and **cannot cover all of them**: a host set to `max_lines: 10` is beyond anything an adapter
+that cannot read the configuration could know. So an unreadable read is also **announced** on
+stderr, once, naming the reason and saying plainly that limits lower than the floor may still be
+exceeded. A conservative guess nobody is told about is still a guess; a printed one is a fact the
+person running it can act on.
+
 **Amended (issue #37): "once at plugin startup" is not reachable, and is now "once, on first
 use".** The plugin factory runs *inside* the host's own bootstrap. Asking the host for its
 configuration from there deadlocks it: the config route cannot answer until the plugin it is
@@ -418,8 +440,9 @@ Both of ADR 0001's open deferrals are closed here.
   manifest, no dependency install step of our own.
 - A globally installed plugin stays invisible in projects that have not opted in, at a
   sub-millisecond cost per session start.
-- Host truncation is unreachable, so the model can never receive a truncation-directory pointer it
-  cannot read.
+- Host truncation is unreachable whenever the host's limits can be read, so the model can never
+  receive a truncation-directory pointer it cannot read. When they cannot be read, the adapter
+  holds to a conservative floor and says so — see the amendment under *Output budget* (issue #82).
 - The model's entire view of a Test Run is deterministic, byte-exact, and golden-tested; changes to
   it are visible in review.
 - Bun becomes a genuine prerequisite on machines where `opencode` was installed as a compiled

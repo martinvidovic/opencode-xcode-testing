@@ -11,17 +11,19 @@
 import { describe, expect, test } from "bun:test"
 
 import {
-  byteLength,
   DEFAULT_BUDGET,
   HOST_DEFAULT_MAX_BYTES,
   HOST_DEFAULT_MAX_LINES,
-  lineCount,
-  readOutputLimits,
-  resolveBudget,
   SAFETY_MARGIN_BYTES,
   SAFETY_MARGIN_LINES,
   SELF_CAP_BYTES,
   SELF_CAP_LINES,
+  UNREADABLE_MAX_BYTES,
+  UNREADABLE_MAX_LINES,
+  byteLength,
+  lineCount,
+  readOutputLimits,
+  resolveBudget,
   serialize,
   truncateToBytes,
 } from "../../src/adapter/budget.ts"
@@ -36,48 +38,107 @@ describe("reading the host's limits", () => {
     const limits = await readOutputLimits(
       clientReturning({ data: { tool_output: { max_lines: 100, max_bytes: 4_096 } } }),
     )
-    expect(limits).toEqual({ max_lines: 100, max_bytes: 4_096 })
+    expect(limits).toEqual({ status: "configured", maxLines: 100, maxBytes: 4_096 })
   })
 
-  test("treats a host that cannot be asked as one that was never configured", async () => {
-    // Not "no limits": `resolveBudget` then applies the documented defaults,
-    // which is the only reading that keeps host truncation unreachable.
+  test("tells a host with nothing configured from one that could not be asked", async () => {
+    // These were the same answer, and they are not the same situation (issue
+    // #82). A host with no `tool_output` block will apply the documented
+    // defaults, so assuming them is exactly right. A host that could not be
+    // asked has told us nothing — including whether its owner configured
+    // something *lower* than the defaults this adapter would then help itself
+    // to, which is how the one invariant gets broken.
+    expect(await readOutputLimits(clientReturning({ data: {} }))).toEqual({ status: "absent" })
+
     const throwing = { config: { get: () => Promise.reject(new Error("no config route")) } }
-    expect(await readOutputLimits(throwing)).toBeUndefined()
-    expect(await readOutputLimits(clientReturning({}))).toBeUndefined()
-    expect(await readOutputLimits(clientReturning({ data: {} }))).toBeUndefined()
+    expect((await readOutputLimits(throwing)).status).toBe("unreadable")
+    expect((await readOutputLimits(clientReturning({}))).status).toBe("unreadable")
+  })
+
+  test("says a block it cannot read is unreadable, rather than absent", async () => {
+    // A `tool_output` that is there and unusable is not a host with nothing
+    // configured. Reading it as one would substitute the defaults for a
+    // configuration that exists and says something else.
+    const cases = [
+      { tool_output: "loud" },
+      { tool_output: { max_lines: "many" } },
+      { tool_output: { max_bytes: -1 } },
+      { tool_output: { max_lines: Number.NaN } },
+    ]
+
+    for (const config of cases) {
+      expect((await readOutputLimits(clientReturning({ data: config }))).status).toBe("unreadable")
+    }
+  })
+
+  test("says nothing about the machine when it says why", async () => {
+    // The detail reaches a startup diagnostic, and a config route's error
+    // routinely quotes a path under the user's home.
+    const throwing = {
+      config: {
+        get: () => Promise.reject(new Error("ENOENT: open '/Users/someone/.config/opencode'")),
+      },
+    }
+    const limits = await readOutputLimits(throwing)
+
+    expect(limits.status).toBe("unreadable")
+    expect(limits.status === "unreadable" ? limits.detail : "").not.toContain("/Users")
+  })
+})
+
+describe("a budget built from limits nobody could read", () => {
+  test("is smaller than the documented defaults, not equal to them", () => {
+    // The defect. A read that failed produced a budget built from 2,000 lines
+    // on a machine whose owner may have set 200 — and a response over the
+    // host's limit is replaced by a pointer to a directory the model cannot
+    // open, which is worse than a short answer.
+    const unreadable = resolveBudget({ status: "unreadable", detail: "no route" })
+    const absent = resolveBudget({ status: "absent" })
+
+    expect(unreadable.maxLines).toBeLessThan(absent.maxLines)
+    expect(unreadable.maxBytes).toBeLessThan(absent.maxBytes)
+  })
+
+  test("stays under every lowering anyone is likely to have configured", () => {
+    // A policy, not a measurement, and it cannot cover a host set to 10 — no
+    // fallback can, which is why ADR 0002 records the guarantee as conditional
+    // here and why an unreadable read is announced rather than absorbed.
+    const unreadable = resolveBudget({ status: "unreadable", detail: "no route" })
+
+    expect(unreadable.maxLines).toBeLessThanOrEqual(UNREADABLE_MAX_LINES)
+    expect(unreadable.maxBytes).toBeLessThanOrEqual(UNREADABLE_MAX_BYTES)
   })
 })
 
 describe("resolving the budget", () => {
   test("applies the documented defaults, because the host does not materialize them", () => {
     // An unset `tool_output` block arrives as undefined, not as the defaults.
-    expect(resolveBudget(undefined)).toEqual({
+    expect(resolveBudget({ status: "absent" })).toEqual({
       maxLines: Math.min(SELF_CAP_LINES, HOST_DEFAULT_MAX_LINES - SAFETY_MARGIN_LINES),
       maxBytes: Math.min(SELF_CAP_BYTES, HOST_DEFAULT_MAX_BYTES - SAFETY_MARGIN_BYTES),
     })
   })
 
   test("takes the host's limit when it is lower than our own cap", () => {
-    const budget = resolveBudget({ max_lines: 100, max_bytes: 4_096 })
+    const budget = resolveBudget({ status: "configured", maxLines: 100, maxBytes: 4_096 })
     expect(budget.maxLines).toBe(100 - SAFETY_MARGIN_LINES)
     expect(budget.maxBytes).toBe(4_096 - SAFETY_MARGIN_BYTES)
   })
 
   test("never exceeds our own cap, however generous the host is", () => {
-    const budget = resolveBudget({ max_lines: 1_000_000, max_bytes: 10_000_000 })
+    const budget = resolveBudget({ status: "configured", maxLines: 1_000_000, maxBytes: 10_000_000 })
     expect(budget.maxLines).toBe(SELF_CAP_LINES)
     expect(budget.maxBytes).toBe(SELF_CAP_BYTES)
   })
 
   test("stays clear of the host limit by a margin", () => {
-    const budget = resolveBudget({ max_lines: 500, max_bytes: 20_000 })
+    const budget = resolveBudget({ status: "configured", maxLines: 500, maxBytes: 20_000 })
     expect(budget.maxLines).toBeLessThan(500)
     expect(budget.maxBytes).toBeLessThan(20_000)
   })
 
   test("degrades to something usable rather than to zero", () => {
-    const budget = resolveBudget({ max_lines: 1, max_bytes: 1 })
+    const budget = resolveBudget({ status: "configured", maxLines: 1, maxBytes: 1 })
     expect(budget.maxLines).toBeGreaterThan(0)
     expect(budget.maxBytes).toBeGreaterThan(0)
   })
@@ -87,9 +148,9 @@ describe("resolving the budget", () => {
     // A floor that sat *above* the host's limit would reach it — and the host
     // replaces truncated output with a path the model cannot open.
     for (const bytes of [1, 16, 63, 64, 100]) {
-      expect(resolveBudget({ max_bytes: bytes }).maxBytes).toBeLessThanOrEqual(bytes)
+      expect(resolveBudget({ status: "configured", maxBytes: bytes }).maxBytes).toBeLessThanOrEqual(bytes)
     }
-    expect(resolveBudget({ max_lines: 1 }).maxLines).toBeLessThanOrEqual(1)
+    expect(resolveBudget({ status: "configured", maxLines: 1 }).maxLines).toBeLessThanOrEqual(1)
   })
 })
 
