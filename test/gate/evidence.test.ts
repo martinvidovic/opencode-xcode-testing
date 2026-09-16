@@ -233,7 +233,7 @@ describe("the evidence store", () => {
       const source = sourceTree(16)
       try {
         preserveEvidence(source, { startedAt: "2026-09-15T00:00:00.000Z", homeDir: home })
-        pruneEvidence(home, EVIDENCE_POLICY)
+        pruneEvidence({ homeDir: home })
 
         expect(setsIn(home)).toEqual(["2026-09-15T00-00-00-000Z"])
       } finally {
@@ -249,7 +249,7 @@ describe("the evidence store", () => {
       plantSet(home, "newer", 16, 1_000)
       plantSet(home, "newest", 16, 0)
 
-      pruneEvidence(home, { ...EVIDENCE_POLICY, maxSets: 2 })
+      pruneEvidence({ homeDir: home, policy: { ...EVIDENCE_POLICY, maxSets: 2 } })
 
       expect(setsIn(home)).toEqual(["newer", "newest"])
     })
@@ -262,7 +262,7 @@ describe("the evidence store", () => {
 
       // Two sets, a limit of three: only age can remove one here, which is
       // what makes this about age rather than about crowding.
-      pruneEvidence(home, EVIDENCE_POLICY)
+      pruneEvidence({ homeDir: home })
 
       expect(setsIn(home)).toEqual(["recent"])
     })
@@ -273,7 +273,7 @@ describe("the evidence store", () => {
       plantSet(home, "old", 900, 2_000)
       plantSet(home, "new", 900, 0)
 
-      pruneEvidence(home, { ...EVIDENCE_POLICY, maxBytes: 1000 })
+      pruneEvidence({ homeDir: home, policy: { ...EVIDENCE_POLICY, maxBytes: 1000 } })
 
       expect(setsIn(home)).toEqual(["new"])
     })
@@ -282,7 +282,7 @@ describe("the evidence store", () => {
   test("reports nothing to prune rather than failing when there is no store", () => {
     withHome((home) => {
       // The ordinary case on a machine where the gate has never failed.
-      expect(pruneEvidence(home, EVIDENCE_POLICY)).toEqual([])
+      expect(pruneEvidence({ homeDir: home })).toEqual([])
     })
   })
 })

@@ -57,6 +57,21 @@ export function field(label: string, value: string): string {
 }
 
 /**
+ * The value of one named field in a rendered document, if it carries one.
+ *
+ * Beside `field` for the reason `isField` is: a caller that slices the value
+ * out at a hard-coded column is a caller that goes silently wrong when the
+ * column moves, and "silently" is the part that matters — it returns a string,
+ * just the wrong one.
+ */
+export function fieldValue(text: string, label: string): string | undefined {
+  const line = text
+    .split("\n")
+    .find((candidate) => isField(candidate) && candidate.slice(0, LABEL_WIDTH).trimEnd() === label)
+  return line === undefined ? undefined : line.slice(LABEL_WIDTH).trim()
+}
+
+/**
  * Whether a rendered line is one of the `label   value` fields above.
  *
  * Here rather than at the one call site that reads a rendered document back

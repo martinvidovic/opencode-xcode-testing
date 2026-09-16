@@ -36,7 +36,7 @@ import {
   scenarioSink,
   type Observations,
 } from "./gate/observations.ts"
-import { preserveEvidence } from "./gate/forensics.ts"
+import { preserveEvidence, type EvidenceSource } from "./gate/forensics.ts"
 import { readProvenance } from "./gate/provenance.ts"
 import { renderReport, writeReport, type RunReport } from "./gate/report.ts"
 import { safeFailure } from "../src/adapter/sanitize.ts"
@@ -207,7 +207,24 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   if (suites.includes("b2") && context !== undefined) {
     // (b2) drives the host against generated projects with known outcomes, so
     // it takes the shared context and not the project override.
-    await asSuite(observed, "b2", () => runExecutionGate(context, record))
+    await asSuite(observed, "b2", () =>
+      runExecutionGate(
+        {
+          ...context,
+          // The same key as Layer 4's, deliberately: one run keeps one set.
+          // Two keys would mean two report fields racing to be "the"
+          // evidence, and a reader holding whichever one was written last.
+          keepEvidence: (sources, correlations) => {
+            observed.evidence = mergeEvidence(
+              observed.evidence,
+              describeEvidence(sources, observed.startedAt),
+            )
+            observed.b2Evidence = [...correlations]
+          },
+        },
+        record,
+      ),
+    )
   }
 
   // A run that executed no gating scenario has verified nothing, whatever its
@@ -248,7 +265,11 @@ export async function main(argv: string[], observed: Observations): Promise<numb
  * something never throws is worth exactly as much as the test that checks it,
  * and a handler reachable only from inside a closure is one no test can reach.
  */
-export function describeEvidence(source: string, startedAt: string, homeDir?: string): RunReport["evidence"] {
+export function describeEvidence(
+  source: string | readonly EvidenceSource[],
+  startedAt: string,
+  homeDir?: string,
+): RunReport["evidence"] {
   try {
     const kept = preserveEvidence(source, {
       startedAt,
@@ -259,6 +280,46 @@ export function describeEvidence(source: string, startedAt: string, homeDir?: st
       : { unavailable: kept.reason }
   } catch (error) {
     return { unavailable: safeFailure(error) }
+  }
+}
+
+/**
+ * Two suites' evidence, described as the one set it actually is.
+ *
+ * Both suites file under the same key, so the second preservation adds a
+ * subtree rather than replacing anything — and a report naming only the
+ * second one's bytes would understate a set a reader is about to go and read.
+ *
+ * A half that could not be kept never erases one that was. That was the
+ * tempting shape and it is the wrong one: the report would say nothing was
+ * kept while `b2Evidence` still pointed at a key holding Layer 4's evidence,
+ * which sends a reader away from a directory that is sitting there. So what
+ * survives is the kept half, carrying the other's reason beside it.
+ */
+export function mergeEvidence(
+  existing: RunReport["evidence"],
+  added: RunReport["evidence"],
+): RunReport["evidence"] {
+  if (existing === undefined) return added
+  if (added === undefined) return existing
+
+  const kept = [existing, added].filter((half) => !("unavailable" in half)) as Array<{
+    key: string
+    bytes: number
+  }>
+  if (kept.length === 0) {
+    const reasons = [existing, added].map((half) => ("unavailable" in half ? half.unavailable : ""))
+    return { unavailable: [...new Set(reasons)].filter((reason) => reason.length > 0).join("; ") }
+  }
+
+  const bytes = kept.reduce((total, half) => total + half.bytes, 0)
+  const missing = [existing, added].find((half) => "unavailable" in half)
+  return {
+    key: kept[0]!.key,
+    bytes,
+    ...(missing === undefined || !("unavailable" in missing)
+      ? {}
+      : { partial: missing.unavailable }),
   }
 }
 

@@ -340,7 +340,7 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
  * retention account for — and then evict against — bytes it does not own, and
  * a link back to an ancestor would make this walk never finish.
  */
-export function directorySize(path: string): number {
+export function directorySize(path: string, keep: (path: string) => boolean = () => true): number {
   let total = 0
   const walk = (current: string) => {
     let entries: string[]
@@ -351,6 +351,10 @@ export function directorySize(path: string): number {
     }
     for (const entry of entries) {
       const child = join(current, entry)
+      // What is measured has to be what would be copied, or a caller that
+      // excludes a build cache from the copy still sizes it in — and discards
+      // sets that would have fitted.
+      if (!keep(child)) continue
       try {
         const stats = lstatSync(child)
         if (stats.isSymbolicLink()) continue
