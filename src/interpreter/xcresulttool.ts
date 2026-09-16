@@ -165,7 +165,7 @@ function read(input: StagedRead): Promise<XcresultResponse> {
     return Promise.resolve({
       ok: false,
       failure: "commandFailed",
-      message: "the structured output could not be staged for reading",
+      message: "the structured output could not be staged: the file could not be created",
     })
   }
 
@@ -185,10 +185,29 @@ function read(input: StagedRead): Promise<XcresultResponse> {
 
     const budgetMs = Math.max(1, input.budgetMs)
     const deadline = monotonicNow() + budgetMs
-    // The path is ignored while `fd` is given; it is passed for legibility.
-    const sink = createWriteStream(staged, { fd, autoClose: true })
+    // The descriptor and nothing else (issue #84).
+    //
+    // Passing the path *as well as* the fd reads as documentation — the path
+    // is what the fd is for — and under this runtime it is not inert: the
+    // stream ends up closing a descriptor twice, which surfaces as
+    // `EBADF: bad file descriptor, close` on the stream's `error` event and is
+    // reported as a Result Bundle that could not be read. It is a race against
+    // the runtime's own bookkeeping, so it presented as the same scenario
+    // passing and failing in alternate runs, and only inside the OpenCode host
+    // process, where there is enough else going on for the ordering to vary.
+    //
+    // `""` with an `fd` is the idiom the supervisor's control channel already
+    // uses for exactly this reason.
+    const sink = createWriteStream("", { fd, autoClose: true })
     let stagedBytes = 0
     let settled = false
+    /**
+     * The child exited cleanly, so everything it meant to write, it wrote.
+     *
+     * Past this point a stream error is about letting go of a descriptor, not
+     * about the bytes — and the bytes are the only thing this read is for.
+     */
+    let payloadComplete = false
 
     const finish = (response: XcresultResponse) => {
       if (settled) return
@@ -212,13 +231,40 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       finish(TIMED_OUT)
     }, budgetMs)
 
-    sink.on("error", () =>
+    // A different failure from the one above, and it needs a different
+    // wording (issue #84). "Could not be created" is a file that never
+    // existed; this is one that did and then stopped accepting writes — a
+    // full volume, a descriptor that went away. Told the same sentence, a
+    // reader cannot tell which happened, and the two send them to look at
+    // completely different things.
+    sink.on("error", (error: NodeJS.ErrnoException) => {
+      // Failing to let go of the descriptor is not failing to write (issue
+      // #84). This runtime raises `EBADF: bad file descriptor, close` here
+      // often enough to matter: closing an `fd` the stream was handed, after
+      // it has finished with it, races the runtime's own bookkeeping.
+      //
+      // Reported, it became `resultBundleUnreadable` for a Test Run whose
+      // evidence had been read perfectly well — the tool blaming a caller's
+      // Result Bundle for its own difficulty putting a file down. Intermittent,
+      // because it is a race, and visible only inside the OpenCode host
+      // process, where there is enough else happening for the ordering to
+      // vary.
+      //
+      // Discriminated by syscall rather than by "the child has exited",
+      // because the two are not the same claim. The child exiting says the
+      // payload was handed over; it does not say the bytes reached the disk,
+      // and the last of them are still being flushed by `end`. A `write` that
+      // fails there — a full volume — is a staging failure whatever the child
+      // did, and swallowing it would surface as an unparseable payload: the
+      // same two-causes-one-wording confusion this guard exists to end.
+      if (payloadComplete && error.syscall !== "write") return
+
       finish({
         ok: false,
         failure: "commandFailed",
-        message: "the structured output could not be staged for reading",
-      }),
-    )
+        message: "the structured output could not be staged: the file could not be written",
+      })
+    })
 
     // Backpressure is the whole point of staging. Writing without it would
     // queue whatever the disk has not taken yet in memory, which is the cost
@@ -260,6 +306,8 @@ function read(input: StagedRead): Promise<XcresultResponse> {
         })
         return
       }
+
+      payloadComplete = true
 
       // `metadata get` is a readability preflight; its payload is not decoded.
       if (command === "metadata get") {

@@ -125,3 +125,52 @@ function advancingClock(stepMs: number) {
     },
   }
 }
+
+describe("a run whose selection matched nothing, and whose bundle says so by omission", () => {
+  /**
+   * Issue #84. Xcode does not reliably write a test-results section for a run
+   * that selected no tests, and a bundle that omits it says only that the
+   * section is absent — not that testing never began. Read as the latter, a
+   * zero-match run became indistinguishable from one that never got past
+   * building, and the scope check that turns it into `scopeMismatch` is
+   * consulted only once testing is known to have been reached.
+   */
+  const NO_TEST_RESULTS = {
+    payloads: {
+      "get content-availability": {
+        hasCoverage: false,
+        hasDiagnostics: true,
+        hasTestResults: false,
+        logs: ["build", "action"],
+      },
+      "get test-results summary": {
+        result: "Passed",
+        totalTestCount: 0,
+        passedTests: 0,
+        failedTests: 0,
+        skippedTests: 0,
+        expectedFailures: 0,
+      },
+    },
+  }
+  const MISSING = { kind: "selected" as const, tests: [{ bundle: "AppTests", suite: "Missing" }] }
+
+  test("is a scope mismatch, not a caller's evidence blamed for being incomplete", async () => {
+    expect(await reasonOf("zero-match", { scope: MISSING, reader: NO_TEST_RESULTS })).toBe(
+      "scopeMismatch",
+    )
+  })
+
+  test("infers nothing from a process that failed, which may have died before testing", async () => {
+    // The inference has two halves and needs both. A build that completed
+    // without errors says `xcodebuild` got past building; only the successful
+    // exit says it then ran the test action to the end.
+    expect(
+      await reasonOf("zero-match", {
+        scope: MISSING,
+        reader: NO_TEST_RESULTS,
+        request: { execution: FAILED_EXIT },
+      }),
+    ).toBe("resultBundleIncomplete")
+  })
+})

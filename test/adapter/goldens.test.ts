@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
+import { field, isField } from "../../src/adapter/document.ts"
 import { renderTestToolResult } from "../../src/adapter/output.ts"
 import { SCENARIOS } from "./scenarios.ts"
 
@@ -47,5 +48,29 @@ describe("renderer goldens", () => {
       .sort()
 
     expect(committed).toEqual(SCENARIOS.map((scenario) => scenario.name).sort())
+  })
+})
+
+describe("telling a rendered field from the prose around it", () => {
+  /**
+   * The acceptance gate quotes the reason beneath a mismatched headline, and
+   * finds it by skipping the `label   value` lines above it. That is a
+   * question about how `field` lays a line out, so it is asked of the renderer
+   * rather than reconstructed from a regex somewhere else — a reconstruction
+   * goes silently wrong the moment the column width changes, and a gate that
+   * reports an empty reason reports nothing at all.
+   */
+  test("recognizes what `field` renders, at whatever width it renders it", () => {
+    expect(isField(field("run", "abc123"))).toBe(true)
+    expect(isField(field("destination", "iPhone 17"))).toBe(true)
+    // A label at or past the column still runs into its value with no gap.
+    expect(isField(field("a-very-long-label", "value"))).toBe(false)
+  })
+
+  test("does not mistake prose for a field, however it is spaced", () => {
+    expect(isField("the Requested Scope did not match the tests that were observed")).toBe(false)
+    expect(isField("two  spaces inside a sentence do not make it a field")).toBe(false)
+    expect(isField("")).toBe(false)
+    expect(isField("   ")).toBe(false)
   })
 })
