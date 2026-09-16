@@ -17,7 +17,9 @@ import { join } from "node:path"
 
 import type { ExecutionContext } from "./context.ts"
 import { byteLength, lineCount, resolveBudget } from "../../src/adapter/budget.ts"
-import { isField } from "../../src/adapter/document.ts"
+import { fieldValue, isField } from "../../src/adapter/document.ts"
+import { B2Evidence, worthKeeping, type B2Correlation } from "./b2-evidence.ts"
+import type { EvidenceSource } from "./forensics.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
 import {
   startStubProvider,
@@ -43,9 +45,45 @@ const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
 const STUB_PORT = 45_795
 const HOST_PORT = 45_796
 
+/**
+ * Copy this process's error stream to `sink` until the returned call undoes it.
+ *
+ * Copy, not redirect: the point is to keep the evidence *and* keep whatever
+ * was going to be printed, because a gate that quietly stopped showing its own
+ * errors in order to file them would be a poor trade.
+ */
+function teeStderr(sink: (text: string) => void): () => void {
+  const original = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    try {
+      sink(typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"))
+    } catch {
+      // A diagnostic that cannot be filed is still a diagnostic to print.
+    }
+    return (original as (...args: unknown[]) => boolean)(chunk, ...rest)
+  }) as typeof process.stderr.write
+  return () => {
+    process.stderr.write = original
+  }
+}
+
+/**
+ * B2's own context: the shared one, plus the evidence port only this suite has.
+ *
+ * A port rather than a call into `forensics.ts`, for the reason Layer 4's is
+ * one: it is the single thing in here that writes outside the workspace, and
+ * naming it in the signature is what lets the gate decide the policy and a
+ * test observe the decision. It is told what to keep and which scenario each
+ * piece belongs to; when the run started, and therefore what key any of it is
+ * filed under, stays with the caller that already knows.
+ */
+export type ExecutionGateOptions = ExecutionContext & {
+  keepEvidence(sources: readonly EvidenceSource[], correlations: readonly B2Correlation[]): void
+}
+
 /** Records each scenario as it finishes; see `ScenarioSink`. */
 export async function runExecutionGate(
-  options: ExecutionContext,
+  options: ExecutionGateOptions,
   record: ScenarioSink,
 ): Promise<void> {
   // The same provenance rule b1 applies, and for the same reason (#81): a
@@ -76,12 +114,31 @@ export async function runExecutionGate(
   const previousCwd = process.cwd()
   let stub: StubProvider | undefined
 
+  // Collected as the suite runs, because none of it can be recovered
+  // afterwards: the projects are deleted, the host is gone, and the responses
+  // that carry a staging failure's own sentence exist only in memory (#98).
+  const evidence = new B2Evidence()
+  const watched: ScenarioSink = (result) => {
+    evidence.watch(result)
+    record(result)
+  }
+
   try {
-    const passing = prepareProject(join(workspace, "passing"), "passing", options)
-    const broken = prepareProject(join(workspace, "build-failed"), "buildFailed", options)
+    // Registered as each one is prepared, not after both. A throw in the
+    // second would otherwise leave the first project's storage registered
+    // nowhere — never kept, never cleaned, and accumulating exactly the way
+    // this suite is here to stop.
+    const passing = evidence.root(prepareProject(join(workspace, "passing"), "passing", options))
+    const broken = evidence.root(prepareProject(join(workspace, "build-failed"), "buildFailed", options))
 
     stub = startStubProvider(STUB_PORT)
     process.chdir(passing)
+
+    // The host runs in this process, so its own complaints go to this
+    // process's error stream and nowhere a scenario result can see them. Tee'd
+    // rather than swallowed: a plugin that failed to load says so here and
+    // only here (#98).
+    const restoreStderr = teeStderr((text) => evidence.hostOutput(text))
 
     const { client, server } = await createOpencode({
       port: HOST_PORT,
@@ -99,18 +156,34 @@ export async function runExecutionGate(
     })
 
     try {
-      await scenarios(client, stub, { passing, broken }, record)
+      await scenarios(client, stub, { passing, broken }, watched, evidence)
     } finally {
       server.close()
+      restoreStderr()
     }
   } catch (error) {
     // Beside what already ran, not instead of it. Every scenario this suite
     // finished is already in the report, so a failure here adds a reason
     // rather than replacing eleven results with one.
-    record(failure(SCENARIO["b2 execution"], `the stub-provider route could not be driven: ${safeFailure(error)}`))
+    watched(failure(SCENARIO["b2 execution"], `the stub-provider route could not be driven: ${safeFailure(error)}`))
   } finally {
     stub?.stop()
     process.chdir(previousCwd)
+
+    // Kept before anything is removed, and correlated before it is kept. The
+    // order is the whole of AC5: the report names an evidence key, and the
+    // key has to still be there when someone reads the report.
+    if (evidence.failed) {
+      options.keepEvidence(
+        evidence.sources(workspace).map((source) => ({ ...source, keep: worthKeeping })),
+        evidence.correlations(),
+      )
+    }
+
+    // Both paths, because these roots are storage for projects that will
+    // never exist again. A passing run that left them behind would be the
+    // same accumulation by a happier name.
+    evidence.clean()
     rmSync(workspace, { recursive: true, force: true })
   }
 }
@@ -139,6 +212,7 @@ async function scenarios(
   stub: StubProvider,
   roots: { passing: string; broken: string },
   record: ScenarioSink,
+  evidence: B2Evidence,
 ): Promise<void> {
   // The limits this gate configured on the host it is driving, resolved the
   // way the adapter resolves them.
@@ -159,6 +233,7 @@ async function scenarios(
   const invoked = async (what: string, directory: string, call: { tool: string; args: unknown }) => {
     const text = await invoke(client, stub, directory, call)
     responses.push({ what, text })
+    evidence.observe(what, directory, text)
     return text
   }
 
@@ -209,7 +284,7 @@ async function scenarios(
   })
   record(expectOutcome(SCENARIO["b2 buildFailed"], buildFailed, "Test Run buildFailed"))
 
-  const runId = /^run\s+(\S+)/m.exec(failed)?.[1]
+  const runId = fieldValue(failed, "run")
   if (runId === undefined) {
     record(failure(SCENARIO["b2 inspection without rerun"], "no run id was rendered to inspect"))
   } else {

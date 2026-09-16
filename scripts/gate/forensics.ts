@@ -60,6 +60,28 @@ export type Preservation =
   | { status: "discarded"; key: string; bytes: number; reason: string }
 
 /**
+ * One named tree within a run's evidence set.
+ *
+ * Named because a run now keeps evidence from more than one place. Layer 4
+ * builds its whole world under a temp home and keeps that; B2 drives the real
+ * host, whose artifacts land in the user's own storage root under one opaque
+ * key per project (issue #98) — so a set is several trees that have to stay
+ * told apart, and "the evidence" as a single anonymous directory would bury
+ * which host, which project, which suite.
+ */
+export type EvidenceSource = {
+  name: string
+  path: string
+  /**
+   * What within this tree is worth keeping. Applied to the measurement and to
+   * the copy alike, so the bound is a bound on what is actually written —
+   * measuring the whole tree and copying part of it would discard sets that
+   * would have fitted.
+   */
+  keep?: (path: string) => boolean
+}
+
+/**
  * Keep a failed run's private evidence, then prune the store.
  *
  * The order is the design. The source is measured, the store is pruned to make
@@ -74,7 +96,7 @@ export type Preservation =
  * filesystems, and a rename across one fails rather than falling back.
  */
 export function preserveEvidence(
-  source: string,
+  source: string | readonly EvidenceSource[],
   input: { startedAt: string; homeDir?: string; policy?: EvidencePolicy; nowMs?: number },
 ): Preservation {
   const homeDir = input.homeDir ?? homedir()
@@ -82,14 +104,23 @@ export function preserveEvidence(
   const nowMs = input.nowMs ?? Date.now()
   const key = keyFor(input.startedAt)
 
+  // A named tree lands beside whatever the run has already kept; an unnamed
+  // one is the whole set, as it was when a run only ever had one (issue #73).
+  const sources = (typeof source === "string" ? [{ name: "", path: source }] : source).filter(
+    (entry) => existsSync(entry.path),
+  )
+
   // A run that threw before it wrote anything has nothing to keep, and saying
   // so is better than either a copy that fails or an empty directory that
   // reads as evidence somebody has already looked through.
-  if (!existsSync(source)) {
+  if (sources.length === 0) {
     return { status: "discarded", key, bytes: 0, reason: "the run had not produced any evidence yet" }
   }
 
-  const bytes = directorySize(source)
+  const bytes = sources.reduce(
+    (total, entry) => total + directorySize(entry.path, entry.keep ?? (() => true)),
+    0,
+  )
 
   // Against the whole budget, so the rule is not "usually bounded". A set that
   // cannot fit inside the entire budget would otherwise be a permanent
@@ -99,8 +130,13 @@ export function preserveEvidence(
   // evidence looks exactly like the whole of it to anyone reading it later,
   // and a diagnosis drawn from silently missing artifacts is worse than no
   // diagnosis. The report says it was not kept, and why.
-  if (bytes > policy.maxBytes) {
-    pruneEvidence(homeDir, policy, nowMs)
+  // Against the whole budget, and against what this run has *already* filed
+  // under the same key. Two suites now keep evidence in one set, and a check
+  // that only ever weighed the half in front of it would let the second one
+  // carry the store past a bound the first had already half spent.
+  const alreadyKept = directorySize(join(evidenceDirectory(homeDir), key))
+  if (bytes + alreadyKept > policy.maxBytes) {
+    pruneEvidence({ homeDir, policy, nowMs, protectKey: key })
     return {
       status: "discarded",
       key,
@@ -110,18 +146,33 @@ export function preserveEvidence(
   }
 
   // Room made before the copy starts, not after it finishes.
-  pruneEvidence(homeDir, policy, nowMs, bytes)
+  pruneEvidence({ homeDir, policy, nowMs, reserveBytes: bytes, protectKey: key })
 
-  const destination = join(evidenceDirectory(homeDir), key)
+
+  const setDirectory = join(evidenceDirectory(homeDir), key)
   createPrivateDirectory(evidenceDirectory(homeDir))
-  rmSync(destination, { recursive: true, force: true })
-  createPrivateDirectory(destination)
-  cpSync(source, destination, { recursive: true, dereference: false })
+  createPrivateDirectory(setDirectory)
+
+  for (const entry of sources) {
+    // Only the named subtree is replaced. Wiping the set would mean the second
+    // suite to fail in a run destroyed the first one's evidence, which is a
+    // strange way to preserve it.
+    // The named subtree is replaced, and so is an unnamed whole set: a key
+    // written twice must not merge with what a previous run left under it.
+    const destination = entry.name === "" ? setDirectory : join(setDirectory, entry.name)
+    rmSync(destination, { recursive: true, force: true })
+    createPrivateDirectory(destination)
+    cpSync(entry.path, destination, {
+      recursive: true,
+      dereference: false,
+      ...(entry.keep === undefined ? {} : { filter: entry.keep }),
+    })
+  }
 
   // `cpSync` carries the source's modes, and a Result Bundle is created by
   // `xcodebuild` at 0755/0644. The 0700 root contains it in practice, and "in
   // practice" is not what the rest of this tool's storage promises.
-  restrictToOwner(destination)
+  restrictToOwner(setDirectory)
 
   return { status: "preserved", key, bytes }
 }
@@ -137,12 +188,21 @@ export function preserveEvidence(
  * daemon here: a store pruned only by the next failure would keep whatever the
  * last one left for as long as nothing else went wrong.
  */
-export function pruneEvidence(
-  homeDir = homedir(),
-  policy: EvidencePolicy = EVIDENCE_POLICY,
-  nowMs = Date.now(),
-  reserveBytes = 0,
-): string[] {
+export type PruneInput = {
+  homeDir?: string
+  policy?: EvidencePolicy
+  nowMs?: number
+  /** Room to leave for a set about to be written. */
+  reserveBytes?: number
+  /** The set the current run is writing into, which is never pruned. */
+  protectKey?: string
+}
+
+export function pruneEvidence(input: PruneInput = {}): string[] {
+  const homeDir = input.homeDir ?? homedir()
+  const policy = input.policy ?? EVIDENCE_POLICY
+  const nowMs = input.nowMs ?? Date.now()
+  const reserveBytes = input.reserveBytes ?? 0
   const directory = evidenceDirectory(homeDir)
   if (!existsSync(directory)) return []
 
@@ -168,6 +228,17 @@ export function pruneEvidence(
   let bytes = reserveBytes
 
   for (const set of sets) {
+    // The set this run is writing into is never a candidate, whatever the
+    // policy says about it. Evidence removed before the report that names it
+    // is durably written leaves a reader a key that points at nothing — and
+    // the run that fails twice, once per suite, is exactly the run whose
+    // second failure would otherwise delete the account of its first.
+    if (set.name === input.protectKey) {
+      kept += 1
+      bytes += set.bytes
+      continue
+    }
+
     const tooOld = nowMs - set.modifiedMs > policy.maxAgeMs
     const tooMany = kept >= policy.maxSets
     const tooLarge = bytes + set.bytes > policy.maxBytes

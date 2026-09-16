@@ -58,8 +58,10 @@ export const UNOBSERVED_TOOLCHAIN = {
  */
 export type Observations = {
   startedAt: string
-  /** Set when a failed Layer 4 run's evidence was kept, or could not be. */
+  /** Set when a failed run's evidence was kept, or could not be. */
   evidence?: RunReport["evidence"]
+  /** Which failed B2 scenario the kept evidence belongs to (issue #98). */
+  b2Evidence?: RunReport["b2Evidence"]
   selected: Suite[]
   project?: boolean
   packages?: RunReport["packages"]
@@ -175,6 +177,9 @@ export function reportFrom(
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
     ...(observed.evidence === undefined ? {} : { evidence: observed.evidence }),
+    ...(observed.b2Evidence === undefined || observed.b2Evidence.length === 0
+      ? {}
+      : { b2Evidence: observed.b2Evidence }),
     ...(observed.packages === undefined ? {} : { packages: observed.packages }),
     selected: observed.selected,
     // Only what a reader needs. `from` and `to` are how this file attributes

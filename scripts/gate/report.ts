@@ -14,6 +14,7 @@ import { homedir } from "node:os"
 import { basename, join } from "node:path"
 
 import { toolRootFor } from "../../src/runner/paths.ts"
+import type { B2Correlation } from "./b2-evidence.ts"
 import type { Suite } from "./options.ts"
 import type { ScenarioName } from "./scenarios.ts"
 
@@ -127,7 +128,34 @@ export type RunReport = {
    * looking needs to be told it is not there and why, rather than left to
    * conclude the run was fine.
    */
-  evidence?: { key: string; bytes: number } | { unavailable: string }
+  evidence?:
+    | {
+        key: string
+        bytes: number
+        /**
+         * Why part of this set is not here, when one suite kept its evidence
+         * and another could not. Absent when the whole set was kept.
+         */
+        partial?: string
+      }
+    | { unavailable: string }
+  /**
+   * Which failed B2 scenario to read about where (issue #98).
+   *
+   * B2 is the suite that drives the real host, so its artifacts land in the
+   * user's own storage under one opaque key per project rather than in a
+   * workspace the gate controls. Two anonymous root keys and eleven results
+   * are not a correlation, and "rerun it and watch" is what this exists to
+   * replace.
+   *
+   * Opaque identifiers only, and by construction: `rootKey` is the hash the
+   * tool already files a trusted root under, `runId` is the one it already
+   * renders to the model, and `root` is a workspace-relative name. Nothing
+   * here can name a path on anyone's machine.
+   *
+   * Absent unless a B2 scenario failed. Additive, so no `schemaVersion` bump.
+   */
+  b2Evidence?: B2Correlation[]
   /**
    * Why the run ended as it did, when there is something to say — redacted of
    * anything path-shaped before it gets here.
@@ -233,8 +261,22 @@ export function renderReport(report: RunReport, path: string): string {
       "",
       "unavailable" in report.evidence
         ? `evidence      not kept: ${report.evidence.unavailable}`
-        : `evidence      kept under ${report.evidence.key} (${report.evidence.bytes} bytes)`,
+        : `evidence      kept under ${report.evidence.key} (${report.evidence.bytes} bytes)${
+            report.evidence.partial === undefined ? "" : `; partial: ${report.evidence.partial}`
+          }`,
     )
+  }
+  if (report.b2Evidence !== undefined && report.b2Evidence.length > 0) {
+    // One line per failed scenario, because a reader who is here is here for
+    // one of them and should not have to open the JSON to find out which root
+    // and which run to look at.
+    for (const entry of report.b2Evidence) {
+      lines.push(
+        `b2 evidence   ${entry.scenario} :: ${entry.root} :: root ${entry.rootKey}${
+          entry.runId === undefined ? "" : ` :: run ${entry.runId}`
+        }`,
+      )
+    }
   }
 
   if (report.unreached !== undefined && report.unreached.length > 0) {
