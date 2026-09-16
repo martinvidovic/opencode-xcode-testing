@@ -247,3 +247,62 @@ describe("a lockfile beside the packages", () => {
     })
   })
 })
+
+describe("rules that only bite on trees nobody has seen yet", () => {
+  test("a caret below 1.0.0 pins the minor, not the major", () => {
+    // The zero-major case is a different rule, and the one that is easy to
+    // get wrong: below 1.0.0 breaking changes go in the minor, so `^0.2.3`
+    // admits 0.2.9 and refuses 0.3.0. Written as a major-only comparison it
+    // admitted 0.3.0 — the opposite of what the range means. Nothing in the
+    // OpenCode line is 0.x today, which is exactly why nothing would have
+    // caught it.
+    withTree(
+      { plugin: "0.3.0", sdk: "0.3.0", requested: { "@opencode-ai/plugin": "^0.2.3" } },
+      (directory) => {
+        const provenance = readProvenance("0.3.0", directory)
+
+        expect(provenance.problems.some((entry) => entry.includes("does not satisfy"))).toBe(true)
+      },
+    )
+  })
+
+  test("a caret below 1.0.0 still admits a later patch", () => {
+    // The other half, without which the rule above could be "refuse
+    // everything" and pass.
+    withTree(
+      { plugin: "0.2.9", sdk: "0.2.9", requested: { "@opencode-ai/plugin": "^0.2.3" } },
+      (directory) => {
+        expect(readProvenance("0.2.9", directory).problems).toEqual([])
+      },
+    )
+  })
+
+  test("a host version nobody could read is said rather than skipped", () => {
+    // `observedHostVersion` answers "unknown" when `opencode --version` cannot
+    // be run. The guard that skipped an unparseable host also skipped the
+    // major check, so a machine with a broken host binary quietly stopped
+    // enforcing the one rule that catches an incompatible package tree.
+    withTree({ plugin: "0.9.0", sdk: "0.9.0" }, (directory) => {
+      const provenance = readProvenance("unknown", directory)
+
+      expect(provenance.caveats).toHaveLength(1)
+      expect(provenance.caveats[0]).toContain("cannot be compared")
+    })
+  })
+
+  test("a package naming itself something path-shaped is redacted before it is quoted", () => {
+    // A field in a file under someone's home directory, landing in a report a
+    // model reads. It gets the same treatment as any other text this tool did
+    // not write.
+    withTree(
+      { plugin: { name: "/Users/someone/private/checkout", version: "1.18.29" } },
+      (directory) => {
+        const provenance = readProvenance("1.18.29", directory)
+
+        expect(provenance.problems).toHaveLength(1)
+        expect(provenance.problems[0]).toContain("declares itself")
+        expect(provenance.problems[0]).not.toContain("/Users")
+      },
+    )
+  })
+})

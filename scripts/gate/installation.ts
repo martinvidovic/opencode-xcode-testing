@@ -19,8 +19,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { TOOL_IDS } from "../../src/adapter/descriptions.ts"
-import { bootHost, toolIds } from "./host.ts"
+import { bootHost, observedHostVersion, toolIds } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
+import { readProvenance } from "./provenance.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
@@ -60,7 +61,7 @@ export async function runInstallationGate(record: ScenarioSink): Promise<void> {
         started,
         missing.length === 0 ? "passed" : "failed",
         missing.length === 0
-          ? "a plugin-directory symlink, exactly as the README describes it, registers the family"
+          ? `a plugin-directory symlink, exactly as the README describes it, registers the family (against ${linkedPackages()})`
           : `installing the documented way registered nothing: ${missing.join(", ")} absent`,
       ),
     )
@@ -71,6 +72,21 @@ export async function runInstallationGate(record: ScenarioSink): Promise<void> {
   } finally {
     rmSync(workspace, { recursive: true, force: true })
   }
+}
+
+/**
+ * The package versions this check actually registered against (issue #81).
+ *
+ * The gate builds its own config directory and symlinks the plugin *source*,
+ * so at first glance the host's package tree has nothing to do with it. It
+ * has everything to do with it: that source imports `@opencode-ai/plugin`,
+ * which resolves through this checkout's `node_modules` symlink into exactly
+ * the host-managed tree. A green installation check is a claim about a
+ * package version, and it should say which.
+ */
+function linkedPackages(): string {
+  const { packages } = readProvenance(observedHostVersion())
+  return `plugin ${packages.plugin.version ?? "unknown"}, sdk ${packages.sdk.version ?? "unknown"}`
 }
 
 function scenario(started: number, status: "passed" | "failed", detail: string): ScenarioResult {

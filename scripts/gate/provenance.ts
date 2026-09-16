@@ -33,7 +33,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { safeFailure } from "../../src/adapter/sanitize.ts"
-import { defaultConfigDirectory, HOST_SCOPE } from "../link-host-package.ts"
+import { defaultConfigDirectory, HOST_SCOPE } from "./host-tree.ts"
 
 /** The packages this adapter is written against, and how to say so. */
 export const PACKAGES = ["plugin", "sdk"] as const
@@ -137,6 +137,17 @@ export function readProvenance(hostVersion: string, configDirectory = defaultCon
   }
 
   const host = majorOf(hostVersion)
+  if (host === undefined && plugin !== undefined) {
+    // Said rather than skipped. `observedHostVersion` answers "unknown" when
+    // `opencode --version` cannot be run, and the guard that skipped an
+    // unparseable host also skipped the major check — so a machine with a
+    // broken host binary quietly stopped enforcing the one rule that catches
+    // an incompatible package tree.
+    caveats.push(
+      `the host version is \`${hostVersion}\`, which cannot be compared against the packages (${plugin}); the major-version rule was not applied.`,
+    )
+  }
+
   if (host !== undefined && plugin !== undefined) {
     const packageMajor = majorOf(plugin)
     if (packageMajor !== host) {
@@ -166,7 +177,14 @@ function readPackage(configDirectory: string, name: PackageName): PackageFacts {
       version?: unknown
     }
     if (parsed.name !== `${HOST_SCOPE}/${name}`) {
-      return { installed: true, unavailable: `the package there declares itself \`${String(parsed.name)}\`` }
+      // Quoted back, and therefore redacted first. This is a field in a file
+      // under someone's home directory that this code's own comments call
+      // "assembled by hand", and it lands in a report a model reads — so it
+      // gets the same treatment as any other text this tool did not write.
+      return {
+        installed: true,
+        unavailable: `the package there declares itself \`${redact(parsed.name)}\``,
+      }
     }
     if (typeof parsed.version !== "string") {
       return { installed: true, unavailable: "the package there declares no version" }
@@ -248,6 +266,21 @@ function lockedVersions(configDirectory: string): Partial<Record<PackageName, st
   return found
 }
 
+/**
+ * A value from somebody else's manifest, safe to quote back.
+ *
+ * `safeFailure` is about errors, so this borrows only its rule: paths and
+ * private identifiers out, first line only, bounded. A name field is normally
+ * a package name and a few characters long; anything else about it is a
+ * reason to show less of it, not more.
+ */
+function redact(value: unknown): string {
+  return safeFailure(new Error(String(value))).replace(/^Error: /, "").slice(0, NAME_CHAR_CAP)
+}
+
+/** Longer than a package name by a wide margin, and still a name. */
+const NAME_CHAR_CAP = 100
+
 function read(path: string): string | undefined {
   try {
     return readFileSync(path, "utf8")
@@ -261,13 +294,27 @@ function ranged(requested: Record<string, string>, name: PackageName): PackageFa
   return range === undefined ? {} : { requested: range }
 }
 
-/** `^x.y.z`, as the host's manifest writes it. Anything else is not judged. */
+/**
+ * `^x.y.z`, as the host's manifest writes it. Anything else is not judged.
+ *
+ * The zero-major case is not the same rule and is the one that is easy to get
+ * wrong: below 1.0.0 a caret pins the *minor*, because that is where breaking
+ * changes go — `^0.2.3` admits `0.2.9` and refuses `0.3.0`. Written as a
+ * major-only comparison it admitted `0.3.0`, which is the opposite of what the
+ * range means. Nothing in the OpenCode line is 0.x today, which is exactly why
+ * it would have gone unnoticed.
+ */
 function satisfiesCaret(version: string, range: string): boolean {
   if (!range.startsWith("^")) return true
   const wanted = parse(range.slice(1))
   const found = parse(version)
   if (wanted === undefined || found === undefined) return true
-  if (found[0] !== wanted[0]) return false
+
+  // The leading non-zero component is the one a caret holds fixed.
+  const pinned = wanted[0] !== 0 ? 1 : wanted[1] !== 0 ? 2 : 3
+  for (let index = 0; index < pinned; index += 1) {
+    if (found[index] !== wanted[index]) return false
+  }
   return !olderThan(version, range.slice(1))
 }
 

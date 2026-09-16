@@ -13,7 +13,7 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 
 import { safeFailure } from "../../src/adapter/sanitize.ts"
-import { defaultConfigDirectory } from "../link-host-package.ts"
+import { defaultConfigDirectory } from "./host-tree.ts"
 import { readProvenance } from "./provenance.ts"
 
 /**
