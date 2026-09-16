@@ -141,6 +141,20 @@ The third row is the amendment. A failed read used to be treated as the second, 
 helped itself to 2,000 lines on a machine whose owner may have configured 200 — the one situation
 the invariant exists to prevent, reached by assuming the best about a question nobody could ask.
 
+**The route is real; the declared type is not.** `input.client.config.get()` is typed by the linked
+`@opencode-ai/plugin`, whose `Config` is the SDK's **v1** generated type and has no `tool_output`
+field at all. The SDK's v2 generated types do declare it, and the plugin package exports no v2
+entrypoint — so at the linked versions there is **no supported route by which this read could be
+compiler-checked**, and the adapter narrows the payload itself instead.
+
+That is a limitation of the linked package set rather than a guess about the host. Asked directly,
+OpenCode 1.18.29 answers `GET /config` with the configured block — verified against a live host
+started with `tool_output: { max_lines: 321, max_bytes: 7654 }`, which came back verbatim. The (b2)
+gate proves the same thing from the other end: it configures the host below the documented defaults
+and every response is measured against them, and an adapter that ignores the configuration fails
+that check. So the limits are read; what is missing is a declared shape to check the read against,
+and #81's package skew (host 1.18.29, packages 1.15.12) is why.
+
 The floor is a policy, not a measurement. It covers every lowering anyone is likely to configure by
 hand and **cannot cover all of them**: a host set to `max_lines: 10` is beyond anything an adapter
 that cannot read the configuration could know. So an unreadable read is also **announced** on

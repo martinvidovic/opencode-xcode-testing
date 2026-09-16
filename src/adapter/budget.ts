@@ -101,6 +101,12 @@ function outputLimitsIn(config: object): HostLimits {
 
   // A block that is present and carries neither usable number tells us nothing
   // we can act on, and saying "absent" about it would be a guess.
+  //
+  // One unusable field discards the other on purpose. A host whose
+  // `max_bytes` is nonsense is a host this adapter does not understand, and
+  // keeping its `max_lines` would mean trusting half of an answer that has
+  // already been shown to be malformed — while quietly assuming the documented
+  // default for the half that was not.
   if (maxLines !== undefined && !usable(maxLines)) {
     return { status: "unreadable", detail: "the host's `tool_output.max_lines` is not a count" }
   }
