@@ -16,7 +16,6 @@
  * that fail before a scenario runs.
  */
 
-import { spawnSync } from "node:child_process"
 import { basename } from "node:path"
 
 import { resolveRuntime } from "../src/adapter/runtime.ts"
@@ -28,6 +27,7 @@ import { discoverDestination, type DestinationDiscovery } from "./gate/destinati
 import { parseOptions, usage } from "./gate/options.ts"
 import { runLayer4 } from "./gate/layer4.ts"
 import { runB1Suite } from "./gate/b1.ts"
+import { observedHostVersion } from "./gate/host.ts"
 import { runExecutionGate } from "./gate/execution.ts"
 import {
   asSuite,
@@ -37,6 +37,7 @@ import {
   type Observations,
 } from "./gate/observations.ts"
 import { preserveEvidence } from "./gate/forensics.ts"
+import { readProvenance } from "./gate/provenance.ts"
 import { renderReport, writeReport, type RunReport } from "./gate/report.ts"
 import { safeFailure } from "../src/adapter/sanitize.ts"
 
@@ -70,6 +71,22 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   // ever discounted.
   if (project !== undefined && suites.includes("layer4")) observed.project = true
   observed.hostVersion = observedHostVersion()
+
+  // Recorded next to the host version, because they are the same kind of fact
+  // and the report used to carry only the least informative of them (#81).
+  const provenance = readProvenance(observed.hostVersion)
+  observed.packages = {
+    ...(provenance.packages.plugin.version === undefined
+      ? {}
+      : { plugin: provenance.packages.plugin.version }),
+    ...(provenance.packages.sdk.version === undefined
+      ? {}
+      : { sdk: provenance.packages.sdk.version }),
+    ...(provenance.packages.plugin.requested === undefined
+      ? {}
+      : { requested: provenance.packages.plugin.requested }),
+    ...(provenance.caveats.length === 0 ? {} : { caveats: provenance.caveats }),
+  }
 
   // A read alias for the pass/fail decision below. Nothing pushes through it —
   // the suites write through `record`, which is the only handle they get.
@@ -243,16 +260,6 @@ export function describeEvidence(source: string, startedAt: string, homeDir?: st
   } catch (error) {
     return { unavailable: safeFailure(error) }
   }
-}
-
-/**
- * The host version the gate actually ran against. Recorded rather than
- * asserted: ADR 0002's policy is to surface skew, never to block on it.
- */
-function observedHostVersion(): string {
-  const result = spawnSync("opencode", ["--version"], { encoding: "utf8" })
-  const version = (result.stdout ?? "").trim()
-  return result.status === 0 && version.length > 0 ? version : "unknown"
 }
 
 /**

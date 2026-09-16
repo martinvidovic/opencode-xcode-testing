@@ -22,6 +22,36 @@ checkout.
 All API facts below were verified against OpenCode upstream at tag `v1.18.30`, with the locally
 installed `1.18.29` compared and matched.
 
+**Which artifacts, precisely** (issue #81). "Verified against 1.18.30" names a host, and a host is
+not what this adapter is compiled against. Three separate things were compared, and a later reader
+checking this claim needs all three:
+
+| Artifact | What it is | Where it comes from |
+| --- | --- | --- |
+| OpenCode host `1.18.29` / upstream `v1.18.30` | the binary the gate executes, and the tag every API fact is cited against | `opencode --version`; the upstream git tag |
+| `@opencode-ai/plugin` | the package this adapter's `tool` hook and types are written against | the host's own `node_modules` under its config directory, symlinked into this checkout by `scripts/link-host-package.ts` |
+| `@opencode-ai/sdk` | the package the (b1) and (b2) gates drive a host through | the same tree, installed as a dependency of the plugin package |
+
+The two packages are **host-managed**: OpenCode installs them into its config directory on first
+run, against a range in a manifest this repository does not own, and upgrading the host does not
+revisit that install. A machine can therefore run host `1.18.29` with packages `1.15.12` — which is
+what the machine this was written on was doing, silently, for the whole of its acceptance history.
+
+So the gate reads and reports the two package versions **separately from the host version** on
+every run, and `scripts/gate/provenance.ts` states the supported relationship as a rule:
+
+- the two packages must be the **same version as each other** — they ship as a set, so a tree where
+  they differ was assembled by hand or interrupted part-way;
+- what is **installed must satisfy what the config manifest asks for** — otherwise the next install
+  in that directory changes what is being tested and nobody afterwards can say which run was which;
+- the packages' **major must match the host's** — across a major the plugin interface may change,
+  and a gate passing against these would prove something about an interface nobody ships;
+- a **trailing minor is a caveat, not a failure**, printed on every report. It is the ordinary state
+  of a host-managed install, and failing on it would make the gate unrunnable because of an install
+  nobody has re-run in a directory this repository does not own. That is the same warn-and-record
+  policy this ADR already applies to host-version skew, extended to the packages — the change is
+  that the skew is now *visible*.
+
 ## Decision
 
 ### Registration and loading

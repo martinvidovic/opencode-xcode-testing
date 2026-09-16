@@ -26,7 +26,13 @@ import {
   STUB_PROVIDER_ID,
   type StubProvider,
 } from "./provider.ts"
-import { loadSdk, PLUGIN_NOT_LINKED, type OpencodeClient } from "./host.ts"
+import {
+  loadSdk,
+  observedHostVersion,
+  PLUGIN_NOT_LINKED,
+  provenanceProblem,
+  type OpencodeClient,
+} from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
@@ -42,6 +48,15 @@ export async function runExecutionGate(
   options: ExecutionContext,
   record: ScenarioSink,
 ): Promise<void> {
+  // The same provenance rule b1 applies, and for the same reason (#81): a
+  // package tree that disagrees with itself makes whatever this gate proves
+  // unattributable to any package set.
+  const provenance = provenanceProblem(observedHostVersion())
+  if (provenance !== undefined) {
+    record(failure(SCENARIO["b2 execution"], provenance))
+    return
+  }
+
   // The same loader b1 uses, and for the same reason (issue #80): an
   // unguarded dynamic import here would take the whole execution suite down
   // from inside another package's top-level code.
