@@ -17,6 +17,7 @@ import { runInstallationGate } from "./installation.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { runRegistrationGate } from "./registration.ts"
 import { SCENARIO } from "./scenarios.ts"
+import type { DrivenRoots } from "./driven-roots.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 /**
@@ -31,9 +32,9 @@ import { safeFailure } from "../../src/adapter/sanitize.ts"
  * first gate's exception cancel its second would be asserting the opposite,
  * on the machines least able to tell.
  */
-export async function runB1Suite(record: ScenarioSink): Promise<void> {
+export async function runB1Suite(record: ScenarioSink, roots: DrivenRoots): Promise<void> {
   try {
-    await runRegistrationGate(record)
+    await runRegistrationGate(record, roots)
   } catch (error) {
     // A last resort with a worse diagnostic than the gate's own, which is
     // what makes it a last resort: anything that reaches here got past the
@@ -46,5 +47,5 @@ export async function runB1Suite(record: ScenarioSink): Promise<void> {
     })
   }
 
-  await runInstallationGate(record)
+  await runInstallationGate(record, roots)
 }
