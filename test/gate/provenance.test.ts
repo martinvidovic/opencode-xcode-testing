@@ -27,6 +27,10 @@ type Tree = {
   plugin?: string | Record<string, unknown>
   sdk?: string | Record<string, unknown>
   requested?: Record<string, string>
+  /** What a `bun.lock` beside them resolved each package to. */
+  locked?: Partial<Record<"plugin" | "sdk", string>>
+  /** The same, written as npm does it. */
+  npmLocked?: Partial<Record<"plugin" | "sdk", string>>
 }
 
 /** A config directory holding exactly the tree described. */
@@ -52,6 +56,27 @@ function withTree<T>(tree: Tree, work: (configDirectory: string) => T): T {
         join(configDirectory, "package.json"),
         JSON.stringify({ dependencies: tree.requested }),
       )
+    }
+
+    if (tree.locked !== undefined) {
+      // With the trailing commas Bun writes, because that is why the entries
+      // are read by pattern rather than parsed — a lock this test wrote as
+      // strict JSON would exercise a file Bun never produces.
+      const entries = Object.entries(tree.locked)
+        .map(([name, version]) => `    "@opencode-ai/${name}": ["@opencode-ai/${name}@${version}", "", {}, "sha512-x"],`)
+        .join("\n")
+      writeFileSync(
+        join(configDirectory, "bun.lock"),
+        `{\n  "lockfileVersion": 1,\n  "packages": {\n${entries}\n  },\n}\n`,
+      )
+    }
+
+    if (tree.npmLocked !== undefined) {
+      const packages: Record<string, { version: string }> = {}
+      for (const [name, version] of Object.entries(tree.npmLocked)) {
+        packages[`node_modules/@opencode-ai/${name}`] = { version: version as string }
+      }
+      writeFileSync(join(configDirectory, "package-lock.json"), JSON.stringify({ packages }))
     }
 
     return work(configDirectory)
@@ -166,6 +191,59 @@ describe("a tree that disagrees with itself", () => {
 
       expect(provenance.problems).toEqual([])
       expect(provenance.packages.plugin.version).toBeUndefined()
+    })
+  })
+})
+
+describe("a lockfile beside the packages", () => {
+  test("agreeing with what is installed says nothing", () => {
+    withTree(
+      { plugin: "1.18.29", sdk: "1.18.29", locked: { plugin: "1.18.29", sdk: "1.18.29" } },
+      (directory) => {
+        const provenance = readProvenance("1.18.29", directory)
+
+        expect(provenance.packages.plugin.locked).toBe("1.18.29")
+        expect(provenance.problems).toEqual([])
+      },
+    )
+  })
+
+  test("disagreeing with what is installed is a problem, not a caveat", () => {
+    // Somebody installed by hand, or an install was interrupted. Either way
+    // the next install in that directory silently restores a different
+    // version from the one every report so far was written about.
+    withTree({ plugin: "1.18.29", sdk: "1.18.29", locked: { plugin: "1.15.12" } }, (directory) => {
+      const provenance = readProvenance("1.18.29", directory)
+
+      expect(provenance.problems).toHaveLength(1)
+      expect(provenance.problems[0]).toContain("on disk")
+      expect(provenance.problems[0]).toContain("in the lockfile")
+    })
+  })
+
+  test("is read in npm's format too, where that is what the directory has", () => {
+    // OpenCode installs with Bun, but a machine where somebody has run `npm
+    // install` in that directory has the other file — and a check that only
+    // read one would report agreement it had not looked for.
+    withTree(
+      { plugin: "1.18.29", sdk: "1.18.29", npmLocked: { plugin: "1.15.12" } },
+      (directory) => {
+        const provenance = readProvenance("1.18.29", directory)
+
+        expect(provenance.problems).toHaveLength(1)
+        expect(provenance.problems[0]).toContain("in the lockfile")
+      },
+    )
+  })
+
+  test("that nobody can parse says nothing rather than failing", () => {
+    // It is not this repository's file. An unreadable one leaves the check
+    // exactly where it was before the check existed.
+    withTree({ plugin: "1.18.29", sdk: "1.18.29" }, (directory) => {
+      writeFileSync(join(directory, "package-lock.json"), "{ not json")
+      const provenance = readProvenance("1.18.29", directory)
+
+      expect(provenance.problems).toEqual([])
     })
   })
 })

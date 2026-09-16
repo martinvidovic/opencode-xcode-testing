@@ -21,7 +21,10 @@
  * - **What is installed?** The versions in the linked packages themselves.
  * - **Does the tree agree with itself?** A manifest, a lockfile and an
  *   installed package that disagree mean the next install changes what is
- *   being tested, and nobody would know which run was which.
+ *   being tested, and nobody would know which run was which. The manifest
+ *   says what was *asked for*; the lockfile says what was *resolved*; the
+ *   installed package says what is *there*. All three can differ, and each
+ *   difference means something else went wrong.
  * - **Is that relationship supported?** Stated as a rule rather than assumed,
  *   because "it worked" is not a claim anyone can check later.
  */
@@ -45,6 +48,8 @@ export type PackageFacts = {
   unavailable?: string
   /** The range the host's config manifest asks for, when it asks for one. */
   requested?: string
+  /** The version a lockfile in that directory resolved it to, when one did. */
+  locked?: string
 }
 
 export type Provenance = {
@@ -76,12 +81,17 @@ export type Provenance = {
  */
 export function readProvenance(hostVersion: string, configDirectory = defaultConfigDirectory()): Provenance {
   const requested = requestedRanges(configDirectory)
+  const locked = lockedVersions(configDirectory)
   const packages = {} as Record<PackageName, PackageFacts>
   const problems: string[] = []
   const caveats: string[] = []
 
   for (const name of PACKAGES) {
-    packages[name] = { ...readPackage(configDirectory, name), ...ranged(requested, name) }
+    packages[name] = {
+      ...readPackage(configDirectory, name),
+      ...ranged(requested, name),
+      ...(locked[name] === undefined ? {} : { locked: locked[name] }),
+    }
 
     // A package that is simply not installed is not a disagreement — there is
     // nothing yet for anything to disagree with, and the gates that need one
@@ -105,11 +115,23 @@ export function readProvenance(hostVersion: string, configDirectory = defaultCon
   }
 
   for (const name of PACKAGES) {
-    const { version, requested: range } = packages[name]
-    if (version === undefined || range === undefined) continue
-    if (!satisfiesCaret(version, range)) {
+    const { version, requested: range, locked: resolved } = packages[name]
+    if (version === undefined) continue
+
+    if (range !== undefined && !satisfiesCaret(version, range)) {
       problems.push(
         `${HOST_SCOPE}/${name} is ${version}, which does not satisfy the \`${range}\` its config manifest asks for; the next install in that directory would change what is being tested.`,
+      )
+    }
+
+    // The manifest says what was asked for; the lock says what was resolved;
+    // the package says what is there. A lock that disagrees with the package
+    // means somebody installed by hand or an install was interrupted, and the
+    // next one silently puts back a different version from the one every
+    // report so far was written about.
+    if (resolved !== undefined && resolved !== version) {
+      problems.push(
+        `${HOST_SCOPE}/${name} is ${version} on disk and ${resolved} in the lockfile beside it; the next install in that directory would restore ${resolved}.`,
       )
     }
   }
@@ -178,6 +200,59 @@ function requestedRanges(configDirectory: string): Record<string, string> {
     // A host that has never installed anything has no manifest, which is not
     // a disagreement — there is nothing yet to disagree with.
     return {}
+  }
+}
+
+/**
+ * What a lockfile in the config directory resolved each package to.
+ *
+ * Both formats are read because both turn up: OpenCode installs with Bun, and
+ * a machine where somebody has run `npm install` in that directory has the
+ * other. Neither is this repository's to own, so what they are consulted for
+ * is agreement, never authority.
+ *
+ * `bun.lock` is JSONC — it carries trailing commas, which `JSON.parse`
+ * refuses — so its entries are read by pattern rather than parsed. Narrow on
+ * purpose: this reads two known keys out of a file somebody else's tool
+ * writes, and a tolerant parser for the whole thing would be a much larger
+ * claim about a format that is not ours.
+ */
+function lockedVersions(configDirectory: string): Partial<Record<PackageName, string>> {
+  const found: Partial<Record<PackageName, string>> = {}
+
+  const bun = read(join(configDirectory, "bun.lock"))
+  if (bun !== undefined) {
+    for (const name of PACKAGES) {
+      const entry = new RegExp(`"${HOST_SCOPE}/${name}":\\s*\\["${HOST_SCOPE}/${name}@([^"]+)"`).exec(bun)
+      if (entry?.[1] !== undefined) found[name] = entry[1]
+    }
+  }
+
+  const npm = read(join(configDirectory, "package-lock.json"))
+  if (npm !== undefined) {
+    try {
+      const parsed = JSON.parse(npm) as {
+        packages?: Record<string, { version?: unknown }>
+      }
+      for (const name of PACKAGES) {
+        const version = parsed.packages?.[`node_modules/${HOST_SCOPE}/${name}`]?.version
+        // Bun's answer wins where both exist: it is the one OpenCode writes.
+        if (typeof version === "string" && found[name] === undefined) found[name] = version
+      }
+    } catch {
+      // A lockfile nobody can parse says nothing, which is what it said
+      // before this function existed.
+    }
+  }
+
+  return found
+}
+
+function read(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8")
+  } catch {
+    return undefined
   }
 }
 
