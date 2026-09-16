@@ -19,6 +19,7 @@ import type { ExecutionContext } from "./context.ts"
 import { byteLength, lineCount, resolveBudget } from "../../src/adapter/budget.ts"
 import { fieldValue, isField } from "../../src/adapter/document.ts"
 import { B2Evidence, worthKeeping, type B2Correlation } from "./b2-evidence.ts"
+import type { DrivenRoots } from "./driven-roots.ts"
 import type { EvidenceSource } from "./forensics.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
 import {
@@ -79,6 +80,15 @@ function teeStderr(sink: (text: string) => void): () => void {
  */
 export type ExecutionGateOptions = ExecutionContext & {
   keepEvidence(sources: readonly EvidenceSource[], correlations: readonly B2Correlation[]): void
+  /**
+   * Where to register the project roots this suite makes the host create.
+   *
+   * Swept by the caller, once, at the end of the run. A suite that cleaned up
+   * after itself raced the host it had just closed — storage kept appearing
+   * *after* the sweep, because closing a server does not mean every plugin
+   * instance it started has finished writing.
+   */
+  roots: DrivenRoots
 }
 
 /** Records each scenario as it finishes; see `ScenarioSink`. */
@@ -117,7 +127,7 @@ export async function runExecutionGate(
   // Collected as the suite runs, because none of it can be recovered
   // afterwards: the projects are deleted, the host is gone, and the responses
   // that carry a staging failure's own sentence exist only in memory (#98).
-  const evidence = new B2Evidence()
+  const evidence = new B2Evidence(undefined, options.roots)
   const watched: ScenarioSink = (result) => {
     evidence.watch(result)
     record(result)
@@ -180,10 +190,6 @@ export async function runExecutionGate(
       )
     }
 
-    // Both paths, because these roots are storage for projects that will
-    // never exist again. A passing run that left them behind would be the
-    // same accumulation by a happier name.
-    evidence.clean()
     rmSync(workspace, { recursive: true, force: true })
   }
 }

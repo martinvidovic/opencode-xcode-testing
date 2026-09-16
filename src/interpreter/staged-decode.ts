@@ -63,10 +63,26 @@ export function decodeStaged(staged: string, deadline: number): XcresultResponse
   try {
     payload = JSON.parse(text)
   } catch {
+    // `commandFailed`, not `unsupported` (issue #84). The two are statements
+    // about different things, and only one of them is about the caller.
+    //
+    // `unsupported` says the caller's Result Bundle holds a schema this tool
+    // does not understand — a real answer, reached by reading a payload and
+    // failing to recognize what is in it. Text that is not JSON at all was
+    // never a payload: either `xcresulttool` did not emit one, or this tool
+    // did not finish staging the one it was given. Both are the tool's own
+    // difficulty, and reporting them as a bundle's schema sends a caller to
+    // inspect evidence that is perfectly sound.
+    //
+    // The byte count goes with it, because it is what tells the two causes
+    // apart afterwards: nothing staged at all reads very differently from a
+    // payload cut off part-way through.
     return {
       ok: false,
-      failure: "unsupported",
-      message: "the structured output could not be parsed as JSON",
+      failure: "commandFailed",
+      message: `the structured output was not JSON: the tool staged ${text.length} byte${
+        text.length === 1 ? "" : "s"
+      } it could not parse`,
     }
   }
 

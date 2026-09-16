@@ -26,11 +26,12 @@
  * keeping it would mean keeping nothing.
  */
 
-import { existsSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join, sep } from "node:path"
 
-import { createPrivateDirectory, RUN_ARTIFACTS, storageFor } from "../../src/runner/paths.ts"
+import { createPrivateDirectory, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
+import { DrivenRoots } from "./driven-roots.ts"
 import { fieldValue } from "../../src/adapter/document.ts"
 import type { EvidenceSource } from "./forensics.ts"
 import type { ScenarioName } from "./scenarios.ts"
@@ -69,35 +70,22 @@ type Exchange = { what: string; root: string; rootKey: string; runId?: string; t
  * rather than left for a reader to notice.
  */
 export class B2Evidence {
-  readonly #homeDir: string
-  readonly #roots = new Map<string, { path: string; key: string }>()
+  readonly #roots: DrivenRoots
   readonly #transcript: Exchange[] = []
   readonly #correlations: B2Correlation[] = []
   readonly #hostOutput: string[] = []
   #latest: Exchange | undefined
 
-  constructor(homeDir: string = homedir()) {
-    this.#homeDir = homeDir
+  constructor(homeDir: string = homedir(), roots?: DrivenRoots) {
+    this.#roots = roots ?? new DrivenRoots(homeDir)
   }
 
   /** Whether anything failed, which is what decides between keep and clean. */
   failed = false
 
-  /**
-   * Register a project root this run will drive, so it can be cleaned either way.
-   *
-   * Canonicalized, because `storageFor` hashes a **canonical** root and the
-   * host resolves one before it stores anything. The workspace here is under
-   * the system temp directory, which on macOS is reached through a symbolic
-   * link — so a key hashed from the path as written addresses a directory
-   * that does not exist, and every later `existsSync` politely declines to do
-   * anything. That is how this shipped green while leaving both roots behind:
-   * the real gate counted 314 roots where it had counted 312.
-   */
+  /** Register a project root this run will drive; see `DrivenRoots.add`. */
   root(path: string): string {
-    const canonical = canonicalize(path)
-    this.#roots.set(canonical, { path: canonical, key: storageFor(this.#homeDir, canonical).rootKey })
-    return path
+    return this.#roots.add(path)
   }
 
   /**
@@ -115,12 +103,11 @@ export class B2Evidence {
 
   /** Note one tool response, and the run it named. */
   observe(what: string, trustedRoot: string, text: string): void {
-    const canonical = canonicalize(trustedRoot)
     const runId = fieldValue(text, "run")
     const exchange: Exchange = {
       what,
-      root: basename(canonical),
-      rootKey: this.#roots.get(canonical)?.key ?? storageFor(this.#homeDir, canonical).rootKey,
+      root: basename(trustedRoot),
+      rootKey: this.#roots.keyOf(trustedRoot),
       ...(runId === undefined ? {} : { runId }),
       text,
     }
@@ -174,9 +161,8 @@ export class B2Evidence {
       // worse outcome. The storage below is the larger half of the answer.
     }
 
-    for (const { path, key } of this.#roots.values()) {
-      const rootDir = storageFor(this.#homeDir, path).rootDir
-      if (existsSync(rootDir)) staged.push({ name: `b2-root-${key}`, path: rootDir })
+    for (const { key, path } of this.#roots.directories()) {
+      staged.push({ name: `b2-root-${key}`, path })
     }
     return staged
   }
@@ -195,24 +181,12 @@ export class B2Evidence {
    * the gate rather than evidence about the tool.
    */
   clean(): string[] {
-    const removed: string[] = []
-    for (const { path, key } of this.#roots.values()) {
-      const rootDir = storageFor(this.#homeDir, path).rootDir
-      if (!existsSync(rootDir)) continue
-      try {
-        rmSync(rootDir, { recursive: true, force: true })
-        removed.push(key)
-      } catch {
-        // A root that will not delete is storage left behind, which the
-        // report says; it is not a reason to fail a gate about the tool.
-      }
-    }
-    return removed
+    return this.#roots.clean()
   }
 }
 
 /**
- * Whether a path inside a project root is worth copying into the store.
+ * Whether a path inside a driven root is worth copying into the store.
  *
  * `DerivedData` is the exclusion, and it is not a size heuristic: it is
  * `xcodebuild`'s own cache, regenerable from the project by definition, and on
@@ -220,21 +194,6 @@ export class B2Evidence {
  * beside it. A set that carried it would fail the whole-budget check and be
  * discarded, so keeping it is the same as keeping nothing.
  */
-/**
- * The path the tool would have hashed, or the one given if it cannot be had.
- *
- * Never throws: a root that has already gone is a root with no storage to
- * find, and failing the gate over it would trade a diagnostic aid for the
- * thing it was meant to diagnose.
- */
-function canonicalize(path: string): string {
-  try {
-    return realpathSync(path)
-  } catch {
-    return path
-  }
-}
-
 export function worthKeeping(path: string): boolean {
   return !path.split(sep).includes(RUN_ARTIFACTS.derivedData)
 }

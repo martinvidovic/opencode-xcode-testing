@@ -24,6 +24,7 @@ import type { ScenarioSink } from "./observations.ts"
 import { readProvenance } from "./provenance.ts"
 import { SCENARIO } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
+import type { DrivenRoots } from "./driven-roots.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
@@ -33,7 +34,10 @@ const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
 const PORT = 45_741
 
 /** Records its one scenario as it finishes; see `ScenarioSink`. */
-export async function runInstallationGate(record: ScenarioSink): Promise<void> {
+export async function runInstallationGate(
+  record: ScenarioSink,
+  roots: DrivenRoots,
+): Promise<void> {
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-install-"))
   const started = Date.now()
 
@@ -43,7 +47,10 @@ export async function runInstallationGate(record: ScenarioSink): Promise<void> {
     mkdirSync(join(configDirectory, "plugin"), { recursive: true })
     symlinkSync(PLUGIN, join(configDirectory, "plugin", "xcode-test.ts"))
 
-    const project = join(workspace, "project")
+    // Registered so the run can collect the per-root storage a live host
+    // creates for it. The project goes with the workspace below; that storage
+    // would not, and nothing downstream can ever collect it (issue #98).
+    const project = roots.add(join(workspace, "project"))
     mkdirSync(join(project, ".opencode"), { recursive: true })
     writeFileSync(join(project, ".opencode", "xcode-test.json"), '{ "schemaVersion": 1 }\n')
 

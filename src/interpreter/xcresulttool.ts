@@ -31,12 +31,21 @@
  * Every deadline here is monotonic. A structured read is bounded by a
  * *duration* the caller has already spent part of, and a duration measured
  * against a wall clock that an NTP step can move is not a duration.
+ *
+ * The staged file is scratch and is removed on every exit from a read, with
+ * one exception: output that would not parse is copied out first (issue #84).
+ * That case is the only one where the scratch is the whole of what anyone
+ * would want, and it was being deleted a line after it was read — which is why
+ * three different verdicts about a caller's Result Bundle were each chased by
+ * rerunning a gate rather than by reading anything.
  */
 
 import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { createWriteStream, existsSync, openSync, rmSync } from "node:fs"
+import { constants, copyFileSync, createWriteStream, existsSync, openSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
+
+const { COPYFILE_EXCL } = constants
 
 import type { XcresultCommand } from "./anomalies.ts"
 import { TIMED_OUT, type ToolchainIdentity, type XcresultResponse, type XcresultTool } from "./ports.ts"
@@ -99,27 +108,124 @@ export function createXcresultTool(input: {
   return {
     identity: input.identity,
 
-    run(command: XcresultCommand, budgetMs: number, subject?: string): Promise<XcresultResponse> {
+    async run(command: XcresultCommand, budgetMs: number, subject?: string): Promise<XcresultResponse> {
       if (!existsSync(input.bundlePath)) {
-        return Promise.resolve({
+        return {
           ok: false,
           failure: "bundleMissing",
           message: "the expected Result Bundle does not exist",
-        })
+        }
       }
-      return read({
+
+      return readWithRetry({
         identity: input.identity,
         bundlePath: input.bundlePath,
-        // Random, not a process id and a counter. Those repeat: a crash leaves
-        // a staged file behind, the pid is eventually recycled, and the next
-        // read of that bundle collides with a leftover it must not write
-        // through — turning a perfectly good read into a failure.
-        staged: join(stagingDir, `.xcresult-read-${randomBytes(8).toString("hex")}.json`),
+        stagingDir,
         command,
-        budgetMs,
+        deadline: monotonicNow() + Math.max(1, budgetMs),
         ...(subject === undefined ? {} : { subject }),
       })
-    }
+    },
+  }
+}
+
+/**
+ * Read, and try again when the first attempt was about the read rather than
+ * about the evidence (issue #84).
+ *
+ * Every captured `b2 zero-match` failure was of that kind — output that would
+ * not parse, `metadata get` exiting 1 against a bundle that re-reads perfectly
+ * today — and every one of them was transient: the same bundle, read again,
+ * answers. A verdict on someone else's Result Bundle reached from one bad read
+ * is a verdict reached too early, and their alternative is to run their whole
+ * test suite again.
+ *
+ * Which failures those are is decided where each one is constructed rather
+ * than inferred from its kind here; `Attempt` says why.
+ */
+async function readWithRetry(input: {
+  identity: ToolchainIdentity
+  bundlePath: string
+  stagingDir: string
+  command: XcresultCommand
+  deadline: number
+  subject?: string
+}): Promise<XcresultResponse> {
+  const once = (index: number): Promise<Attempt> =>
+    read({
+      attempt: index,
+      identity: input.identity,
+      bundlePath: input.bundlePath,
+      // Random, not a process id and a counter. Those repeat: a crash leaves
+      // a staged file behind, the pid is eventually recycled, and the next
+      // read of that bundle collides with a leftover it must not write
+      // through — turning a perfectly good read into a failure.
+      staged: join(input.stagingDir, `.xcresult-read-${randomBytes(8).toString("hex")}.json`),
+      command: input.command,
+      budgetMs: input.deadline - monotonicNow(),
+      ...(input.subject === undefined ? {} : { subject: input.subject }),
+    })
+
+  let attempt = await once(0)
+  for (let again = 1; again <= READ_ATTEMPTS && attempt.retryable; again += 1) {
+    // A backoff and the read after it both have to fit, or the wait is spent
+    // on a read that is already out of time before it starts.
+    if (input.deadline - monotonicNow() <= RETRY_BACKOFF_MS + MINIMUM_READ_MS) break
+    await new Promise((settle) => setTimeout(settle, RETRY_BACKOFF_MS))
+    attempt = await once(again)
+  }
+  return attempt.response
+}
+
+/** Less than this left is no budget at all: a read would spawn only to die. */
+const MINIMUM_READ_MS = 50
+
+/**
+ * How many further attempts a transient read gets.
+ *
+ * Small on purpose. This is a mitigation for a read that did not settle, not a
+ * way to sit on a bundle that is genuinely broken — and each attempt spends
+ * the caller's budget, which is the same budget the answer has to arrive
+ * within. Two is enough to clear a one-off and few enough that a bundle which
+ * is going to fail fails promptly.
+ */
+const READ_ATTEMPTS = 2
+
+/** Long enough to be a different moment, short enough not to be a wait. */
+const RETRY_BACKOFF_MS = 150
+
+
+
+/**
+ * Keep output that would not decode, so the next occurrence can be read.
+ *
+ * The staged file is scratch and is removed on every exit from a read — which
+ * is right, and which meant that the one artifact identifying *why* a read
+ * failed never survived the read that failed. Three different verdicts about a
+ * caller's Result Bundle were reported for what turned out to be this tool's
+ * own copy of the output, and each of them was chased by rerunning a gate
+ * until it happened again (issue #84).
+ *
+ * Bounded and named: a fixed prefix in the run's own `0700` directory, capped
+ * at the staging limit the read already enforces, and swept by the same
+ * retention that clears everything else in there. Never a second copy of a
+ * payload that decoded — this costs nothing on the path that works.
+ */
+function keepUndecodable(staged: string, input: StagedRead): void {
+  try {
+    // Named by command, subject and attempt. All three: the retry above calls
+    // this once per failed attempt, and the first is the most informative of
+    // them; and a detail read names a different test each time, so a name
+    // without it would promise a diagnosis while overwriting it.
+    const parts = [input.command, input.subject ?? "", String(input.attempt)]
+    const name = parts.join("-").replace(/[^a-z0-9]+/gi, "-").replace(/-+/g, "-")
+    // `COPYFILE_EXCL` for the same reason the staged file is opened `wx`: a
+    // leftover or a planted link must fail this copy rather than silently
+    // become its destination. The mode follows the source, which is `0600`.
+    copyFileSync(staged, join(dirname(input.bundlePath), `undecodable-${name}.json`), COPYFILE_EXCL)
+  } catch {
+    // A diagnostic that cannot be kept must not become a failure of its own:
+    // the read has an answer already, and it is a worse one than this.
   }
 }
 
@@ -144,9 +250,22 @@ type StagedRead = {
   command: XcresultCommand
   budgetMs: number
   subject?: string
+  /** Which attempt this is, so a kept diagnostic does not overwrite the last. */
+  attempt: number
 }
 
-function read(input: StagedRead): Promise<XcresultResponse> {
+/**
+ * One attempt at a staged read, and whether another would be worth making.
+ *
+ * `retryable` is decided where each failure is constructed, because that is
+ * where the knowledge is (issue #84). Inferring it afterwards from a failure
+ * kind cannot work: "xcresulttool could not be started" and "the bundle was
+ * not settled yet" are both `commandFailed`, and only one of them becomes
+ * true by waiting.
+ */
+type Attempt = { response: XcresultResponse; retryable: boolean }
+
+function read(input: StagedRead): Promise<Attempt> {
   const { command, staged } = input
 
   // Created **before** anything can settle, and synchronously.
@@ -163,9 +282,14 @@ function read(input: StagedRead): Promise<XcresultResponse> {
     fd = openSync(staged, "wx", 0o600)
   } catch {
     return Promise.resolve({
-      ok: false,
-      failure: "commandFailed",
-      message: "the structured output could not be staged: the file could not be created",
+      // A path that could not be created exclusively is a leftover or a
+      // planted link, and neither clears itself while this call waits.
+      retryable: false,
+      response: {
+        ok: false,
+        failure: "commandFailed",
+        message: "the structured output could not be staged: the file could not be created",
+      },
     })
   }
 
@@ -209,7 +333,7 @@ function read(input: StagedRead): Promise<XcresultResponse> {
      */
     let payloadComplete = false
 
-    const finish = (response: XcresultResponse) => {
+    const finish = (response: XcresultResponse, retryable = false) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -218,8 +342,13 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       // is removed on every exit from this read, including the ones nobody
       // plans for. Unlinking by name is safe while the stream still holds the
       // descriptor: writes to an unlinked file harm nothing.
+      //
+      // The one thing that outlives it is a copy of output that would not
+      // parse, taken before this point by `keepUndecodable`. Scratch that
+      // decoded is worth nothing; scratch that did not is the only account of
+      // why (issue #84).
       rmSync(staged, { force: true })
-      resolve(response)
+      resolve({ response, retryable })
     }
 
     // The remaining budget is the caller's, and a read that outlives it is
@@ -259,11 +388,16 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       // same two-causes-one-wording confusion this guard exists to end.
       if (payloadComplete && error.syscall !== "write") return
 
-      finish({
-        ok: false,
-        failure: "commandFailed",
-        message: "the structured output could not be staged: the file could not be written",
-      })
+      finish(
+        {
+          ok: false,
+          failure: "commandFailed",
+          message: "the structured output could not be staged: the file could not be written",
+        },
+        // The other captured `b2 zero-match` cause, and transient whenever it
+        // was captured — a full volume will simply fail again, promptly.
+        true,
+      )
     })
 
     // Backpressure is the whole point of staging. Writing without it would
@@ -277,7 +411,11 @@ function read(input: StagedRead): Promise<XcresultResponse> {
         stopGroup(child.pid, "SIGKILL")
         finish({
           ok: false,
-          failure: "unsupported",
+          // The tool's own staging limit, so `commandFailed` rather than
+          // `unsupported` (issue #84). `unsupported` says the caller's Result
+          // Bundle holds something this tool does not understand; a payload
+          // larger than this tool is willing to stage says nothing about them.
+          failure: "commandFailed",
           message: `the structured output exceeded ${MAX_STAGED_PAYLOAD_BYTES} bytes`,
         })
         return
@@ -285,6 +423,8 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       if (!sink.write(chunk)) child.stdout?.pause()
     })
 
+    // Not retryable: a toolchain that cannot be started will not start in
+    // 150ms, and three attempts at it only make a clear answer slower.
     child.on("error", () =>
       finish({
         ok: false,
@@ -303,7 +443,10 @@ function read(input: StagedRead): Promise<XcresultResponse> {
           // says the bundle could not be decoded, not that it cannot be opened.
           failure: command === "metadata get" ? "bundleUnreadable" : "commandFailed",
           message: `xcresulttool exited with status ${status ?? "unknown"}`,
-        })
+        },
+        // One of the two captured `b2 zero-match` causes, and transient every
+        // time it was captured: the same bundle answers on the next read.
+        true)
         return
       }
 
@@ -318,7 +461,21 @@ function read(input: StagedRead): Promise<XcresultResponse> {
       // Everything written has to reach the disk before it can be read back;
       // a decode that raced the last write would report a valid payload as
       // unparseable.
-      sink.end(() => finish(decodeStaged(staged, deadline)))
+      sink.end(() => {
+        const decoded = decodeStaged(staged, deadline)
+        // Output that would not parse is the one thing about this read that
+        // cannot be reconstructed afterwards, and it is deleted a line later
+        // (issue #84). Kept beside the run's own artifacts, where the gate's
+        // evidence preservation already looks, so the next occurrence is
+        // diagnosable by reading rather than by reproducing.
+        //
+        // Only that case. A decode that overran its budget produced a payload
+        // that was fine, and copying a file out after the deadline has passed
+        // is work nobody asked for at the worst possible moment.
+        const unparseable = !decoded.ok && decoded.failure === "commandFailed"
+        if (unparseable) keepUndecodable(staged, input)
+        finish(decoded, unparseable)
+      })
     })
   })
 }

@@ -36,6 +36,7 @@ import {
   scenarioSink,
   type Observations,
 } from "./gate/observations.ts"
+import { DrivenRoots } from "./gate/driven-roots.ts"
 import { preserveEvidence, type EvidenceSource } from "./gate/forensics.ts"
 import { readProvenance } from "./gate/provenance.ts"
 import { renderReport, writeReport, type RunReport } from "./gate/report.ts"
@@ -108,6 +109,14 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   // it was observed, which is what makes the exceptional path's report equal
   // to this one minus whatever had not happened yet.
   const finish = (outcome: "passed" | "failed", diagnostic?: string): number => {
+    // Once, here, after every suite has finished and every host it started is
+    // gone (issue #98). A suite that swept its own storage raced the host it
+    // had just closed: roots kept appearing *after* the sweep, because closing
+    // a server does not mean each plugin instance it began has stopped
+    // writing. Storage the report already describes has been copied out by
+    // now, so nothing this removes is anything a reader was sent to find.
+    roots.clean()
+
     const report = reportFrom(observed, outcome, diagnostic)
 
     const path = writeReport(report)
@@ -115,6 +124,11 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     if (diagnostic !== undefined) process.stderr.write(`acceptance gate: ${diagnostic}\n`)
     return outcome === "passed" ? 0 : 1
   }
+
+  // Every project root a suite makes a live host create, so the run can
+  // collect the storage it caused. Shared rather than per-suite, because the
+  // sweep is one pass at the end.
+  const roots = new DrivenRoots()
 
   const toolchain = resolveToolchain()
   if (toolchain.status !== "resolved") return finish("failed", toolchain.message)
@@ -202,7 +216,7 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     )
   }
   if (suites.includes("b1")) {
-    await asSuite(observed, "b1", () => runB1Suite(record))
+    await asSuite(observed, "b1", () => runB1Suite(record, roots))
   }
   if (suites.includes("b2") && context !== undefined) {
     // (b2) drives the host against generated projects with known outcomes, so
@@ -214,6 +228,7 @@ export async function main(argv: string[], observed: Observations): Promise<numb
           // The same key as Layer 4's, deliberately: one run keeps one set.
           // Two keys would mean two report fields racing to be "the"
           // evidence, and a reader holding whichever one was written last.
+          roots,
           keepEvidence: (sources, correlations) => {
             observed.evidence = mergeEvidence(
               observed.evidence,

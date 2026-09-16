@@ -31,6 +31,7 @@ import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
+import type { DrivenRoots } from "./driven-roots.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
@@ -43,6 +44,7 @@ const GATE_PORT = 45_729
 /** Records each scenario as it finishes; see `ScenarioSink`. */
 export async function runRegistrationGate(
   record: ScenarioSink,
+  roots: DrivenRoots,
   hostVersion = observedHostVersion(),
 ): Promise<void> {
   const bootstrapFailed = (detail: string) => {
@@ -65,9 +67,26 @@ export async function runRegistrationGate(
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b1-"))
   const previousCwd = process.cwd()
 
+  // This suite points a real host at generated projects, and a real host
+  // writes per-root storage under the user's own home for each of them. The
+  // projects go with the workspace below; that storage would not, and nothing
+  // downstream can ever collect it — the registry stores a hash and a
+  // timestamp by design and never a path (issue #98).
+  //
+  // Counted rather than reasoned about: two roots per B1 run, which is how
+  // 314 became 320 over three gate runs after the same defect had already
+  // been fixed for B2.
+  //
+  // Registered here and swept by the caller, once, at the end of the run. A
+  // suite that cleaned up after itself raced the host it had just closed:
+  // storage for a root kept appearing *after* the sweep, because closing a
+  // server does not mean every plugin instance it started has finished
+  // writing. One pass, after everything is gone, cannot lose that race.
   try {
-    const marked = prepareRoot(join(workspace, "marked"), { marker: true })
-    const unmarked = prepareRoot(join(workspace, "unmarked"), { marker: false })
+    // Registered as each is prepared, so a throw in the second does not leave
+    // the first registered nowhere.
+    const marked = roots.add(prepareRoot(join(workspace, "marked"), { marker: true }))
+    const unmarked = roots.add(prepareRoot(join(workspace, "unmarked"), { marker: false }))
 
     process.chdir(marked)
     const { client, server } = await sdk.createOpencode({

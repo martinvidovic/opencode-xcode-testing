@@ -30,6 +30,7 @@ import { join } from "node:path"
 
 import { mergeEvidence } from "../../scripts/acceptance-gate.ts"
 import { B2Evidence, worthKeeping } from "../../scripts/gate/b2-evidence.ts"
+import { DrivenRoots } from "../../scripts/gate/driven-roots.ts"
 import { evidenceDirectory, preserveEvidence, pruneEvidence } from "../../scripts/gate/forensics.ts"
 import { keyFor, renderReport, type RunReport } from "../../scripts/gate/report.ts"
 import { prepareStorage, storageFor } from "../../src/runner/paths.ts"
@@ -408,6 +409,55 @@ describe("what the host itself said", () => {
       const diagnostics = evidence.sources(workspace).find((s) => s.name === "b2-host-diagnostics")
       expect(existsSync(join(diagnostics!.path, "host.log"))).toBe(false)
       rmSync(workspace, { recursive: true, force: true })
+    })
+  })
+})
+
+describe("the storage a live host makes a gate suite create", () => {
+  test("is collected whichever suite caused it, by one registry", () => {
+    // Found by counting rather than by reading: 314 roots before a gate run
+    // and 320 after three. B2 was fixed first, and the same arithmetic then
+    // showed B1 leaving two more per run — which is why this is one shared
+    // piece rather than a second copy of the same care.
+    withHome((home) => {
+      const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-ws-"))
+      const roots = new DrivenRoots(home)
+      const b1 = drivenRoot(home, workspace, "marked")
+      const b2 = drivenRoot(home, workspace, "passing")
+
+      expect(roots.add(b1)).toBe(b1)
+      roots.add(b2)
+      expect(roots.directories().map((entry) => entry.key).sort()).toEqual(
+        [keyed(home, b1).rootKey, keyed(home, b2).rootKey].sort(),
+      )
+
+      expect(roots.clean()).toHaveLength(2)
+      expect(existsSync(keyed(home, b1).rootDir)).toBe(false)
+      expect(existsSync(keyed(home, b2).rootDir)).toBe(false)
+      rmSync(workspace, { recursive: true, force: true })
+    })
+  })
+
+  test("is addressed by the key the host would have used, not by the path as written", () => {
+    // A temp workspace is reached through a symbolic link on macOS, and the
+    // host canonicalizes before it stores anything. A registry that hashed the
+    // path as written addressed a directory that did not exist, so every
+    // `existsSync` after it politely declined and the cleanup read as working.
+    withHome((home) => {
+      const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-ws-"))
+      const root = drivenRoot(home, workspace, "passing")
+
+      expect(new DrivenRoots(home).keyOf(root)).toBe(keyed(home, root).rootKey)
+      rmSync(workspace, { recursive: true, force: true })
+    })
+  })
+
+  test("survives a root that has already gone", () => {
+    withHome((home) => {
+      const roots = new DrivenRoots(home)
+      roots.add(join(home, "never-existed"))
+      expect(roots.directories()).toEqual([])
+      expect(roots.clean()).toEqual([])
     })
   })
 })
