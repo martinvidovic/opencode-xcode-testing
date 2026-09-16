@@ -6,3 +6,6 @@ node_modules/
 # E2E run reports contain host paths and, under --project, private project facts
 # (ADR 0001). They are never tracked.
 reports/
+
+# Throwaway diagnostic probes. Never tracked.
+.scratch/
