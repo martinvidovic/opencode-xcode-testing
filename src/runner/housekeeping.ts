@@ -19,6 +19,7 @@ import { join } from "node:path"
 
 import { isRecord } from "../domain/json.ts"
 import { LockUnavailableError, withTryLock } from "./locks.ts"
+import { anyLeaseHeld, reconcileLeases } from "./leases.ts"
 import { readQueue, type QueueState } from "./queue.ts"
 import {
   createPrivateDirectory,
@@ -133,8 +134,6 @@ export type HousekeepingEnvironment = {
   now(): number
   /** Build a per-root storage view for another root key. */
   storageForRootKey(rootKey: string): Storage
-  /** Runs currently under a read lease, per root key. */
-  leased?(rootKey: string): ReadonlySet<string>
   /**
    * Give recovery the chance to reconcile a root before it is retained
    * (issue #110).
@@ -219,15 +218,29 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
       // to stop maintaining every root after it.
     }
 
-    const report = withTryLock(rootStorage.rootLock, () =>
-      runRetention({
+    const report = withTryLock(rootStorage.rootLock, () => {
+      // Both facts are read here, inside the root lock, from this root's own
+      // storage (issue #116).
+      //
+      // Under the lock, because the queue is what says which run owns the
+      // Execution Slot, and a slot read outside it is a slot that may have
+      // changed hands before it is acted on. From storage, because the other
+      // instance is the point: a run being inspected in a second OpenCode
+      // window is invisible to anything this process holds in memory, and
+      // that instance is precisely the one whose evidence this pass would
+      // otherwise delete out from under it.
+      const leases = reconcileLeases(rootStorage, nowMs)
+      const owner = activeRunOf(rootStorage)
+      return runRetention({
         storage: rootStorage,
         now: () => nowMs,
         userWideBytes,
         nothingIsRunning,
-        ...(environment.leased === undefined ? {} : { leased: environment.leased(rootKey) }),
-      }),
-    )
+        leased: leases.runs,
+        evictionUncertain: leases.uncertain || !owner.readable,
+        ...(owner.runId === undefined ? {} : { activeRunId: owner.runId }),
+      })
+    })
     // A held root lock means a live run owns that root; skipping it is correct.
     if (report !== undefined) {
       reports[rootKey] = report
@@ -237,6 +250,25 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
   }
 
   return { status: "ran", reports, staleRoots, held }
+}
+
+/**
+ * Which run owns this root's Execution Slot, and whether that could be told.
+ *
+ * Two answers rather than one, because "no run is active" and "nobody could
+ * say" are different facts and only one of them is permission to delete. A
+ * queue that cannot be read is the root whose ownership is least known, and
+ * answering `undefined` there would make it the one root whose evidence is
+ * least protected. Every neighbouring decision — the cache guard, whole-root
+ * collection — fails closed on this same file, and so does this.
+ */
+function activeRunOf(storage: Storage): { runId?: string; readable: boolean } {
+  try {
+    const activeRunId = readQueue(storage).activeRunId
+    return { readable: true, ...(activeRunId === undefined ? {} : { runId: activeRunId }) }
+  } catch {
+    return { readable: false }
+  }
 }
 
 /**
@@ -371,6 +403,13 @@ function collectStaleRoots(
         return false
       }
       if (queue.activeRunId !== undefined || queue.quarantine !== undefined) return false
+
+      // A root somebody is reading is not stale, whatever its timestamp says
+      // (issue #116). `lastSeenAtMs` records when a root was last *opened*,
+      // and an inspection of two-month-old evidence does not open it — so the
+      // timestamp can say sixty days while another process has a Result
+      // Bundle in this tree open right now.
+      if (anyLeaseHeld(reconcileLeases(rootStorage, nowMs))) return false
 
       try {
         renameSync(rootStorage.rootDir, graveyard)

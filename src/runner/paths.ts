@@ -57,6 +57,8 @@ export type Storage = {
   queueFile: string
   trashDir: string
   tombstonesDir: string
+  /** Where inspections publish their read leases, one file each. */
+  leasesDir: string
   /** The opaque key this trusted root is stored under. */
   rootKey: string
 }
@@ -110,6 +112,7 @@ export function storageForRootKey(homeDir: string, rootKey: string): Storage {
     queueFile: join(rootDir, "queue.json"),
     trashDir: join(rootDir, "trash"),
     tombstonesDir: join(rootDir, "tombstones"),
+    leasesDir: join(rootDir, "leases"),
     rootKey,
   }
 }
@@ -164,6 +167,7 @@ export function prepareStorage(storage: Storage): void {
     storage.runsDir,
     storage.trashDir,
     storage.tombstonesDir,
+    storage.leasesDir,
   ]) {
     createPrivateDirectory(dir)
   }

@@ -216,7 +216,17 @@ describe("a cache a build may be writing into", () => {
     // idle — and the one moment that is untrue is while a build is using it.
     withSandbox((box) => {
       cache(box, "/work/Example.xcodeproj", 40 * GIB, 30)
-      const report = retain(box, { activeRunId: "b".repeat(32) })
+      // Claimed in `queue.json`, which is where the slot actually lives. A
+      // caller saying "a run is active" is a caller's opinion; the root lock
+      // is held around admission transitions and not for a build's duration,
+      // so the queue is the only thing that knows (issue #96).
+      writeQueue(box.storage, {
+        schemaVersion: 1,
+        nextSequence: 2,
+        tickets: [],
+        activeRunId: "b".repeat(32),
+      })
+      const report = retain(box)
 
       expect(report.cachesReclaimed).toEqual([])
       expect(report.cacheBytes).toBeGreaterThanOrEqual(40 * GIB)

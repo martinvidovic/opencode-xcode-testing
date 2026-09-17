@@ -56,6 +56,10 @@ _Avoid_: Exit info, exit result
 A hold on a trusted root's Execution Slot, raised when a Test Run's lifecycle could not be confirmed and cleared only on identity-safe evidence that nothing attributable to it is still running. It refuses new Test Runs with a reason rather than making them wait.
 _Avoid_: Lockout, freeze, block
 
+**Read Lease**:
+A short, expiring file published under a trusted root while an inspection reads one Test Run's retained evidence, and removed when it finishes. It is what stops user-wide retention — which runs in whichever OpenCode instance reaches the hour first — from evicting evidence another instance is reading. It expires rather than being probed, so a crashed reader costs one pass and never pins evidence; anything unreadable among them counts as held.
+_Avoid_: Read lock, pin, reservation
+
 **Run Record**:
 The durable per-run metadata the runner writes as a Test Run progresses — its monotonic state, the process identities it recorded, and what it was asked to do. It is what recovery reads after a crash, and the only account of a run whose processes are gone.
 _Avoid_: Run state file, metadata blob
