@@ -28,6 +28,7 @@ import {
   type Storage,
 } from "./paths.ts"
 import { directorySize, runRetention, type RetentionReport } from "./retention.ts"
+import type { RecoveryStatus } from "./recovery.ts"
 
 /** ADR 0002: user-wide housekeeping runs at most once per hour. */
 export const HOUSEKEEPING_MIN_INTERVAL_MS = 60 * 60 * 1000
@@ -107,6 +108,15 @@ export type HousekeepingOutcome =
       status: "ran"
       reports: Record<string, RetentionReport>
       /**
+       * Roots whose caches were left because something still held them.
+       *
+       * Reported rather than passed over in silence (issue #110): a pass that
+       * declines to reclaim and says nothing leaves a reader to wonder why the
+       * total did not move, which is how a slot nobody released stayed
+       * invisible for as long as it did.
+       */
+      held: string[]
+      /**
        * Roots collected whole, by opaque key (AC5).
        *
        * Reported apart from the per-root reports because it is a different
@@ -125,6 +135,27 @@ export type HousekeepingEnvironment = {
   storageForRootKey(rootKey: string): Storage
   /** Runs currently under a read lease, per root key. */
   leased?(rootKey: string): ReadonlySet<string>
+  /**
+   * Give recovery the chance to reconcile a root before it is retained
+   * (issue #110).
+   *
+   * A port rather than something this file reaches for, because deciding
+   * whether a process is still alive needs a probe and housekeeping has no
+   * business inventing a second opinion about it. Recovery already answers
+   * that question — asking it is the whole of the fix.
+   *
+   * Without it, a run that crashed leaves its execution slot held for ever:
+   * retention reads the slot, concludes a build may be writing into that
+   * root's cache, and declines — correctly, given what it can see. Recovery
+   * releases such a slot and runs when a root is next opened, so a root
+   * nobody opens again is never reconciled. On the machine where this was
+   * measured, one such root pinned 25.07 GiB of a 25.40 GiB total.
+   *
+   * Optional, and absent means the old behaviour: the slot is believed and
+   * the cache is kept. Failing closed is the right default for a caller that
+   * cannot supply a probe.
+   */
+  reconcile?(storage: Storage): { status: RecoveryStatus }
 }
 
 /**
@@ -163,6 +194,7 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
 
   const userWideBytes = totalToolBytes(storage)
   const reports: Record<string, RetentionReport> = {}
+  const held: string[] = []
 
   for (const rootKey of surviving) {
     const rootStorage = environment.storageForRootKey(rootKey)
@@ -173,19 +205,65 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
     // of one entry pointing at storage somebody had removed by hand.
     if (!existsSync(rootStorage.rootDir)) continue
 
+    // Before retention, and outside the root lock it takes for itself: a slot
+    // this pass could have released is a cache this pass will refuse to
+    // reclaim, and the order is the whole of what makes the refusal temporary
+    // rather than permanent.
+    let nothingIsRunning = false
+    try {
+      const reconciled = environment.reconcile?.(rootStorage)
+      nothingIsRunning = reconciled !== undefined && probedAndIdle(reconciled.status)
+    } catch {
+      // A root that cannot be reconciled keeps its slot, which is the
+      // conservative answer and the one this had before. It is not a reason
+      // to stop maintaining every root after it.
+    }
+
     const report = withTryLock(rootStorage.rootLock, () =>
       runRetention({
         storage: rootStorage,
         now: () => nowMs,
         userWideBytes,
+        nothingIsRunning,
         ...(environment.leased === undefined ? {} : { leased: environment.leased(rootKey) }),
       }),
     )
     // A held root lock means a live run owns that root; skipping it is correct.
-    if (report !== undefined) reports[rootKey] = report
+    if (report !== undefined) {
+      reports[rootKey] = report
+      // Nothing reclaimed while bytes remain is a root something is holding.
+      if (report.cacheBytes > 0 && report.cachesReclaimed.length === 0) held.push(rootKey)
+    }
   }
 
-  return { status: "ran", reports, staleRoots }
+  return { status: "ran", reports, staleRoots, held }
+}
+
+/**
+ * Whether recovery actually probed this root and found nothing alive.
+ *
+ * Two statuses, named rather than "anything but `busy`". That collapse was the
+ * tempting shape and it is wrong in three reachable ways, each of which turns
+ * a guard that fails closed into one that fails open:
+ *
+ * - `stillQuarantined` means `classify` returned **uncertain** — a recorded
+ *   identity could not be shown to be gone. That is the case recovery's own
+ *   header describes as an unaccounted-for `xcodebuild` that may still be
+ *   writing the same DerivedData, which is precisely what would be deleted.
+ * - `deferred` is returned *without probing at all*, because another instance
+ *   holds the root lock. That lock is not held for a build's duration, so the
+ *   sequence "reconcile defers, the other instance starts a build, this pass
+ *   takes the lock and reclaims" is a race rather than a theory.
+ * - `failed` is returned when the coordination state could not be read. The
+ *   reclamation guard deliberately treats an unreadable queue as held; taking
+ *   the same condition as proof of idleness would undo that on the one path
+ *   where nothing at all is known.
+ *
+ * `cancelled` is out for the same reason as `deferred`: it means the pass
+ * stopped early, not that it looked and found nothing.
+ */
+function probedAndIdle(status: RecoveryStatus): boolean {
+  return status === "recovered" || status === "alreadyHealthy"
 }
 
 /**

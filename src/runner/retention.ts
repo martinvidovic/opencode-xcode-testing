@@ -79,6 +79,22 @@ export type RetentionEnvironment = {
   leased?: ReadonlySet<string>
   /** The active run, which holds the execution slot and is never evictable. */
   activeRunId?: string
+  /**
+   * Set when something has established that no process attributable to this
+   * root is alive (issue #110).
+   *
+   * The build-cache guard is about a build *writing* into a cache, and the
+   * execution slot is a proxy for that — a good one while a run is in flight,
+   * and a permanent one after a run crashes. A slot held by a run that has no
+   * live process is a run waiting to be finalized, not a build in progress,
+   * and nothing is writing into its cache.
+   *
+   * Only recovery can say this, because saying it needs a process probe. So
+   * it arrives as a fact from a caller that asked recovery, and its absence
+   * means the slot is believed — which is the conservative answer and the one
+   * this had before.
+   */
+  nothingIsRunning?: boolean
 }
 
 export type RetentionReport = {
@@ -426,18 +442,24 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
 }
 
 /**
- * Whether a run holds this root's execution slot.
+ * What this root's coordination state says about leaving its caches alone.
  *
  * Fails closed, unreadable coordination state included: a root whose queue
  * cannot be read is a root nothing can say is idle, and reclaiming a cache a
  * build may be writing into is not the way to find out. It is also not a
  * reason to fail retention — the runs beside it are still worth sweeping.
  */
-function slotIsHeld(storage: Storage): boolean {
+function coordinationState(storage: Storage): { slotHeld: boolean; quarantined: boolean } {
   try {
-    return readQueue(storage).activeRunId !== undefined
+    const queue = readQueue(storage)
+    // Two answers, because they are two facts and one of them outranks a
+    // liveness verdict. Publishing a quarantine *clears* `activeRunId` — the
+    // two must never both look true, or admission would wait out its whole
+    // deadline instead of failing fast — so a root held for the strongest
+    // possible reason has no slot to show for it.
+    return { slotHeld: queue.activeRunId !== undefined, quarantined: queue.quarantine !== undefined }
   } catch {
-    return true
+    return { slotHeld: true, quarantined: true }
   }
 }
 
@@ -453,9 +475,16 @@ function slotIsHeld(storage: Storage): boolean {
  * nobody has built in a fortnight is buying a warm start nobody is waiting
  * for, whatever the byte totals say.
  *
- * Nothing is reclaimed while a run holds the execution slot. A cache is safe
- * to delete because it is regenerable, not because it is idle, and the one
- * moment that is untrue is while a build is writing into it.
+ * Nothing is reclaimed while a build may be writing into a cache. A cache is
+ * safe to delete because it is regenerable, not because it is idle, and that
+ * one moment is the exception.
+ *
+ * The execution slot is the proxy for it, and a good one only while a run is
+ * in flight: a run that crashed leaves the slot held for ever, and every later
+ * pass reads it and declines (issue #110). So a caller that has asked recovery
+ * whether anything attributable to this root is still alive can say so, and
+ * that answer outranks the slot — a slot held by a run with no live process is
+ * a run waiting to be finalized, not a build in progress.
  */
 function reclaimCaches(
   environment: RetentionEnvironment & { userWideBytes?: number },
@@ -471,9 +500,18 @@ function reclaimCaches(
   // changing the queue at that instant — `xcodebuild` may be writing into one
   // of these directories right now. The execution slot in `queue.json` is the
   // fact that actually says so, and it is the fact every other path uses.
-  if (environment.activeRunId !== undefined || slotIsHeld(environment.storage)) {
-    return { keys: [], bytesReclaimed: 0, cacheBytes: total() }
-  }
+  const unchanged = { keys: [] as string[], bytesReclaimed: 0, cacheBytes: total() }
+  if (environment.activeRunId !== undefined) return unchanged
+
+  const coordination = coordinationState(environment.storage)
+
+  // Quarantine first, and not overridable. A liveness verdict says nothing is
+  // running *now*; quarantine says this root's lifecycle could not be
+  // confirmed, which is the stronger statement and the one that survives a
+  // process having gone. Letting `nothingIsRunning` clear it would reclaim
+  // the caches of the one kind of root whose state nobody could establish.
+  if (coordination.quarantined) return unchanged
+  if (environment.nothingIsRunning !== true && coordination.slotHeld) return unchanged
 
   // Oldest first, so the cache that buys the least goes first.
   const ordered = [...caches].sort((a, b) => a.modifiedMs - b.modifiedMs || a.key.localeCompare(b.key))
