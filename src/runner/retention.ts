@@ -15,18 +15,21 @@
  * evicted run reports `expired` rather than a misleading `notFound`.
  */
 
-import { lstatSync, readdirSync, renameSync, rmSync } from "node:fs"
+import { lstatSync, readdirSync, renameSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 import { isRecord } from "../domain/json.ts"
 import {
+  isRootKey,
   isRunId,
   readPrivateFile,
   runDirectory,
+  sharedCacheRoot,
   UnknownRunError,
   writePrivateFileAtomic,
   type Storage,
 } from "./paths.ts"
+import { readQueue } from "./queue.ts"
 import { readRunRecord } from "./state.ts"
 
 export const RETENTION = {
@@ -40,6 +43,15 @@ export const RETENTION = {
   userWideByteTarget: 20 * 1024 ** 3,
   tombstoneLifetimeMs: 30 * 24 * 60 * 60 * 1000,
   maxTombstones: 10_000,
+  /**
+   * Time from last use before a shared build cache is reclaimed.
+   *
+   * Longer than a run's own retention, because the two are different things.
+   * Evidence is kept so a caller can read it; a cache is kept so the next
+   * build is fast, and a cache for a container nobody has built in a
+   * fortnight is buying a speed-up nobody is waiting for.
+   */
+  cacheMaxAgeMs: 14 * 24 * 60 * 60 * 1000,
 } as const
 
 export type RetainedRun = {
@@ -73,10 +85,68 @@ export type RetentionReport = {
   evicted: string[]
   reasons: Record<string, "age" | "count" | "perRootBytes" | "userWideBytes">
   tombstonesRemoved: string[]
+  /**
+   * Every tool-owned byte this root still holds: retained runs **and** the
+   * shared build caches beside them (issue #96).
+   *
+   * It used to be the runs alone, which made the byte targets a bound on an
+   * eighth of what the tool occupied — 5.0 GB accounted for against 34.3 GB of
+   * DerivedData in the same tree. A cap computed over part of what it is
+   * capping is not a cap.
+   */
   retainedBytes: number
+  /** Of `retainedBytes`, what the shared build caches account for. */
+  cacheBytes: number
+  /**
+   * Shared build caches reclaimed, by opaque container key.
+   *
+   * Reported apart from `evicted` because they are not the same event. An
+   * evicted run is evidence someone may have wanted; a reclaimed cache costs
+   * the next build its warm start and nothing else (AC5).
+   */
+  cachesReclaimed: string[]
+  cacheBytesReclaimed: number
   /** Retained runs whose Result Bundle changed after it was published. */
   mutatedBundles: string[]
 }
+
+/** One shared build cache: a container key, its bytes, and when it was used. */
+export type SharedCache = { key: string; path: string; bytes: number; modifiedMs: number }
+
+/**
+ * The shared build caches under one root.
+ *
+ * Only directories named by a well-formed key are counted, for the reason the
+ * roots sweep applies the same rule: these paths are deleted, and anything
+ * else that happens to sit here must not be able to inflate a byte total or to
+ * be walked at all.
+ */
+export function sharedCaches(storage: Storage): SharedCache[] {
+  const cacheRoot = sharedCacheRoot(storage)
+  let entries: string[]
+  try {
+    entries = readdirSync(cacheRoot).sort()
+  } catch {
+    return []
+  }
+
+  const caches: SharedCache[] = []
+  for (const key of entries) {
+    // A container key is a SHA-256 digest, exactly as a root key is, and is
+    // checked by the same function for the same reason: it names a directory
+    // this recursively deletes.
+    if (!isRootKey(key)) continue
+    const path = join(cacheRoot, key)
+    if (!isDirectory(path)) continue
+    try {
+      caches.push({ key, path, bytes: directorySize(path), modifiedMs: statSync(path).mtimeMs })
+    } catch {
+      // A cache that vanished mid-sweep is a cache already reclaimed.
+    }
+  }
+  return caches
+}
+
 
 /** Read every run directory, classifying what may be evicted and what may not. */
 export function collectRuns(environment: RetentionEnvironment): RetainedRun[] {
@@ -309,11 +379,32 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
   reconcileTrash(environment.storage, nowMs)
 
   const runs = collectRuns(environment)
-  const plan = planEviction(runs, environment)
+
+  // Caches first, and that order is the whole design (issue #96). A build
+  // cache is a warm start `xcodebuild` rebuilds on demand; a Result Bundle is
+  // evidence a caller asked for and nothing can regenerate. Reclaiming after
+  // eviction meant the byte targets — which now count caches — evicted
+  // evidence to make room for bytes the very next step was about to give back,
+  // trading the unregenerable for the regenerable.
+  //
+  // Age and count are untouched by this: they are hard rules about evidence,
+  // and no amount of cache reclamation makes an eight-day-old run young.
+  const reclaimed = reclaimCaches(
+    environment,
+    runs.reduce((total, run) => total + run.bytes, 0),
+    nowMs,
+  )
+
+  const plan = planEviction(runs, {
+    ...environment,
+    ...(environment.userWideBytes === undefined
+      ? {}
+      : { userWideBytes: environment.userWideBytes - reclaimed.bytesReclaimed }),
+  })
   for (const runId of plan.evict) evictRun(environment.storage, runId, nowMs)
 
   const tombstonesRemoved = sweepTombstones(environment.storage, nowMs)
-  const retainedBytes = runs
+  const runBytes = runs
     .filter((run) => !plan.evict.includes(run.runId))
     .reduce((total, run) => total + run.bytes, 0)
 
@@ -326,9 +417,92 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
     evicted: plan.evict,
     reasons: plan.reasons,
     tombstonesRemoved,
-    retainedBytes,
+    retainedBytes: runBytes + reclaimed.cacheBytes,
+    cacheBytes: reclaimed.cacheBytes,
+    cachesReclaimed: reclaimed.keys,
+    cacheBytesReclaimed: reclaimed.bytesReclaimed,
     mutatedBundles,
   }
+}
+
+/**
+ * Whether a run holds this root's execution slot.
+ *
+ * Fails closed, unreadable coordination state included: a root whose queue
+ * cannot be read is a root nothing can say is idle, and reclaiming a cache a
+ * build may be writing into is not the way to find out. It is also not a
+ * reason to fail retention — the runs beside it are still worth sweeping.
+ */
+function slotIsHeld(storage: Storage): boolean {
+  try {
+    return readQueue(storage).activeRunId !== undefined
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Reclaim shared build caches, and report what is left (issue #96).
+ *
+ * Run **after** eviction, and only against what eviction could not bring
+ * inside the target — evidence is what a caller asked for, and a cache is a
+ * speed-up. Reclaiming the cache first would trade something nobody can
+ * regenerate for something `xcodebuild` rebuilds on demand.
+ *
+ * Age applies on its own, the way it does to runs: a cache for a container
+ * nobody has built in a fortnight is buying a warm start nobody is waiting
+ * for, whatever the byte totals say.
+ *
+ * Nothing is reclaimed while a run holds the execution slot. A cache is safe
+ * to delete because it is regenerable, not because it is idle, and the one
+ * moment that is untrue is while a build is writing into it.
+ */
+function reclaimCaches(
+  environment: RetentionEnvironment & { userWideBytes?: number },
+  runBytes: number,
+  nowMs: number,
+): { keys: string[]; bytesReclaimed: number; cacheBytes: number } {
+  const caches = sharedCaches(environment.storage)
+  const total = () => caches.reduce((sum, cache) => sum + cache.bytes, 0)
+
+  // Read off the queue, not off the caller (issue #96). The root lock is held
+  // around admission transitions and **not** for a build's duration, so a
+  // housekeeping pass that reached this root proves only that nothing was
+  // changing the queue at that instant — `xcodebuild` may be writing into one
+  // of these directories right now. The execution slot in `queue.json` is the
+  // fact that actually says so, and it is the fact every other path uses.
+  if (environment.activeRunId !== undefined || slotIsHeld(environment.storage)) {
+    return { keys: [], bytesReclaimed: 0, cacheBytes: total() }
+  }
+
+  // Oldest first, so the cache that buys the least goes first.
+  const ordered = [...caches].sort((a, b) => a.modifiedMs - b.modifiedMs || a.key.localeCompare(b.key))
+
+  const keys: string[] = []
+  let bytesReclaimed = 0
+  let kept = runBytes + total()
+  let userWide = environment.userWideBytes
+
+  for (const cache of ordered) {
+    const tooOld = nowMs - cache.modifiedMs > RETENTION.cacheMaxAgeMs
+    const overRoot = kept > RETENTION.perRootByteTarget
+    const overUserWide = userWide !== undefined && userWide > RETENTION.userWideByteTarget
+    if (!tooOld && !overRoot && !overUserWide) break
+
+    try {
+      rmSync(cache.path, { recursive: true, force: true })
+    } catch {
+      // A cache that will not delete is bytes still accounted for, which the
+      // totals below keep saying until something can remove it.
+      continue
+    }
+    keys.push(cache.key)
+    bytesReclaimed += cache.bytes
+    kept -= cache.bytes
+    if (userWide !== undefined) userWide -= cache.bytes
+  }
+
+  return { keys, bytesReclaimed, cacheBytes: kept - runBytes }
 }
 
 /**

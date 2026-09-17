@@ -51,3 +51,11 @@ _Avoid_: Lockout, freeze, block
 **Run Record**:
 The durable per-run metadata the runner writes as a Test Run progresses — its monotonic state, the process identities it recorded, and what it was asked to do. It is what recovery reads after a crash, and the only account of a run whose processes are gone.
 _Avoid_: Run state file, metadata blob
+
+**Shared Build Cache**:
+The `DerivedData` tree the tool keeps for one Xcode container so the next build does not start cold. Regenerable by definition, keyed by an opaque hash like every other tool-managed directory, and counted against the byte targets it used to sit quietly beside. Reclaimed only after eviction has done what it can, because a warm start is worth less than evidence nobody can rebuild.
+_Avoid_: Build artifacts, intermediates, scratch
+
+**Stale Root**:
+A trusted root nobody has opened for long enough that its storage is collected whole. The registry keeps a hash and a `lastSeenAtMs` and deliberately never a path, so age is the only signal there is — which is both the privacy guarantee and the entire basis on which this can be decided.
+_Avoid_: Dead project, orphaned repo, abandoned root
