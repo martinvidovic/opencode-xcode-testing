@@ -14,10 +14,11 @@
  *
  * Two rules make it safe to act on:
  *
- * **It expires.** An inspection is one call and takes seconds; a lease lasts a
- * minute. A holder that crashes mid-read therefore pins evidence for at most
- * that minute, which is what makes this need no process probe and no recovery
- * pass of its own. The alternative — liveness by PID — has to be identity-safe
+ * **It expires.** An inspection is one call and takes seconds; a lease lasts
+ * longer than the longest read it can legitimately cover, and no longer (see
+ * `LEASE_LIFETIME_MS`). A holder that crashes mid-read therefore pins
+ * evidence for a bounded and documented time, which is what makes this need
+ * no process probe and no recovery pass of its own. The alternative — liveness by PID — has to be identity-safe
  * to be worth anything, and PID reuse would make a lease outlive its holder in
  * exactly the case it is supposed to cover.
  *
@@ -33,6 +34,7 @@ import { readdirSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 import { isRecord } from "../domain/json.ts"
+import { LEASE_LIFETIME_MS } from "../domain/limits.ts"
 import {
   createPrivateDirectory,
   isRunId,
@@ -45,11 +47,16 @@ import {
 /**
  * How long a published lease is believed.
  *
- * Long enough that no inspection reaches the end of it — the tool's own
- * budgets are far shorter — and short enough that a crashed inspector costs
- * one housekeeping pass rather than a root's storage for ever.
+ * Derived from the operation it protects rather than chosen beside it
+ * (issue #124). The two were both sixty seconds, independently, so a bundle
+ * read that used its whole budget finished at the exact moment its lease
+ * stopped being believed — and the index read before it and the page
+ * assembled after it were never covered at all.
+ *
+ * A lease that lapses mid-read does not fail loudly. It stops being seen by
+ * the housekeeping pass that then deletes what is being read.
  */
-export const LEASE_LIFETIME_MS = 60_000
+export { LEASE_LIFETIME_MS }
 
 export type LeaseFile = { schemaVersion: 1; runId: string; expiresAtMs: number }
 

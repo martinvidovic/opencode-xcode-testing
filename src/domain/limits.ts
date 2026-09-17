@@ -3,6 +3,10 @@
  *
  * Every cap the model-facing contract promises lives here, so a change to one is
  * a change to one line rather than a search across the interpreter and adapter.
+ *
+ * And, at the end, the budgets two layers have to agree about. Those are not
+ * model-facing caps; they are here because the module direction leaves nowhere
+ * else both an interpreter and the runner can read them from (issue #124).
  */
 
 /** Serialized UTF-8 bytes of domain data in any typed model-facing response. */
@@ -163,3 +167,53 @@ export const DISCOVERY_TIMEOUT_SECONDS = 60
  * deeply than expected should be read, not rejected.
  */
 export const MAX_PAYLOAD_DEPTH = 256
+
+/**
+ * Per-operation budget for lazy, bundle-backed detail (#8).
+ *
+ * One fixed monotonic deadline covering toolchain verification, digest
+ * verification and extraction together rather than each separately, because
+ * the caller is waiting on the whole operation and dividing the budget would
+ * let three steps that each finished "in time" take three times as long.
+ *
+ * Here rather than beside the interpreter's other budgets because a second
+ * module has to agree with it: a Read Lease is only worth holding if it
+ * outlives the read it covers, and the runner may not import the interpreter.
+ * There were two copies of this number, and the exported one was dead — the
+ * one an editor would find and change was not the one production read
+ * (issue #124).
+ */
+export const LAZY_DEADLINE_MS = 60_000
+
+/**
+ * What a Read Lease is given beyond the operation it protects (issue #124).
+ *
+ * A lease covers the whole inspection, and the lazy read is only the middle
+ * of it: the index is read and parsed before, and a page or a log window is
+ * assembled after. A lifetime equal to the deadline would leave both ends
+ * uncovered — and a lease that expires mid-read does not fail loudly, it
+ * stops being seen by the housekeeping pass that then deletes what is being
+ * read.
+ *
+ * Those ends carry no deadline of their own; they are bounded by size
+ * instead, and this number is sized against those bounds rather than against
+ * a guess. The index read is capped at `MAX_PRIVATE_FILE_BYTES`, a log window
+ * at `LOG_CHUNK_MAX_BYTES`, and a response at `RESPONSE_BYTE_CAP` — 64 MiB,
+ * 64 KiB and 64 KiB of local file reading and serialization. Thirty seconds
+ * is orders of magnitude above what that costs on a machine that can also run
+ * Xcode, and small enough that an abandoned lease is gone inside two minutes.
+ *
+ * It is a margin, not a guarantee: nothing stops a pathological machine from
+ * exceeding it, and the consequence there is the pre-existing one — a reader
+ * meets storage that has been reclaimed underneath it.
+ */
+export const LEASE_MARGIN_MS = 30_000
+
+/**
+ * How long a published Read Lease is believed.
+ *
+ * Derived, so the two cannot drift: the whole point is that it is longer than
+ * the operation it protects, and a number chosen independently is a number
+ * that stops being longer the day somebody raises the deadline.
+ */
+export const LEASE_LIFETIME_MS = LAZY_DEADLINE_MS + LEASE_MARGIN_MS
