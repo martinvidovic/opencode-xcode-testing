@@ -21,6 +21,8 @@
  *                        behave — the frame is well-formed and arrives on the
  *                        right descriptor, and is still not this run's
  *                        handshake (#115)
+ *   unending-frame       write without ever ending a frame, in chunks, so the
+ *                        adapter's decode buffer is what would grow (#127)
  */
 
 import { createReadStream, createWriteStream } from "node:fs"
@@ -28,7 +30,7 @@ import { createReadStream, createWriteStream } from "node:fs"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { decodeMessages, encodeMessage } from "../../../src/runner/control.ts"
+import { decodeMessages, encodeMessage, MAX_FRAME_BYTES } from "../../../src/runner/control.ts"
 import { storageFor } from "../../../src/runner/paths.ts"
 import { advance, readRunRecord } from "../../../src/runner/state.ts"
 
@@ -63,6 +65,15 @@ incoming.on("data", (chunk) => {
       // `HANG_BUDGET_MS` is two orders above any deadline these tests use, so
       // the adapter still gives up first and the stub still tests what it
       // tested. It is a leak bound, not a behaviour.
+      setTimeout(() => process.exit(0), HANG_BUDGET_MS)
+      continue
+    }
+    if (mode === "unending-frame") {
+      // Small writes, none of them remarkable, and enough of them to pass
+      // the bound. What is under test is the adapter's buffer rather than any
+      // single write's size — derived from the bound so that raising it does
+      // not quietly turn this into a test of nothing.
+      for (let write = 0; write < UNENDING_WRITES; write += 1) control.write(UNENDING_CHUNK)
       setTimeout(() => process.exit(0), HANG_BUDGET_MS)
       continue
     }
@@ -116,6 +127,10 @@ async function serve(spec: Spec, mode: string): Promise<never> {
  * hundreds of milliseconds — and short enough that nothing survives the suite.
  */
 const HANG_BUDGET_MS = 60_000
+
+/** One unremarkable write, and enough of them to carry past the frame bound. */
+const UNENDING_CHUNK = "x".repeat(4_096)
+const UNENDING_WRITES = Math.ceil(MAX_FRAME_BYTES / UNENDING_CHUNK.length) + 1
 
 /** Milliseconds a `ready-then-linger:MS` mode asks for; zero for any other. */
 function lingerOf(mode: string): number {
