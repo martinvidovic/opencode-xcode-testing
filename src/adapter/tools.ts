@@ -592,6 +592,12 @@ function recordLines(data: unknown): string[] {
       // `omitted` line counting records, and two adjacent lines under one key
       // read as a restatement of each other rather than as two facts. This one
       // names the facet, so a reader knows which record it is about.
+      //
+      // `reason` rather than `blockedBy`, though the names come from it: the
+      // prose already carries them, bounded and with what shortening each kind
+      // would cost, and printing the array beside it would spend budget saying
+      // the same thing twice. The typed field stays for a caller reading the
+      // response rather than this text (issue #126).
       return [field("withheld", `${page.facet} — ${page.reason}`)]
     case "records":
       return [

@@ -128,6 +128,21 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
 }
 
 /**
+ * Protected leaves that are somewhere to go and look, rather than something
+ * to address a record by.
+ *
+ * Kept apart from the identifiers because the two fail differently when
+ * shortened, and a caller is told which happened (issue #126). Exported so
+ * that the telling is derived from this set rather than from a guess about
+ * what the field was called — a leaf added here classifies itself.
+ */
+export const LOCATION_FIELDS: ReadonlySet<string> = new Set([
+  // Half a path names a file that does not exist, and the reader who follows
+  // it learns nothing except that this tool is wrong about where things are.
+  "path",
+])
+
+/**
  * Fields a shortened record keeps, whatever it costs to keep them.
  *
  * These are what a caller *acts* on, and none of them survives being
@@ -161,10 +176,7 @@ const STRUCTURAL_FIELDS = new Set([
   "test",
   "sourceIdentifier",
   "position",
-  // A location is somewhere to go and look. Half a path names a file that
-  // does not exist, and the reader who follows it learns nothing except that
-  // this tool is wrong about where things are.
-  "path",
+  ...LOCATION_FIELDS,
 ])
 
 /**
