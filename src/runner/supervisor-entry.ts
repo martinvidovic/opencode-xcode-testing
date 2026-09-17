@@ -145,7 +145,7 @@ class ControlChannel {
 
   #consume(chunk: string): void {
     this.#buffer += chunk
-    const { messages, rest } = decodeMessages(this.#buffer)
+    const { messages, rest, overflowed } = decodeMessages(this.#buffer)
     this.#buffer = rest
 
     for (const message of messages) {
@@ -168,6 +168,27 @@ class ControlChannel {
         this.#aborted = true
         this.#announce()
       }
+    }
+
+    // A peer that writes without ever ending a frame (issue #127). The buffer
+    // is bounded by the decoder; what is left is deciding what the stream now
+    // means, and the answer is nothing: framing that has been lost cannot be
+    // recovered by reading further, and this end has no way to ask for a
+    // resend. Treated as the channel going, which is a state the supervisor
+    // is already built to survive — it finishes the run it was given and
+    // records that nobody was left to tell.
+    //
+    // After the frames, not before them. A `hello` that completed whole in
+    // the same read as an oversized tail is a `hello` that arrived, and
+    // `#onSpec` fires once: reacting first would answer it with `undefined`
+    // and then drop the spec that was sitting in the same chunk.
+    if (overflowed) {
+      this.#lost = true
+      // Stopped, not merely noted. Reading on would let this end resynchronize
+      // on whatever followed the junk and act on a frame — a `cancel`, say —
+      // from a peer it has just declared gone.
+      this.#stream.destroy()
+      this.#onSpec?.(undefined)
     }
   }
 }

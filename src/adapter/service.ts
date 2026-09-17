@@ -1099,8 +1099,17 @@ function runSupervisor(
     let buffer = ""
     fromSupervisor?.on("data", (chunk: Buffer) => {
       buffer += chunk.toString("utf8")
-      const { messages, rest } = decodeMessages(buffer)
+      const { messages, rest, overflowed } = decodeMessages(buffer)
       buffer = rest
+
+      // Framing lost on the way back (issue #127). The buffer is bounded by
+      // the decoder either way; this is about what the loss means. Before the
+      // handshake the startup deadline would eventually say so, but after it
+      // nothing would: the `completed` frame this side is waiting for can no
+      // longer be recognized, and only the Test Run's own timeout would end a
+      // run that has already finished. Recorded as the channel going, which
+      // is the fact it is, and which both ends already know how to finish on.
+      if (overflowed) channelLost = true
       for (const message of messages) {
         // A handshake for this run, on a descriptor only the supervisor we
         // spawned holds. Both halves are the authentication: the channel says

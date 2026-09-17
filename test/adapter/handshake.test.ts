@@ -37,6 +37,7 @@ type StubMode =
   | "crash"
   | "hang"
   | "ready-other-run"
+  | "unending-frame"
   | `ready-then-linger:${number}`
 
 /**
@@ -115,6 +116,24 @@ async function runScripted(
   ).result
   return { result, states }
 }
+
+describe("a supervisor that writes without ever ending a frame", () => {
+  test("is a bounded failure rather than a buffer the far end decides the size of", async () => {
+    // The other direction of #127. This side reads the same way the
+    // supervisor does — accumulate until a newline — so it has the same
+    // exposure, and the party writing is the one process this side cannot
+    // vet. Bounded by the decoder; what reaches a caller is the handshake
+    // deadline's answer, which is a diagnostic rather than a dead host.
+    await withSandbox(async (box) => {
+      const { result, states } = await runScripted(box, "unending-frame")
+
+      if (!isTestRunSummary(result)) throw new Error(`expected a Test Run: ${result.outcome}`)
+      expect(result.outcome).toBe("infrastructureFailed")
+      expect(infrastructureReason(result)).toBe("runnerFailure")
+      expect(states).not.toContain("supervisorReady")
+    })
+  })
+})
 
 describe("a handshake that names a different run", () => {
   test("does not count, however well-formed it is and wherever it arrives from", async () => {

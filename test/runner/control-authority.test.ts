@@ -16,10 +16,18 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { decodeMessages, encodeMessage, type LaunchSpec } from "../../src/runner/control.ts"
+import { decodeMessages, encodeMessage, MAX_FRAME_BYTES, type LaunchSpec } from "../../src/runner/control.ts"
 import { createRunDirectory } from "../../src/runner/paths.ts"
 import { readRunRecord, type RunRecord } from "../../src/runner/state.ts"
-import { sandbox, seedRun, sleep, spawnWithControlChannel, SUPERVISOR_ENTRYPOINT } from "./harness.ts"
+import { EXIT_PROTOCOL } from "../../src/runner/supervisor-entry.ts"
+import {
+  sandbox,
+  seedRun,
+  sleep,
+  spawnWithControlChannel,
+  SUPERVISOR_ENTRYPOINT,
+  type ProcessEnd,
+} from "./harness.ts"
 
 /** Long enough that a cancellation lands while the child is unmistakably alive. */
 const CHILD_SECONDS = 5
@@ -29,13 +37,15 @@ type Conversation = {
   before?: string
   /** Say this once the supervisor has answered `ready`, and is under way. */
   afterReady?: string
+  /** `false` to never send one, for the cases that are about what precedes it. */
+  hello?: false
 }
 
 /**
  * Drive a real supervisor through real inherited descriptors, and report the
  * record it left behind.
  */
-async function converse(talk: Conversation): Promise<RunRecord | undefined> {
+async function converse(talk: Conversation): Promise<{ record: RunRecord | undefined; end: ProcessEnd }> {
   const trustedRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
   const box = sandbox(trustedRoot)
   const runId = "c".repeat(32)
@@ -69,7 +79,7 @@ async function converse(talk: Conversation): Promise<RunRecord | undefined> {
       environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
       developerDirectory: "/unused",
     }
-    toSupervisor?.write(encodeMessage({ type: "hello", ...spec }))
+    if (talk.hello !== false) toSupervisor?.write(encodeMessage({ type: "hello", ...spec }))
 
     if (talk.afterReady !== undefined) {
       await ready
@@ -81,8 +91,7 @@ async function converse(talk: Conversation): Promise<RunRecord | undefined> {
       toSupervisor?.write(talk.afterReady)
     }
 
-    await ended
-    return readRunRecord(box.storage, runId)
+    return { end: await ended, record: readRunRecord(box.storage, runId) }
   } finally {
     box.dispose()
     rmSync(trustedRoot, { recursive: true, force: true })
@@ -93,7 +102,7 @@ describe("a cancellation on the private channel", () => {
   test("is obeyed once the handshake has happened", async () => {
     // The property the sequencing exists to provide, and the one that would
     // be silently lost by a change that only removed things.
-    const record = await converse({ afterReady: encodeMessage({ type: "cancel" }) })
+    const { record } = await converse({ afterReady: encodeMessage({ type: "cancel" }) })
 
     expect(record?.terminationTrigger).toBe("callerCancellation")
     expect(record?.state).toBe("executionCompleted")
@@ -105,7 +114,7 @@ describe("a cancellation on the private channel", () => {
     // replayed frame cancel work it was never addressed to — and the order is
     // the only thing that distinguishes the two, since both are syntactically
     // perfect.
-    const record = await converse({ before: encodeMessage({ type: "cancel" }) })
+    const { record } = await converse({ before: encodeMessage({ type: "cancel" }) })
 
     expect(record?.terminationTrigger).not.toBe("callerCancellation")
     expect(record?.execObserved).toBe("yes")
@@ -118,7 +127,7 @@ describe("a handshake that has already happened", () => {
     // second malformed one un-handshakes a live run — and from then on every
     // cancellation is dropped in silence, leaving the deadline as the only
     // thing that can still end it.
-    const record = await converse({
+    const { record } = await converse({
       afterReady: '{"type":"hello","homeDir":42}\n' + encodeMessage({ type: "cancel" }),
     })
 
@@ -126,9 +135,30 @@ describe("a handshake that has already happened", () => {
   }, 40_000)
 })
 
+describe("a frame that never ends", () => {
+  test("ends the supervisor in bounded protocol failure rather than growing", async () => {
+    // Written by whoever holds the other end of the pipe, which for a
+    // supervisor is the only thing it trusts — and trusting it is not the
+    // same as letting it decide how much memory this process uses. Framing
+    // that has been lost cannot be recovered by reading further, so the
+    // channel is treated as gone: this supervisor has no run to finish, and
+    // it stops instead of waiting for a `hello` that can no longer arrive.
+    //
+    // In chunks, because that is how one arrives: every write is small and
+    // unremarkable, and the buffer is what would grow.
+    const chunk = "x".repeat(4_096)
+    const { end } = await converse({
+      hello: false,
+      before: chunk.repeat(Math.ceil(MAX_FRAME_BYTES / chunk.length) + 1),
+    })
+
+    expect(end.exitCode).toBe(EXIT_PROTOCOL)
+  }, 40_000)
+})
+
 describe("a frame the protocol does not recognize", () => {
   test("is dropped rather than interpreted, before or after the handshake", async () => {
-    const record = await converse({ before: '{"type":"authorize","runId":"anything"}\n' })
+    const { record } = await converse({ before: '{"type":"authorize","runId":"anything"}\n' })
 
     expect(record?.state).toBe("executionCompleted")
     expect(record?.terminationTrigger).not.toBe("callerCancellation")
