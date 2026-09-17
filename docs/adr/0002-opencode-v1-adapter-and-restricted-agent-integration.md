@@ -336,7 +336,11 @@ code, since it must outlive the adapter call that started it.
 
 ### Test-layer enforcement
 
-All invariants run as ordinary `bun:test` suites, so `bun test` is the single gate. The import lint
+All invariants run as ordinary `bun:test` suites, and the gate is `bun run check`: the strict
+TypeScript check and then those suites. One command, because two were one too many — this document
+said `bun test` was the single gate while the compiler it does not run held 240 errors, and Bun
+strips types rather than checking them, so a green suite says nothing about whether the code
+type-checks (issue #100). The import lint
 reads `src/` with `node:fs`, matches static `import` / `export … from` specifiers, and asserts both
 the allowlist and the one-way direction. It **rejects dynamic `import()` and `require()` outright**
 in `src/` rather than analyzing them — Bun executes CommonJS-style `require` in TypeScript files,

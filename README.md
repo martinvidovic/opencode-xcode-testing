@@ -254,14 +254,17 @@ you reach for them:
 ## Development
 
 ```bash
-bun test
+bun run check
 ```
 
-`bun test` is the single gate: the unit suites, the import lint and the hygiene
-lint all run as ordinary `bun:test` suites. The project has **zero runtime
-dependencies** — shipped code may import only `node:*` built-ins plus exactly
-one `@opencode-ai/plugin` import confined to `src/adapter`, and that is enforced
-by a lint rather than by convention.
+`bun run check` is the gate: the strict TypeScript check, then the unit suites
+and the import and hygiene lints, all ordinary `bun:test` suites. **The local
+quality gate** below says why it is one command and how to run either half on
+its own.
+
+The project has **zero runtime dependencies** — shipped code may import only
+`node:*` built-ins plus exactly one `@opencode-ai/plugin` import confined to
+`src/adapter`, and that is enforced by a lint rather than by convention.
 
 ```
 src/domain/       shared typed results and the CONTEXT.md vocabulary
@@ -274,14 +277,20 @@ examples/agent/   restricted-agent templates
 
 ### The local quality gate
 
-Two commands, and both have to pass before a change is done:
+One command, and it has to pass before a change is done:
 
 ```bash
-bun test          # the unit and lint suite
-bun run typecheck # the TypeScript contract, over src, test and scripts
+bun run check     # the TypeScript contract, then the unit and lint suite
 ```
 
-**Why the type check is a separate command and not a formality.** Bun strips
+Either half on its own, for fixing one kind of problem at a time:
+
+```bash
+bun run typecheck # the TypeScript contract, over src, test and scripts
+bun test          # the unit and lint suite
+```
+
+**Why the type check is part of the gate and not a formality.** Bun strips
 types rather than checking them, so a strict `tsconfig.json` sitting in a
 repository nothing ever compiles is a configuration everybody can see and
 nobody can fail. This one had been that for its whole life, and 240 errors had
@@ -319,7 +328,7 @@ Xcode update would be switched off within a week.
 
 ### The acceptance gate
 
-`bun test` needs nothing but Bun. The acceptance gate needs a real machine —
+`bun run check` needs nothing but Bun. The acceptance gate needs a real machine —
 Xcode, a simulator, and OpenCode — because it is the only thing that proves the
 whole path works rather than that each piece agrees with its own tests:
 
