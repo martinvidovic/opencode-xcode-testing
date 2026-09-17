@@ -102,8 +102,9 @@ driven directly, and Layer 4's own zero-match scenario passes.
 
 ## How the numbers above were measured
 
-`typecheck` and the suite are re-runnable from a clone: `bun run typecheck` and
-`bun test`. The rest are observations of this machine, and a reader who wants
+`typecheck` and the suite are re-runnable from a clone, together as `bun run
+check` or separately as `bun run typecheck` and `bun test` (issue #100 made the
+combined command the documented one). The rest are observations of this machine, and a reader who wants
 them again has to produce them the same way, because the artefacts they come
 from are deliberately untracked (ADR 0001: reports carry host paths and are
 never committed).

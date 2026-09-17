@@ -5,6 +5,7 @@
   "type": "module",
   "description": "A local OpenCode capability for running scoped Xcode tests while exposing only trustworthy, compact results to the model.",
   "scripts": {
+    "check": "bun run typecheck && bun test",
     "test": "bun test",
     "typecheck": "bun node_modules/typescript/lib/tsc.js --noEmit"
   },
