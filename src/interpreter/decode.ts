@@ -14,6 +14,7 @@
  */
 
 import { AnomalyLog } from "./anomalies.ts"
+import { MAX_PAYLOAD_DEPTH } from "../domain/limits.ts"
 
 export type DecodeFailure = {
   /** `unsupportedSchema` when a critical shape is wrong; `incomplete` when it is absent. */
@@ -202,7 +203,14 @@ export function decodeTestResults(payload: unknown): Decoded<RawTestResults> {
   }
 }
 
-function decodeNode(raw: unknown, path: string): Decoded<RawTestNode> {
+function decodeNode(raw: unknown, path: string, depth = 0): Decoded<RawTestNode> {
+  // Before the recursion, not inside it. A bound checked after descending is a
+  // bound that has already used the stack it was protecting (#97), and what
+  // came out of that was a `RangeError` from a decoder — a raw host error
+  // where a typed answer about the evidence belonged.
+  if (depth > MAX_PAYLOAD_DEPTH) {
+    return fail("unsupportedSchema", path, `the test hierarchy nests deeper than ${MAX_PAYLOAD_DEPTH} levels`)
+  }
   if (!isRecord(raw)) return fail("unsupportedSchema", path, `node is ${describe(raw)}`)
 
   const nodeType = raw["nodeType"]
@@ -227,7 +235,7 @@ function decodeNode(raw: unknown, path: string): Decoded<RawTestNode> {
       return fail("unsupportedSchema", `${path}.children`, `children is ${describe(rawChildren)}`)
     }
     for (const [index, child] of rawChildren.entries()) {
-      const decoded = decodeNode(child, `${path}.children[${index}]`)
+      const decoded = decodeNode(child, `${path}.children[${index}]`, depth + 1)
       if (!decoded.ok) return decoded
       children.push(decoded.value)
     }
@@ -426,8 +434,11 @@ export function decodeTestDetails(payload: unknown): Decoded<RawTestDetails> {
   }
 }
 
-function decodeActivities(value: unknown): RawActivity[] {
-  if (!Array.isArray(value)) return []
+function decodeActivities(value: unknown, depth = 0): RawActivity[] {
+  // Activities nest too, and this one has no failure to return: it drops what
+  // it cannot read. Past the bound it drops everything below, which is the
+  // same answer it already gives to an entry it does not recognize.
+  if (!Array.isArray(value) || depth > MAX_PAYLOAD_DEPTH) return []
   return value.flatMap((entry): RawActivity[] => {
     if (!isRecord(entry)) return []
     const title = stringOf(entry["title"]) ?? stringOf(entry["name"])
@@ -437,7 +448,7 @@ function decodeActivities(value: unknown): RawActivity[] {
       {
         title,
         ...(message === undefined ? {} : { message }),
-        children: decodeActivities(entry["childActivities"] ?? entry["children"]),
+        children: decodeActivities(entry["childActivities"] ?? entry["children"], depth + 1),
       },
     ]
   })

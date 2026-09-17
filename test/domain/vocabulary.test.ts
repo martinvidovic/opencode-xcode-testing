@@ -34,7 +34,7 @@ describe("the closed vocabularies", () => {
     expect(TEST_RUN_OUTCOMES).not.toContain("invalid" as never)
   })
 
-  test("name the twelve v1 infrastructure reasons", () => {
+  test("name the thirteen v1 infrastructure reasons", () => {
     expect([...INFRASTRUCTURE_REASONS]).toEqual([
       "processLaunchFailed",
       "processFailedWithoutDiagnostics",
@@ -48,6 +48,7 @@ describe("the closed vocabularies", () => {
       "unknownTestStatus",
       "interpretationTimedOut",
       "runnerFailure",
+      "adapterFailure",
     ])
   })
 

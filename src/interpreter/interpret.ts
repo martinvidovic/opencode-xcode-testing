@@ -137,6 +137,10 @@ const DEFECT_RANK: Record<InfrastructureReason, number> = {
   processLaunchFailed: 6,
   processFailedWithoutDiagnostics: 6,
   runnerFailure: 6,
+  // Never produced by interpretation: it is what the boundary above reports
+  // when interpretation itself threw, so it cannot compete with a reason
+  // interpretation reached.
+  adapterFailure: 6,
 }
 
 async function gather(

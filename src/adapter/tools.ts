@@ -35,9 +35,9 @@ import {
   type InspectArguments,
   type TestArguments,
 } from "./args.ts"
-import type { TestRunCancelled, TestToolResult } from "../domain/result.ts"
-import { SCHEMA_VERSION } from "../domain/result.ts"
-import { requestedScopeDigest, type RequestedScope } from "../domain/scope.ts"
+import type { TestRunCancelled, TestRunSummary, TestToolResult } from "../domain/result.ts"
+import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope, unobservedScope } from "../domain/result.ts"
+import type { RequestedScope } from "../domain/scope.ts"
 import type { RecoveryStatus } from "../runner/recovery.ts"
 import type { Budget } from "./budget.ts"
 import { DEFAULT_BUDGET } from "./budget.ts"
@@ -142,14 +142,170 @@ async function budgetFor(deps: ToolDeps): Promise<Budget> {
   }
 }
 
+/**
+ * The final `xcode_test` boundary (issue #97).
+ *
+ * Inspection and recovery have had this for a while and execution did not,
+ * which left the one path that spends minutes of someone's time as the one
+ * that could end as a raw host error. A decoder meeting a shape it did not
+ * expect, a renderer meeting a payload it could not render — either threw out
+ * of here carrying whatever the operating system put in the message, straight
+ * into a model's context, and took the admitted run id with it. The run had
+ * happened. Its evidence was on disk. There was simply no longer any way to
+ * ask about it, because the one identifier that addresses it was in the
+ * exception nobody caught.
+ *
+ * So: a contained failure keeps the run id and says `adapterFailure`, which is
+ * the honest name for it. Not `runnerFailure` — told that, a caller goes and
+ * looks at their toolchain for a defect in this code.
+ *
+ * Domain outcomes never come through here. A cancelled run, a failed build, a
+ * Result Bundle nobody could read: all of those are *returned*, and relabeling
+ * one as an adapter defect would be the same misdirection in the other
+ * direction.
+ */
 export async function executeTest(
   args: TestArguments,
   context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
-  const request = toTestRunRequest(args)
-  const budget = await budgetFor(deps)
   const startedAt = deps.now()
+
+  // The *promise*, not the value it eventually carries. A callback that sets a
+  // variable only helps when admission settles before the failure does, and
+  // nothing orders those two: a service can reject its result from an early
+  // throw while resolving admission a microtask later. Reading a variable that
+  // had not been written yet is how the run id would go on being lost by the
+  // code written to stop losing it.
+  const boundary: Boundary = { startedAt }
+
+  try {
+    return await runTest(args, context, deps, boundary)
+  } catch (error) {
+    return await containedFailure(error, boundary, deps)
+  }
+}
+
+/** What the boundary learns while the call runs, for use if it does not finish. */
+type Boundary = {
+  startedAt: number
+  /** Resolves if a run was ever admitted. Absent until the service is asked. */
+  admitted?: Promise<AdmittedRun>
+  /** The request the arguments mapped onto, so the handler need not re-map. */
+  request?: TestRunRequest
+}
+
+/**
+ * How long a contained failure waits to find out whether a run was admitted.
+ *
+ * Short, because by this point the answer almost always exists: the failure
+ * came from handling a result, and a result implies an admission. This covers
+ * the ordering where the two settle in the same tick and the wrong one is read
+ * first — not a genuine wait for the queue, which the caller has already had.
+ */
+export const ADMISSION_SETTLE_MS = 250
+
+/**
+ * Render a contained failure, and never throw doing it.
+ *
+ * The handler of a boundary cannot itself be a way out of the boundary, so the
+ * rendering is wrapped too and the last resort is a plain string. That path
+ * should never run, which is exactly the property that makes it worth having.
+ */
+async function containedFailure(
+  error: unknown,
+  boundary: Boundary,
+  deps: ToolDeps,
+): Promise<string> {
+  // Sanitized before it goes anywhere near a caller: an exception's message
+  // routinely carries the absolute path of whatever it was reading, and the
+  // model has no use for where on this machine a file lives (ADR 0002).
+  const message = `the Test Tool failed while handling this run: ${safeFailure(error)}`
+
+  const admitted =
+    boundary.admitted === undefined
+      ? undefined
+      : await waitFor(boundary.admitted, ADMISSION_SETTLE_MS, deps).then((settled) =>
+          settled.status === "settled" ? settled.value : undefined,
+        )
+
+  try {
+    const budget = await budgetFor(deps)
+    const result: TestToolResult =
+      admitted === undefined || boundary.request === undefined
+        ? {
+            schemaVersion: SCHEMA_VERSION,
+            outcome: "infrastructureFailed",
+            // Nothing was admitted, so there is no run to be a fact about.
+            // `resolving` is where a failure before admission happened,
+            // whatever inside it went wrong — and the reason names this tool
+            // rather than resolution, which did not fail.
+            phase: "resolving",
+            reason: "adapterFailure",
+            message,
+          }
+        : adapterFailure(
+            admitted,
+            boundary.request.requestedScope,
+            deps.now() - boundary.startedAt,
+            message,
+          )
+    return renderTestToolResult(result, budget).text
+  } catch {
+    // Everything above is ordinary code over a value just built, so this is
+    // unreachable — and a boundary whose handler can throw is not a boundary.
+    return admitted === undefined
+      ? `Test Run infrastructureFailed: adapterFailure\n\n${message}`
+      : `Test Run infrastructureFailed: adapterFailure\n\nrun            ${admitted.runId}\n\n${message}`
+  }
+}
+
+/**
+ * A summary for a run that was admitted and whose handling then failed.
+ *
+ * Every evidence field says `unknown` or `unavailable` rather than a plausible
+ * zero, because nothing here observed anything: the failure is in the reading,
+ * not in the run. The run id is the point — the evidence is retained under it,
+ * and `xcode_test_inspect` can still be asked about it.
+ */
+function adapterFailure(
+  admitted: AdmittedRun,
+  scope: RequestedScope,
+  elapsedMs: number,
+  message: string,
+): TestRunSummary {
+  const envelope = unobservedEnvelope({
+    runId: admitted.runId,
+    resolved: admitted.resolved,
+    scope: unobservedScope(scope, "unverifiable"),
+    timing: {
+      admittedAt: admitted.admittedAt,
+      queueDurationMs: admitted.queueDurationMs,
+      totalDurationMs: elapsedMs,
+    },
+    terminationTrigger: "none",
+    execObserved: "unknown",
+  })
+
+  return {
+    ...envelope,
+    outcome: "infrastructureFailed",
+    reason: "adapterFailure",
+    message,
+    diagnostics: NO_DIAGNOSTICS,
+  }
+}
+
+async function runTest(
+  args: TestArguments,
+  context: ToolContext,
+  deps: ToolDeps,
+  boundary: Boundary,
+): Promise<string> {
+  const request = toTestRunRequest(args)
+  boundary.request = request
+  const budget = await budgetFor(deps)
+  const startedAt = boundary.startedAt
 
   const publish = (state: ProtocolState, runId?: string) => {
     context.metadata?.({
@@ -169,6 +325,10 @@ export async function executeTest(
   }
 
   const handle = deps.service.start(request, { onState: (state) => publish(state) }, cancellation)
+  // Handed to the boundary synchronously, before anything can fail: it is the
+  // one identifier that addresses this run's evidence, and a failure must not
+  // be able to happen in the window before it is reachable.
+  boundary.admitted = handle.admitted
   void handle.admitted.then((admitted) => publish("admitted", admitted.runId)).catch(() => {})
 
   const settled = await raceAbort(handle.result, context, deps)
@@ -215,15 +375,7 @@ export function pendingCancellation(
     schemaVersion: SCHEMA_VERSION,
     runId: admitted.runId,
     resolved: admitted.resolved,
-    scope: {
-      kind: scope.kind,
-      digest: requestedScopeDigest(scope),
-      requestedSelectionCount: scope.kind === "selected" ? scope.tests.length : 0,
-      verdict: "unverifiable",
-      attestations: [],
-      shown: 0,
-      truncated: false,
-    },
+    scope: unobservedScope(scope, "unverifiable"),
     timing: {
       admittedAt: admitted.admittedAt,
       queueDurationMs: admitted.queueDurationMs,

@@ -40,6 +40,7 @@ export type InfrastructureReason =
   | "unknownTestStatus"
   | "interpretationTimedOut"
   | "runnerFailure"
+  | "adapterFailure"
 
 export const INFRASTRUCTURE_REASONS = [
   "processLaunchFailed",
@@ -54,6 +55,16 @@ export const INFRASTRUCTURE_REASONS = [
   "unknownTestStatus",
   "interpretationTimedOut",
   "runnerFailure",
+  /**
+   * The Test Tool itself failed, after a run had been admitted (issue #97).
+   *
+   * Distinct from `runnerFailure` on purpose, and the distinction is the whole
+   * reason it exists. `runnerFailure` says the machinery that runs
+   * `xcodebuild` went wrong; this says the adapter did — a decoder that threw
+   * on a payload it did not expect, a renderer that could not render. Told the
+   * first when the second happened, a caller goes to look at their toolchain.
+   */
+  "adapterFailure",
 ] as const
 
 /** Operational failures that can occur before a Test Run exists. */
