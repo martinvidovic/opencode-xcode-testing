@@ -36,6 +36,7 @@ type StubMode =
   | "silent"
   | "crash"
   | "hang"
+  | "ready-other-run"
   | `ready-then-linger:${number}`
 
 /**
@@ -114,6 +115,24 @@ async function runScripted(
   ).result
   return { result, states }
 }
+
+describe("a handshake that names a different run", () => {
+  test("does not count, however well-formed it is and wherever it arrives from", async () => {
+    // The channel says who is speaking; the identifier says what about. A
+    // `ready` for some other run on this run's descriptor is a protocol
+    // error, and accepting it would disarm this run's startup deadline on the
+    // strength of somebody else's startup — after which a supervisor that
+    // never really answered is left running with nothing watching for it.
+    await withSandbox(async (box) => {
+      const { result, states } = await runScripted(box, "ready-other-run")
+
+      if (!isTestRunSummary(result)) throw new Error(`expected a Test Run: ${result.outcome}`)
+      expect(result.outcome).toBe("infrastructureFailed")
+      expect(infrastructureReason(result)).toBe("runnerFailure")
+      expect(states).not.toContain("supervisorReady")
+    })
+  })
+})
 
 describe("a supervisor that never completes its handshake", () => {
   test("is a launching-phase runner failure", async () => {

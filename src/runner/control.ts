@@ -1,14 +1,21 @@
 /**
  * The supervisor control protocol (#3).
  *
- * The channel is private and inherited, and its handshake secret travels
- * through that channel — never a command-line argument, an environment
- * variable, or persisted plaintext metadata, all of which are readable by other
- * processes on the machine. Only the fixed message set below is accepted; an
+ * **Possession of the inherited pipe endpoint is the authentication.** The
+ * descriptors are created by the adapter and inherited by the process it
+ * spawns; nothing else on the machine holds them, and a process that does not
+ * hold one cannot send a frame at all. That is the whole boundary, and it is
+ * why the invocation travels through the channel rather than through a
+ * command line, an environment variable or persisted metadata — all of which
+ * other processes can read.
+ *
+ * The protocol carried a generated secret once, and it authenticated nothing
+ * (#115): it arrived inside the same frame it was supposed to vouch for, so
+ * every frame carried its own credential. What the protocol does enforce is
+ * sequencing — a `cancel` before a valid `hello` is about no run this process
+ * knows of, and is dropped. Only the fixed message set below is accepted; an
  * unrecognized frame is a protocol violation, not something to interpret.
  */
-
-import { randomBytes, timingSafeEqual } from "node:crypto"
 
 /**
  * The launch spec travels with the handshake, so the two are inseparable.
@@ -16,7 +23,6 @@ import { randomBytes, timingSafeEqual } from "node:crypto"
  * the supervisor reads is a shared contract, not a private shape.
  */
 export type LaunchSpec = {
-  secret: string
   homeDir: string
   trustedRoot: string
   runId: string
@@ -34,18 +40,6 @@ export type ControlMessage =
   | { type: "completed"; exitCode?: number; signal?: string }
 
 const MESSAGE_TYPES = new Set(["hello", "ready", "state", "cancel", "completed"])
-
-export function newChannelSecret(): string {
-  return randomBytes(32).toString("base64url")
-}
-
-/** Constant-time, so a wrong secret cannot be discovered one byte at a time. */
-export function secretMatches(expected: string, received: string): boolean {
-  const a = Buffer.from(expected, "utf8")
-  const b = Buffer.from(received, "utf8")
-  if (a.length !== b.length) return false
-  return timingSafeEqual(a, b)
-}
 
 export function encodeMessage(message: ControlMessage): string {
   return `${JSON.stringify(message)}\n`
