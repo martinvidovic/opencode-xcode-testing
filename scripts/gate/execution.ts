@@ -37,14 +37,13 @@ import {
   type OpencodeClient,
 } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
+import { gatePort } from "./ports.ts"
 import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
-const STUB_PORT = 45_795
-const HOST_PORT = 45_796
 
 /**
  * Copy this process's error stream to `sink` until the returned call undoes it.
@@ -123,6 +122,10 @@ export async function runExecutionGate(
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-"))
   const previousCwd = process.cwd()
   let stub: StubProvider | undefined
+  // Undone in the outer `finally`, not the inner one. Installed before the
+  // host is created, so a host that fails to come up would otherwise leave
+  // this process's error stream tee'd for the rest of the gate.
+  let restoreStderr: () => void = () => {}
 
   // Collected as the suite runs, because none of it can be recovered
   // afterwards: the projects are deleted, the host is gone, and the responses
@@ -141,17 +144,26 @@ export async function runExecutionGate(
     const passing = evidence.root(prepareProject(join(workspace, "passing"), "passing", options))
     const broken = evidence.root(prepareProject(join(workspace, "build-failed"), "buildFailed", options))
 
-    stub = startStubProvider(STUB_PORT)
+    stub = startStubProvider()
     process.chdir(passing)
 
     // The host runs in this process, so its own complaints go to this
     // process's error stream and nowhere a scenario result can see them. Tee'd
     // rather than swallowed: a plugin that failed to load says so here and
     // only here (#98).
-    const restoreStderr = teeStderr((text) => evidence.hostOutput(text))
+    restoreStderr = teeStderr((text) => evidence.hostOutput(text))
 
     const { client, server } = await createOpencode({
-      port: HOST_PORT,
+      // Chosen for this gate run rather than fixed (issue #125). Two gate
+      // runs overlapping used to pick the same two numbers, and a spawned
+      // `opencode serve` does not refuse a port somebody else holds — it
+      // reports that it is listening and answers, which is how a collision
+      // arrived as a scenario failure about something else entirely.
+      //
+      // The SDK reads the URL the host prints and builds its client from it,
+      // so what is passed here is the request and what it talks to is the
+      // answer.
+      port: gatePort(),
       config: {
         plugin: [PLUGIN],
         provider: stubProviderConfig(stub.baseURL),
@@ -169,7 +181,6 @@ export async function runExecutionGate(
       await scenarios(client, stub, { passing, broken }, watched, evidence)
     } finally {
       server.close()
-      restoreStderr()
     }
   } catch (error) {
     // Beside what already ran, not instead of it. Every scenario this suite
@@ -177,6 +188,7 @@ export async function runExecutionGate(
     // rather than replacing eleven results with one.
     watched(failure(SCENARIO["b2 execution"], `the stub-provider route could not be driven: ${safeFailure(error)}`))
   } finally {
+    restoreStderr()
     stub?.stop()
     process.chdir(previousCwd)
 

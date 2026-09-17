@@ -28,6 +28,7 @@ import {
   type OpencodeClient,
 } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
+import { gatePort } from "./ports.ts"
 import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
 import { schemaComplaints } from "./schemas.ts"
@@ -37,9 +38,6 @@ import { safeFailure } from "../../src/adapter/sanitize.ts"
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
 const TEMPLATES = join(REPO, "examples", "agent")
-
-/** A port nothing else is likely to hold, so the gate never adopts a running server. */
-const GATE_PORT = 45_729
 
 /** Records each scenario as it finishes; see `ScenarioSink`. */
 export async function runRegistrationGate(
@@ -90,7 +88,11 @@ export async function runRegistrationGate(
 
     process.chdir(marked)
     const { client, server } = await sdk.createOpencode({
-      port: GATE_PORT,
+      // Chosen for this gate run rather than fixed (issue #125); see
+      // `ports.ts` for why nothing is written down. The SDK builds its client
+      // from the URL the host prints, so this is the request and not the
+      // answer.
+      port: gatePort(),
       timeout: SERVER_BOOT_MS,
       config: { plugin: [PLUGIN] },
     })

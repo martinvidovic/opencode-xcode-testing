@@ -30,9 +30,6 @@ import { safeFailure } from "../../src/adapter/sanitize.ts"
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
 
-/** Its own port, so this never adopts the registration gate's host. */
-const PORT = 45_741
-
 /** Records its one scenario as it finishes; see `ScenarioSink`. */
 export async function runInstallationGate(
   record: ScenarioSink,
@@ -61,7 +58,7 @@ export async function runInstallationGate(
     roots.add(project)
     writeFileSync(join(project, ".opencode", "xcode-test.json"), '{ "schemaVersion": 1 }\n')
 
-    const host = await bootHost({ port: PORT, configDirectory, cwd: project })
+    const host = await bootHost({ configDirectory, cwd: project })
     let registered: string[]
     try {
       registered = await toolIds(host, project)
