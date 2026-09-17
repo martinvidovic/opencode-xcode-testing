@@ -14,6 +14,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import type { ProcessIdentity, ProcessProbe } from "../../src/runner/identity.ts"
+import type { Cancellation } from "../../src/runner/supervisor.ts"
 import { prepareStorage, storageFor, type Storage } from "../../src/runner/paths.ts"
 import type { RunRecord } from "../../src/runner/state.ts"
 import { writeRunRecord } from "../../src/runner/state.ts"
@@ -96,6 +97,38 @@ export const IMMEDIATE_ESCALATION = [
   { signal: "SIGTERM" as const, waitMs: 150 },
   { signal: "SIGKILL" as const, waitMs: 300 },
 ]
+
+/**
+ * A promise that never settles.
+ *
+ * Only useful as a deliberate stand-in for evidence that does not arrive —
+ * a child that never reports its exit, an observation that never resolves.
+ * A test that uses one is asserting that something else bounds the wait.
+ */
+export function never<T>(): Promise<T> {
+  return new Promise<T>(() => {})
+}
+
+/** A cancellation the test drives, in the shape supervision expects. */
+export function cancellable(): { cancellation: Cancellation; cancel: () => void } {
+  let aborted = false
+  let announce: () => void = () => {}
+  const whenAborted = new Promise<void>((resolve) => {
+    announce = resolve
+  })
+  return {
+    cancellation: {
+      get aborted() {
+        return aborted
+      },
+      whenAborted,
+    },
+    cancel() {
+      aborted = true
+      announce()
+    },
+  }
+}
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

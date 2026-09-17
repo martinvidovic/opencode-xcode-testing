@@ -27,6 +27,7 @@ import {
 } from "node:fs"
 import { join } from "node:path"
 
+import type { EvidenceFact, ExecutionEvidence } from "../domain/evidence.ts"
 import { isRecord } from "../domain/json.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
 import type { ResultProvenance, TestRunSummary, TestToolResult } from "../domain/result.ts"
@@ -457,12 +458,7 @@ async function superviseAndInterpret(
       terminationGraceExceeded: "unknown",
       descendantsConfirmedExited: record.descendantsConfirmedExited ?? "unknown",
     },
-    execution: {
-      execObserved: record.execObserved ?? "unknown",
-      ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }),
-      ...(record.signal === undefined ? {} : { signal: record.signal }),
-      successfulExit: record.signal !== undefined ? "no" : record.exitCode === 0 ? "yes" : "no",
-    },
+    execution: executionEvidenceFor(record),
     tool: readerFor(environment, resultBundlePath),
     clock: { now: environment.now },
     ...(input.cancellation === undefined ? {} : { signal: input.cancellation }),
@@ -685,13 +681,7 @@ export async function finalizeRecovered(
       terminationGraceExceeded: "unknown",
       descendantsConfirmedExited: record.descendantsConfirmedExited ?? "unknown",
     },
-    execution: {
-      execObserved: record.execObserved ?? "unknown",
-      ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }),
-      ...(record.signal === undefined ? {} : { signal: record.signal }),
-      successfulExit:
-        record.signal !== undefined ? "no" : record.exitCode === 0 ? "yes" : record.exitCode === undefined ? "unknown" : "no",
-    },
+    execution: executionEvidenceFor(record),
     tool: readerFor(environment, resultBundlePath),
     clock: { now: environment.now },
   })
@@ -1762,5 +1752,39 @@ function hashFile(hash: Hash, path: string, deadline: number): boolean {
     }
   } finally {
     closeSync(fd)
+  }
+}
+
+/**
+ * What a Run Record says about how the process ended (issue #114).
+ *
+ * One function because there were two, and they disagreed: the terminal path
+ * read a record with no `exitCode` as an unsuccessful exit, while the
+ * recovered path read the same record as `unknown`. The same run therefore
+ * described itself differently depending on which route published it, and the
+ * terminal one was wrong — a run whose exit nobody observed is reported to a
+ * model as a process that failed without diagnostics, which sends somebody
+ * looking for a defect in tests that may well have passed.
+ *
+ * No exit code and no signal means nobody saw it end. That is `unknown`, and
+ * `unknown` is a first-class answer here rather than a missing `no`.
+ */
+export function executionEvidenceFor(record: {
+  execObserved?: EvidenceFact
+  exitCode?: number
+  signal?: string
+}): ExecutionEvidence {
+  return {
+    execObserved: record.execObserved ?? "unknown",
+    ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }),
+    ...(record.signal === undefined ? {} : { signal: record.signal }),
+    successfulExit:
+      record.signal !== undefined
+        ? "no"
+        : record.exitCode === undefined
+          ? "unknown"
+          : record.exitCode === 0
+            ? "yes"
+            : "no",
   }
 }

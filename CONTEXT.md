@@ -44,6 +44,10 @@ _Avoid_: Lazy data, deep read
 The single permission to run `xcodebuild` under one trusted root. V1 serializes Test Runs per root, so holding the slot is what makes a run the active one; releasing it is what lets the next be admitted.
 _Avoid_: Lock, mutex, semaphore
 
+**Exit Evidence**:
+What a supervisor actually observed about how a Test Run's direct child ended — its exit code, its signal, or neither. It is separate from whether the process group drained: the group is read from the process table, and the child's end is reported by the runtime that owned it, so the two can disagree. Absent evidence is `unknown`, never a failed exit.
+_Avoid_: Exit info, exit result
+
 **Quarantine**:
 A hold on a trusted root's Execution Slot, raised when a Test Run's lifecycle could not be confirmed and cleared only on identity-safe evidence that nothing attributable to it is still running. It refuses new Test Runs with a reason rather than making them wait.
 _Avoid_: Lockout, freeze, block
