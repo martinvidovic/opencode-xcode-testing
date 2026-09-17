@@ -103,7 +103,7 @@ export async function runRegistrationGate(
       record(await markerScenario(client, unmarked))
       record(await agentScenario(client, marked))
     } finally {
-      server.close()
+      await server.close()
     }
   } catch (error) {
     // Recorded beside whatever already ran rather than instead of it: this

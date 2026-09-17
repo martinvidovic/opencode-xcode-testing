@@ -501,3 +501,35 @@ describe("the registration that goes with that storage", () => {
     })
   })
 })
+
+describe("registering a root that does not exist yet", () => {
+  test("is refused an answer rather than given a wrong one", () => {
+    // The defect behind #104, and the same class as the one #98 fixed for B2.
+    // A root is addressed by the key the host will use, and the host
+    // canonicalizes — which a path that does not exist yet cannot be. The
+    // install gate registered its project before creating it, got a key for a
+    // directory nothing ever creates, and left one root uncollected per run
+    // while every `existsSync` on the way politely declined to notice.
+    withHome((home) => {
+      const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-ws-"))
+      const roots = new DrivenRoots(home)
+      const absent = join(workspace, "not-created-yet")
+
+      // Registering it now cannot produce the key the host will use, and
+      // saying so is the point: there is no answer to give.
+      expect(roots.keyOf(absent)).not.toBe(keyed(home, drivenRoot(home, workspace, "not-created-yet")).rootKey)
+      rmSync(workspace, { recursive: true, force: true })
+    })
+  })
+
+  test("addresses the same storage the host does once it exists", () => {
+    withHome((home) => {
+      const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-ws-"))
+      const root = drivenRoot(home, workspace, "project")
+
+      // Created first, then registered: the order the gate now uses.
+      expect(new DrivenRoots(home).keyOf(root)).toBe(keyed(home, root).rootKey)
+      rmSync(workspace, { recursive: true, force: true })
+    })
+  })
+})
