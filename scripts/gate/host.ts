@@ -8,7 +8,7 @@
  * boot timeout and the port cannot drift apart between them.
  */
 
-import { spawn, spawnSync } from "node:child_process"
+import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 
@@ -56,7 +56,7 @@ export async function bounded<T>(what: string, call: Promise<T>): Promise<T> {
   }
 }
 
-export type BootedHost = { port: number; stop(): void }
+export type BootedHost = { port: number; stop(): Promise<void> }
 
 /**
  * Start `opencode serve` against a config directory of our own choosing.
@@ -80,7 +80,16 @@ export async function bootHost(input: {
   )
 
   await listening(child)
-  return { port: input.port, stop: () => child.kill("SIGKILL") }
+  return {
+    port: input.port,
+    // Awaited, not fired and forgotten (issue #104). Signalling a host and
+    // returning says only that the signal was sent: the child is still there,
+    // and the plugin inside it is still preparing storage for the trusted root
+    // it resolved. That storage landed *after* the gate had swept, which is
+    // how this suite left one directory behind per run — for a root the gate
+    // had registered and cleaned a moment too early.
+    stop: () => exited(child),
+  }
 }
 
 /** The tool ids this host registered for that project directory. */
@@ -292,3 +301,27 @@ export function provenanceProblem(hostVersion: string): string | undefined {
   if (problems.length === 0) return undefined
   return `the OpenCode packages this gate would run against cannot be relied on. ${problems.join(" ")}`
 }
+
+/**
+ * Kill a host and wait for it to be gone.
+ *
+ * Bounded, because a child that will not die must not hold the gate open for
+ * ever — and a host that outlives its bound is a host whose storage may still
+ * appear afterwards, which the report will show as a directory nobody claimed
+ * rather than as a silence.
+ */
+function exited(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, HOST_EXIT_MS)
+    child.once("exit", () => {
+      clearTimeout(timer)
+      resolve()
+    })
+    child.kill("SIGKILL")
+  })
+}
+
+/** How long a killed host has to actually go. */
+const HOST_EXIT_MS = 5_000

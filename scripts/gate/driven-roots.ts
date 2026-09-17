@@ -14,31 +14,19 @@
  * rather than a second copy of the same care.
  */
 
-import { existsSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs"
+import { existsSync, realpathSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 
-import { isRootKey, storageFor } from "../../src/runner/paths.ts"
-import { join } from "node:path"
+import { storageFor } from "../../src/runner/paths.ts"
 import { readRegistry, writeRegistry } from "../../src/runner/housekeeping.ts"
 import { withTryLock } from "../../src/runner/locks.ts"
 
 export class DrivenRoots {
   readonly #homeDir: string
   readonly #roots = new Map<string, string>()
-  readonly #openedAtMs: number | undefined
 
-  /**
-   * `collectUnclaimedSince` opts in to attributing storage this run caused but
-   * could not name, and is the moment the run began (issue #104).
-   *
-   * Opt-in, and explicitly so. It is the one rule here that deletes a
-   * directory nothing named, on an inference rather than a record, and a rule
-   * like that belongs at a call site that has decided to want it — not on by
-   * default for every caller that constructs one of these.
-   */
-  constructor(homeDir: string = homedir(), collectUnclaimedSince?: number) {
+  constructor(homeDir: string = homedir()) {
     this.#homeDir = homeDir
-    this.#openedAtMs = collectUnclaimedSince
   }
 
   /**
@@ -81,7 +69,7 @@ export class DrivenRoots {
    */
   clean(): string[] {
     const removed: string[] = []
-    for (const { key, path } of [...this.directories(), ...this.#unclaimed()]) {
+    for (const { key, path } of this.directories()) {
       try {
         rmSync(path, { recursive: true, force: true })
         removed.push(key)
@@ -99,65 +87,6 @@ export class DrivenRoots {
     // existed since the run that made it.
     this.#forget([...this.#roots.keys()].map((root) => storageFor(this.#homeDir, root).rootKey))
     return removed
-  }
-
-  /**
-   * Storage that appeared while this run was going and belongs to nobody.
-   *
-   * The B1 suite leaves one such directory per run, prepared and empty, for a
-   * trusted root the host resolves and the suite cannot name: it drives the
-   * host from directories it created, and what the host reports as a worktree
-   * is the host's own business (issue #104). Registering every path the suite
-   * knows about did not cover it, because the path is not one of them.
-   *
-   * So it is attributed rather than named. Three conditions together: created
-   * after this run opened, holding no runs at all, and not registered before
-   * this run opened. A real project's storage fails all three — it predates
-   * the run, it holds runs, and it was registered when someone last opened it.
-   *
-   * The registry condition is about *when*, not whether. The host registers
-   * whatever trusted root it resolved, so the orphan is registered — by this
-   * run, moments after creating it. Treating any registration as a claim was
-   * the first shape of this and it excluded exactly the directory it was
-   * written to collect.
-   */
-  #unclaimed(): Array<{ key: string; path: string }> {
-    const openedAtMs = this.#openedAtMs
-    if (openedAtMs === undefined) return []
-
-    const toolRoot = storageFor(this.#homeDir, this.#homeDir).toolRoot
-    const rootsDir = join(toolRoot, "roots")
-
-    let registered: Record<string, { lastSeenAtMs: number }>
-    let names: string[]
-    try {
-      registered = readRegistry(storageFor(this.#homeDir, this.#homeDir)).roots
-      names = readdirSync(rootsDir).filter(isRootKey)
-    } catch {
-      return []
-    }
-
-    const claimed = new Set([...this.#roots.keys()].map((root) => this.keyOf(root)))
-    const found: Array<{ key: string; path: string }> = []
-
-    for (const key of names) {
-      if (claimed.has(key)) continue
-      // A registration from before this run began belongs to a root someone
-      // was already using, whatever else is true of it. One made during the
-      // run is this run's own doing: the host registers whatever trusted root
-      // it resolved, which is how the directory came to exist at all.
-      const seenAtMs = registered[key]?.lastSeenAtMs
-      if (seenAtMs !== undefined && seenAtMs < openedAtMs) continue
-      const path = join(rootsDir, key)
-      try {
-        if (statSync(path).birthtimeMs < openedAtMs) continue
-        if (readdirSync(join(path, "runs")).length > 0) continue
-      } catch {
-        continue
-      }
-      found.push({ key, path })
-    }
-    return found
   }
 
   #forget(keys: readonly string[]): void {

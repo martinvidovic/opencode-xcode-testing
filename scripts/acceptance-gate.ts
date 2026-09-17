@@ -138,10 +138,7 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   // Every project root a suite makes a live host create, so the run can
   // collect the storage it caused. Shared rather than per-suite, because the
   // sweep is one pass at the end.
-  // Opted in to collecting storage this run caused but could not name: the
-  // B1 suite leaves one such directory per run, for a trusted root the host
-  // resolves and no suite can name (issue #104).
-  const roots = new DrivenRoots(undefined, Date.now())
+  const roots = new DrivenRoots()
 
   const toolchain = resolveToolchain()
   if (toolchain.status !== "resolved") return finish("failed", toolchain.message)

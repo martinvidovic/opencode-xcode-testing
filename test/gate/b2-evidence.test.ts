@@ -33,7 +33,7 @@ import { B2Evidence, worthKeeping } from "../../scripts/gate/b2-evidence.ts"
 import { DrivenRoots } from "../../scripts/gate/driven-roots.ts"
 import { evidenceDirectory, preserveEvidence, pruneEvidence } from "../../scripts/gate/forensics.ts"
 import { keyFor, renderReport, type RunReport } from "../../scripts/gate/report.ts"
-import { prepareStorage, storageFor, storageForRootKey } from "../../src/runner/paths.ts"
+import { prepareStorage, storageFor } from "../../src/runner/paths.ts"
 import { readRegistry, writeRegistry } from "../../src/runner/housekeeping.ts"
 import { field } from "../../src/adapter/document.ts"
 
@@ -502,65 +502,34 @@ describe("the registration that goes with that storage", () => {
   })
 })
 
-describe("storage a gate run caused but could not name", () => {
-  /**
-   * The B1 suite left one prepared, empty root directory per run, for a
-   * trusted root the host resolves and the suite cannot name (issue #104). It
-   * drives the host from directories it created, and what the host reports as
-   * a worktree is the host's own business — registering every path the suite
-   * knows about did not cover it, because the path is not one of them.
-   *
-   * So it is attributed rather than named: created after the run opened,
-   * holding no runs, and not registered before the run opened.
-   */
-  function prepared(home: string, key: string, options: { runs?: string[] } = {}): string {
-    const storage = storageForRootKey(home, key)
-    prepareStorage(storage)
-    for (const runId of options.runs ?? []) mkdirSync(join(storage.runsDir, runId), { recursive: true })
-    return storage.rootDir
-  }
-
-  const OPENED = Date.now()
-
-  test("is collected, though nothing in the run ever named it", () => {
+describe("registering a root that does not exist yet", () => {
+  test("is refused an answer rather than given a wrong one", () => {
+    // The defect behind #104, and the same class as the one #98 fixed for B2.
+    // A root is addressed by the key the host will use, and the host
+    // canonicalizes — which a path that does not exist yet cannot be. The
+    // install gate registered its project before creating it, got a key for a
+    // directory nothing ever creates, and left one root uncollected per run
+    // while every `existsSync` on the way politely declined to notice.
     withHome((home) => {
-      const orphan = prepared(home, "7".repeat(64))
-      // Registered by this run, moments after it created the directory —
-      // which is how the host behaves, and how the first version of this
-      // excluded exactly the directory it was written to collect.
-      writeRegistry(storageForRootKey(home, "7".repeat(64)), {
-        schemaVersion: 1,
-        roots: { ["7".repeat(64)]: { lastSeenAtMs: OPENED + 1_000 } },
-      })
+      const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-ws-"))
+      const roots = new DrivenRoots(home)
+      const absent = join(workspace, "not-created-yet")
 
-      expect(new DrivenRoots(home, OPENED).clean()).toEqual(["7".repeat(64)])
-      expect(existsSync(orphan)).toBe(false)
+      // Registering it now cannot produce the key the host will use, and
+      // saying so is the point: there is no answer to give.
+      expect(roots.keyOf(absent)).not.toBe(keyed(home, drivenRoot(home, workspace, "not-created-yet")).rootKey)
+      rmSync(workspace, { recursive: true, force: true })
     })
   })
 
-  test("leaves storage that was already there", () => {
-    // A real project's storage predates the run, holds runs, and was
-    // registered when someone last opened it. Any one of those is enough.
+  test("addresses the same storage the host does once it exists", () => {
     withHome((home) => {
-      const mine = prepared(home, "8".repeat(64), { runs: ["a".repeat(32)] })
-      writeRegistry(storageForRootKey(home, "8".repeat(64)), {
-        schemaVersion: 1,
-        roots: { ["8".repeat(64)]: { lastSeenAtMs: OPENED - 60_000 } },
-      })
+      const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-ws-"))
+      const root = drivenRoot(home, workspace, "project")
 
-      // Opened *after* that storage existed, which is the ordinary case.
-      expect(new DrivenRoots(home, OPENED + 60_000).clean()).toEqual([])
-      expect(existsSync(mine)).toBe(true)
-    })
-  })
-
-  test("leaves a root that holds runs, whenever it appeared", () => {
-    // Evidence is the one thing this may never take. A directory with a run
-    // in it is not an artefact of a gate run, whatever its timestamps say.
-    withHome((home) => {
-      const busy = prepared(home, "9".repeat(64), { runs: ["b".repeat(32)] })
-      expect(new DrivenRoots(home, OPENED).clean()).toEqual([])
-      expect(existsSync(busy)).toBe(true)
+      // Created first, then registered: the order the gate now uses.
+      expect(new DrivenRoots(home).keyOf(root)).toBe(keyed(home, root).rootKey)
+      rmSync(workspace, { recursive: true, force: true })
     })
   })
 })

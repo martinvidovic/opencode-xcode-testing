@@ -50,8 +50,15 @@ export async function runInstallationGate(
     // Registered so the run can collect the per-root storage a live host
     // creates for it. The project goes with the workspace below; that storage
     // would not, and nothing downstream can ever collect it (issue #98).
-    const project = roots.add(join(workspace, "project"))
+    // Created *before* it is registered (issue #104). `DrivenRoots` addresses
+    // a root by the key the host will use, and the host canonicalizes — which
+    // a path that does not exist yet cannot be. Registering first fell back to
+    // the path as written, produced a key for a directory nothing ever creates,
+    // and left this suite's storage uncollected once per run while every
+    // `existsSync` on the way politely declined to notice.
+    const project = join(workspace, "project")
     mkdirSync(join(project, ".opencode"), { recursive: true })
+    roots.add(project)
     writeFileSync(join(project, ".opencode", "xcode-test.json"), '{ "schemaVersion": 1 }\n')
 
     const host = await bootHost({ port: PORT, configDirectory, cwd: project })
@@ -59,7 +66,7 @@ export async function runInstallationGate(
     try {
       registered = await toolIds(host, project)
     } finally {
-      host.stop()
+      await host.stop()
     }
 
     const missing = TOOL_IDS.filter((id) => !registered.includes(id))
