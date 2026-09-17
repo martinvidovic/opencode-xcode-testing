@@ -18,6 +18,7 @@ import { createHash, randomBytes } from "node:crypto"
 import {
   constants,
   fstatSync,
+  type Stats,
   lstatSync,
   mkdirSync,
   openSync,
@@ -215,6 +216,35 @@ export function readPrivateFile(path: string): string {
 }
 
 /**
+ * Open a private file for appending, creating it if it is absent.
+ *
+ * The caller owns the descriptor and must close it. Three flags carry the
+ * whole guarantee. `O_NOFOLLOW` means a link planted at the name is refused
+ * rather than followed, which for an append-only write matters more than for
+ * a read: the target is added to rather than replaced, so a redirected write
+ * leaves nothing about the victim looking disturbed. `O_NONBLOCK` means a
+ * FIFO at that name answers immediately instead of blocking until somebody
+ * reads it — a wait with no deadline, no diagnostic and no way out; regular
+ * files, which are the only kind this returns, ignore it. And the `fstat`
+ * decides what was opened rather than what the name said.
+ */
+export function openPrivateAppendFile(path: string): number {
+  let fd: number
+  try {
+    fd = openSync(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      0o600,
+    )
+  } catch (error) {
+    throw refusalFor(path, error)
+  }
+
+  validate(path, fd)
+  return fd
+}
+
+/**
  * A private file of an exactly known size, as bytes.
  *
  * Bytes rather than text because the callers that know a file's exact size
@@ -249,18 +279,27 @@ export function openPrivateFile(path: string): { fd: number; size: number } {
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   } catch (error) {
-    // `O_NOFOLLOW` reports a symbolic link by refusing to open it. That is a
-    // rejected artifact, not a missing one, and the two must stay
-    // distinguishable to the caller deciding what to tell a model.
-    if (isSymlinkRefusal(error)) throw new UnsafeArtifactError(path, "is a symbolic link")
-    throw error
+    throw refusalFor(path, error)
   }
 
+  return { fd, size: validate(path, fd).size }
+}
+
+/**
+ * What an opened descriptor has to be before anything is done with it: a
+ * regular file, ours, and no more readable than that.
+ *
+ * Both openers decide it here rather than each for itself, because it is the
+ * half of the guarantee that does not depend on the flags — and a second copy
+ * of it is a second place for it to be relaxed. A descriptor that fails is
+ * closed on the way out; there is nothing a caller could do with one.
+ */
+function validate(path: string, fd: number): Stats {
   try {
     const stats = fstatSync(fd)
     if (!stats.isFile()) throw new UnsafeArtifactError(path, "is not a regular file")
     assertOwnedPrivately(path, stats.uid, stats.mode)
-    return { fd, size: stats.size }
+    return stats
   } catch (error) {
     closeSync(fd)
     throw error
@@ -400,6 +439,26 @@ function assertIsDirectory(path: string): void {
 function isSymlinkRefusal(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code
   return code === "ELOOP" || code === "EMLINK"
+}
+
+/**
+ * A refused open, said in this tool's terms.
+ *
+ * `O_NOFOLLOW` reports a symbolic link by refusing to open it, and that is a
+ * rejected artifact rather than a missing one — the two have to stay
+ * distinguishable to the caller deciding what to tell a model. The refusals
+ * that mean "that is not a regular file" arrive as several unrelated codes
+ * and none of them says so. Anything else is the kernel's own answer and is
+ * passed on unchanged.
+ */
+function refusalFor(path: string, error: unknown): unknown {
+  if (isSymlinkRefusal(error)) return new UnsafeArtifactError(path, "is a symbolic link")
+  const code = (error as { code?: unknown } | null)?.code
+  // A directory refuses a write outright; a socket cannot be opened by name at
+  // all; a FIFO nobody is reading answers `ENXIO` rather than blocking, which
+  // is the whole point of opening it without blocking.
+  const notAFile = code === "EISDIR" || code === "ENXIO" || code === "EOPNOTSUPP" || code === "ENOTSUP"
+  return notAFile ? new UnsafeArtifactError(path, "is not a regular file") : error
 }
 
 function isExists(error: unknown): boolean {
