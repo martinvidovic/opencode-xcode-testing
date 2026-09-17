@@ -186,20 +186,14 @@ export function assertSafeDirectory(path: string): void {
   assertOwnedPrivately(path, stats.uid, stats.mode)
 }
 
-/** The same guarantee for a file, checked without opening it. */
-export function assertSafeFile(path: string): void {
-  const stats = lstatSync(path)
-  if (stats.isSymbolicLink()) throw new UnsafeArtifactError(path, "is a symbolic link")
-  if (!stats.isFile()) throw new UnsafeArtifactError(path, "is not a regular file")
-  assertOwnedPrivately(path, stats.uid, stats.mode)
-}
-
 /**
  * Read a private file, checking the bytes that are actually returned.
  *
- * `assertSafeFile` followed by `readFileSync` names the path twice, and the
- * two calls need not reach the same file: the check and the read are a
- * time-of-check-to-time-of-use pair with a window between them. Opening once
+ * Checking a pathname and then reading that pathname names the path twice,
+ * and the two calls need not reach the same file: the check and the read are
+ * a time-of-check-to-time-of-use pair with a window between them, and there
+ * is no safe version of that pair, which is why no such helper exists to
+ * reach for. Opening once
  * with `O_NOFOLLOW` and validating the **descriptor** closes it — what is
  * checked and what is read are then the same object by construction, and a
  * link swapped in at any moment fails the open rather than redirecting it.
@@ -215,6 +209,29 @@ export function readPrivateFile(path: string): string {
       throw new UnsafeArtifactError(path, "is larger than a tool-managed file may be")
     }
     return readFileSync(handle.fd, "utf8")
+  } finally {
+    closeSync(handle.fd)
+  }
+}
+
+/**
+ * A private file of an exactly known size, as bytes.
+ *
+ * Bytes rather than text because the callers that know a file's exact size
+ * know it because the file is not text — a key, a digest — and a value that
+ * has been through a UTF-8 decoder is a different value that looks like the
+ * right one. The size is checked before the read, so a file that is not the
+ * expected thing is refused rather than loaded; and again after it, because
+ * `size` describes the moment of the `fstat` and the file can be truncated
+ * after it.
+ */
+export function readPrivateBytes(path: string, expected: number): Buffer {
+  const handle = openPrivateFile(path)
+  try {
+    if (handle.size !== expected) throw new UnsafeArtifactError(path, "is not the size it must be")
+    const bytes = readFileSync(handle.fd)
+    if (bytes.length !== expected) throw new UnsafeArtifactError(path, "changed size while being read")
+    return bytes
   } finally {
     closeSync(handle.fd)
   }
