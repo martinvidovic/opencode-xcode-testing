@@ -18,6 +18,8 @@ import { existsSync, realpathSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 
 import { storageFor } from "../../src/runner/paths.ts"
+import { readRegistry, writeRegistry } from "../../src/runner/housekeeping.ts"
+import { withTryLock } from "../../src/runner/locks.ts"
 
 export class DrivenRoots {
   readonly #homeDir: string
@@ -76,7 +78,35 @@ export class DrivenRoots {
         // knowing and is not a reason to fail a gate about the tool.
       }
     }
+
+    // The registration goes with the storage (issue #101). Removing the
+    // directory and leaving the entry was the shape this had, and it is how
+    // three gate runs added twelve registry entries against three surviving
+    // directories: the entries outlive everything they describe, and every
+    // later housekeeping pass reopens the question of a root that has not
+    // existed since the run that made it.
+    this.#forget([...this.#roots.keys()].map((root) => storageFor(this.#homeDir, root).rootKey))
     return removed
+  }
+
+  #forget(keys: readonly string[]): void {
+    const storage = storageFor(this.#homeDir, this.#homeDir)
+    try {
+      withTryLock(storage.registryLock, () => {
+        const registry = readRegistry(storage)
+        const roots = { ...registry.roots }
+        let changed = false
+        for (const key of keys) {
+          if (roots[key] === undefined) continue
+          delete roots[key]
+          changed = true
+        }
+        if (changed) writeRegistry(storage, { ...registry, roots })
+      })
+    } catch {
+      // A registry that cannot be written leaves entries behind, which the
+      // age policy collects eventually. It is not a reason to fail a gate.
+    }
   }
 }
 

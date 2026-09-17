@@ -14,7 +14,7 @@
  * to queue behind it and delay host startup.
  */
 
-import { readdirSync, renameSync, rmSync, statSync } from "node:fs"
+import { existsSync, readdirSync, renameSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 import { isRecord } from "../domain/json.ts"
@@ -166,6 +166,13 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
 
   for (const rootKey of surviving) {
     const rootStorage = environment.storageForRootKey(rootKey)
+
+    // A registered root with no directory has nothing to retain, and trying
+    // to take a lock inside a directory that is not there throws — which used
+    // to end the whole pass, leaving every root after it unmaintained because
+    // of one entry pointing at storage somebody had removed by hand.
+    if (!existsSync(rootStorage.rootDir)) continue
+
     const report = withTryLock(rootStorage.rootLock, () =>
       runRetention({
         storage: rootStorage,
@@ -250,6 +257,16 @@ function collectStaleRoots(
     // instead, which is the same rule applied to the only timestamp left.
     const age = lastSeenAtMs === undefined ? orphanAge(environment, rootKey, nowMs) : nowMs - lastSeenAtMs
     if (age === undefined || age <= STALE_ROOT_MAX_AGE_MS) continue
+
+    // An entry whose directory has already gone is the reverse orphan, and it
+    // is the commoner one: storage removed by hand, or by an earlier pass that
+    // could not finish. Nothing is left to delete, so the entry itself is what
+    // this collects — and it has to be collected, or every later pass reopens
+    // the same question about a root that no longer exists.
+    if (!existsSync(environment.storageForRootKey(rootKey).rootDir)) {
+      collected.push(rootKey)
+      continue
+    }
 
     const rootStorage = environment.storageForRootKey(rootKey)
 

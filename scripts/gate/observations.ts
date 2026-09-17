@@ -62,6 +62,8 @@ export type Observations = {
   evidence?: RunReport["evidence"]
   /** Which failed B2 scenario the kept evidence belongs to (issue #98). */
   b2Evidence?: RunReport["b2Evidence"]
+  /** What the tool occupies on this machine, measured (issue #101). */
+  storage?: RunReport["storage"]
   selected: Suite[]
   project?: boolean
   packages?: RunReport["packages"]
@@ -177,6 +179,7 @@ export function reportFrom(
     startedAt: observed.startedAt,
     finishedAt: new Date().toISOString(),
     ...(observed.evidence === undefined ? {} : { evidence: observed.evidence }),
+    ...(observed.storage === undefined ? {} : { storage: observed.storage }),
     ...(observed.b2Evidence === undefined || observed.b2Evidence.length === 0
       ? {}
       : { b2Evidence: observed.b2Evidence }),
