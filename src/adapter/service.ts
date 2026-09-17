@@ -56,7 +56,6 @@ import { createXcresultTool } from "../interpreter/xcresulttool.ts"
 import {
   decodeMessages,
   encodeMessage,
-  newChannelSecret,
   type ControlMessage,
 } from "../runner/control.ts"
 import { signallingIsSafe, systemProbe, type ProcessIdentity } from "../runner/identity.ts"
@@ -1072,11 +1071,9 @@ function runSupervisor(
       }, environment.exitDeadlineMs ?? SUPERVISOR_EXIT_DEADLINE_MS)
     }, environment.handshakeDeadlineMs ?? SUPERVISOR_STARTUP_DEADLINE_MS)
 
-    const secret = newChannelSecret()
     toSupervisor?.write(
       encodeMessage({
         type: "hello",
-        secret,
         homeDir: environment.homeDir,
         trustedRoot: environment.trustedRoot,
         runId: input.runId,

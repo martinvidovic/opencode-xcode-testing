@@ -17,6 +17,10 @@
  *   ready-then-linger:MS handshake at once, then take MS milliseconds to
  *                        finish — a healthy supervisor overseeing a Test Run
  *                        that outlasts its own startup deadline
+ *   ready-other-run      answer `ready` naming a different run, and otherwise
+ *                        behave — the frame is well-formed and arrives on the
+ *                        right descriptor, and is still not this run's
+ *                        handshake (#115)
  */
 
 import { createReadStream, createWriteStream } from "node:fs"
@@ -59,6 +63,14 @@ incoming.on("data", (chunk) => {
       // `HANG_BUDGET_MS` is two orders above any deadline these tests use, so
       // the adapter still gives up first and the stub still tests what it
       // tested. It is a leak bound, not a behaviour.
+      setTimeout(() => process.exit(0), HANG_BUDGET_MS)
+      continue
+    }
+    if (mode === "ready-other-run") {
+      // Answer, then stay up: what is under test is the adapter refusing to
+      // count that answer, and a stub that exited would end the run for a
+      // reason nobody was asking about.
+      control.write(encodeMessage({ type: "ready", runId: "f".repeat(32) }))
       setTimeout(() => process.exit(0), HANG_BUDGET_MS)
       continue
     }

@@ -142,6 +142,16 @@ export function monotonic(): () => number {
 
 export const STUB_PROCESS = join(import.meta.dir, "stub", "stub-process.ts")
 
+/** The real supervisor, for the tests that drive it as a process. */
+export const SUPERVISOR_ENTRYPOINT = join(
+  import.meta.dir,
+  "..",
+  "..",
+  "src",
+  "runner",
+  "supervisor-entry.ts",
+)
+
 export type ProcessEnd = { exitCode: number | null; signal: NodeJS.Signals | null; stderr: string }
 
 /**

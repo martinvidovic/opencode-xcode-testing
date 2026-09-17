@@ -26,9 +26,7 @@ import { systemProbe } from "../../src/runner/identity.ts"
 import { createRunDirectory } from "../../src/runner/paths.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { EXIT_PROTOCOL } from "../../src/runner/supervisor-entry.ts"
-import { sandbox, seedRun, sleep, spawnWithControlChannel } from "./harness.ts"
-
-const ENTRYPOINT = join(import.meta.dir, "..", "..", "src", "runner", "supervisor-entry.ts")
+import { sandbox, seedRun, sleep, spawnWithControlChannel, SUPERVISOR_ENTRYPOINT } from "./harness.ts"
 
 /** Long enough that the run is unmistakably still in progress when it matters. */
 const CHILD_SECONDS = 2
@@ -47,7 +45,7 @@ describe("a supervisor whose adapter has gone", () => {
       createRunDirectory(box.storage, runId)
       seedRun(box.storage, { runId, timeoutSeconds: 60 })
 
-      const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(ENTRYPOINT, {
+      const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(SUPERVISOR_ENTRYPOINT, {
         cwd: trustedRoot,
       })
 
@@ -60,7 +58,6 @@ describe("a supervisor whose adapter has gone", () => {
       toSupervisor?.write(
         encodeMessage({
           type: "hello",
-          secret: "s".repeat(32),
           homeDir: box.homeDir,
           trustedRoot,
           runId,
@@ -164,7 +161,7 @@ describe("a supervisor whose adapter has gone", () => {
     // supervisor that never learned what to run must not invent one.
     const trustedRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
     try {
-      const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(ENTRYPOINT, {
+      const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(SUPERVISOR_ENTRYPOINT, {
         cwd: trustedRoot,
       })
       fromSupervisor?.destroy()

@@ -40,6 +40,10 @@ _Avoid_: Log page, output slice
 Focused detail that can only be obtained by reopening the Result Bundle, as opposed to detail served from the immutable index. It degrades on its own — a mismatched digest or toolchain takes it away without affecting ordinary paging.
 _Avoid_: Lazy data, deep read
 
+**Control Channel**:
+The private pair of inherited pipe endpoints between the adapter and a supervisor process. Possession of an endpoint is what authenticates the two to each other — nothing else on the machine holds one — which is why the invocation travels through it rather than through a command line or the environment. Losing it means the adapter is gone, which the supervisor records and survives.
+_Avoid_: Control socket, IPC link
+
 **Execution Slot**:
 The single permission to run `xcodebuild` under one trusted root. V1 serializes Test Runs per root, so holding the slot is what makes a run the active one; releasing it is what lets the next be admitted.
 _Avoid_: Lock, mutex, semaphore

@@ -7,16 +7,17 @@
  * `xcodebuild` is still running, and a supervisor that had been linked to the
  * adapter's module graph would be a supervisor that dies with it.
  *
- * Everything it needs arrives over the private inherited control channel, so no
- * secret and no invocation detail is ever visible in `ps` output or the
- * environment.
+ * Everything it needs arrives over the private inherited control channel, so
+ * no invocation detail is ever visible in `ps` output or the environment.
+ * Holding that channel's endpoint is what authenticates the adapter to this
+ * process (see `control.ts`).
  */
 
 import { createReadStream, createWriteStream } from "node:fs"
 import { join } from "node:path"
 
 import { monotonicNow } from "../domain/clock.ts"
-import { decodeMessages, encodeMessage, secretMatches, type LaunchSpec } from "./control.ts"
+import { decodeMessages, encodeMessage, type LaunchSpec } from "./control.ts"
 import { spawnGatedChild } from "./gate.ts"
 import { systemProbe } from "./identity.ts"
 import { isRunId, RUN_ARTIFACTS, runDirectory, storageFor, type Storage } from "./paths.ts"
@@ -45,7 +46,7 @@ class ControlChannel {
   readonly #stream = createReadStream("", { fd: CONTROL_READ_FD })
   readonly #writer = createWriteStream("", { fd: CONTROL_WRITE_FD })
   #buffer = ""
-  #secret: string | undefined
+  #handshaken = false
   #aborted = false
   #announce: () => void = () => {}
 
@@ -150,14 +151,20 @@ class ControlChannel {
     for (const message of messages) {
       if (message.type === "hello") {
         const spec = parseSpec(message as unknown as Partial<SupervisorLaunchSpec>)
-        this.#secret = spec?.secret
+        // Latched, never re-assigned. A handshake cannot be taken back — the
+        // adapter says the same of its own half — and assigning here would let
+        // a later malformed `hello` un-handshake a live run, after which every
+        // cancellation is silently dropped and only the deadline can end it.
+        if (spec !== undefined) this.#handshaken = true
         this.#onSpec?.(spec)
         continue
       }
       if (message.type === "cancel") {
-        // Only an authenticated channel may cancel. An unauthenticated frame on
-        // a private channel is a protocol violation, not a cancellation.
-        if (this.#secret === undefined) continue
+        // Only after the handshake. A `cancel` that arrives before this
+        // process knows which run it is supervising cannot be about that run.
+        // The channel itself is the authentication (see `control.ts`); this is
+        // sequencing, which the channel cannot provide.
+        if (!this.#handshaken) continue
         this.#aborted = true
         this.#announce()
       }
@@ -167,7 +174,6 @@ class ControlChannel {
 
 function parseSpec(candidate: Partial<SupervisorLaunchSpec>): SupervisorLaunchSpec | undefined {
   if (
-    typeof candidate.secret !== "string" ||
     typeof candidate.homeDir !== "string" ||
     typeof candidate.trustedRoot !== "string" ||
     // Validated here rather than trusted: this is the supervisor's boundary,
@@ -253,8 +259,6 @@ export function logPathFor(storage: Storage, runId: string): string {
 function selfIdentity(): RunRecord["supervisor"] {
   return systemProbe.identify(process.pid) ?? { pid: process.pid, startedAt: "unknown" }
 }
-
-export { secretMatches }
 
 /**
  * True when this module is the process's entry, rather than merely imported.
