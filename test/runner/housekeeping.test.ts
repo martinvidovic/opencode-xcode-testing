@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { acquireLock } from "../../src/runner/locks.ts"
@@ -150,6 +150,205 @@ describe("the registry", () => {
       mkdirSync(box.storage.registryDir, { recursive: true, mode: 0o700 })
       Bun.write(box.storage.registryFile, "{ not json")
       expect(readRegistry(box.storage)).toEqual({ schemaVersion: 1, roots: {} })
+    })
+  })
+})
+
+describe("a root nobody has opened for two months", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+  const STALE = "c".repeat(64)
+  const FRESH = "d".repeat(64)
+
+  /** Two registered roots, one long unopened, both with storage on disk. */
+  function twoRoots(box: Sandbox, nowMs: number): { stale: string; fresh: string } {
+    for (const rootKey of [STALE, FRESH]) {
+      mkdirSync(join(box.storage.toolRoot, "roots", rootKey, "runs"), { recursive: true })
+      // `0600`, because coordination state is read under the same owner-only
+      // rule as everything else the runner writes — a fixture at `0644` is
+      // rejected, which is the read failing closed rather than the test
+      // arranging something impossible.
+      writeFileSync(
+        join(box.storage.toolRoot, "roots", rootKey, "queue.json"),
+        JSON.stringify({ schemaVersion: 1, nextSequence: 1, tickets: [] }),
+        { mode: 0o600 },
+      )
+    }
+    writeRegistry(box.storage, {
+      schemaVersion: 1,
+      roots: {
+        [STALE]: { lastSeenAtMs: nowMs - 90 * DAY_MS },
+        [FRESH]: { lastSeenAtMs: nowMs - DAY_MS },
+      },
+    })
+    return {
+      stale: join(box.storage.toolRoot, "roots", STALE),
+      fresh: join(box.storage.toolRoot, "roots", FRESH),
+    }
+  }
+
+  test("is collected whole, and one opened yesterday is not", () => {
+    // The only signal there is. The registry stores a hash and a timestamp by
+    // design and never a path, so nothing here can ask whether a repository
+    // still exists — which is the privacy property, and also why an age policy
+    // is the whole of what stale collection can be. Without one these
+    // directories are permanent: 344 had accumulated on the machine where this
+    // was written, against a handful of real projects.
+    withSandbox((box) => {
+      const paths = twoRoots(box, NOW)
+      const outcome = housekeep(box, NOW)
+
+      expect(outcome.status).toBe("ran")
+      expect(outcome.status === "ran" ? outcome.staleRoots : []).toEqual([STALE])
+      expect(existsSync(paths.stale)).toBe(false)
+      expect(existsSync(paths.fresh)).toBe(true)
+    })
+  })
+
+  test("loses its registry entry with its directory, not before or instead", () => {
+    // An entry left behind would have every later pass collect the same root
+    // for ever; an entry removed first would leave a directory nothing knows
+    // about, which is the accumulation this exists to end.
+    withSandbox((box) => {
+      twoRoots(box, NOW)
+      housekeep(box, NOW)
+
+      const roots = readRegistry(box.storage).roots
+      expect(Object.keys(roots)).toEqual([FRESH])
+    })
+  })
+
+  test("is left alone while an instance holds its lock", () => {
+    // A held root lock is the clearest possible evidence that a root is not
+    // stale: something is using it right now.
+    withSandbox((box) => {
+      const paths = twoRoots(box, NOW)
+      const held = acquireLock(join(paths.stale, "root.lock"))
+      try {
+        const outcome = housekeep(box, NOW)
+        expect(outcome.status === "ran" ? outcome.staleRoots : ["x"]).toEqual([])
+        expect(existsSync(paths.stale)).toBe(true)
+        expect(readRegistry(box.storage).roots[STALE]).toBeDefined()
+      } finally {
+        held.release()
+      }
+    })
+  })
+
+  test("is not retained against the byte targets of the roots that survive", () => {
+    // Collected before the user-wide total is taken, or a single pass evicts
+    // evidence from live roots to make room for storage it then deletes.
+    withSandbox((box) => {
+      const paths = twoRoots(box, NOW)
+      const outcome = housekeep(box, NOW)
+
+      expect(outcome.status === "ran" ? Object.keys(outcome.reports) : []).not.toContain(STALE)
+      expect(existsSync(paths.stale)).toBe(false)
+    })
+  })
+})
+
+describe("what stale collection refuses to touch", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+  const KEY = "e".repeat(64)
+
+  /** One long-unopened root, with whatever coordination state a test wants. */
+  function longUnopened(box: Sandbox, queue: unknown): string {
+    const rootDir = join(box.storage.toolRoot, "roots", KEY)
+    mkdirSync(join(rootDir, "runs"), { recursive: true })
+    writeFileSync(join(rootDir, "queue.json"), JSON.stringify(queue), { mode: 0o600 })
+    writeRegistry(box.storage, {
+      schemaVersion: 1,
+      roots: { [KEY]: { lastSeenAtMs: NOW - 90 * DAY_MS } },
+    })
+    return rootDir
+  }
+
+  const idle = { schemaVersion: 1, nextSequence: 1, tickets: [] }
+
+  test("a root holding the execution slot, whatever its timestamp says", () => {
+    // The slot means a run is live in there. The root lock is taken around
+    // admission transitions and not for a build's duration, so holding it
+    // proves only that nothing was changing the queue at that instant.
+    withSandbox((box) => {
+      const rootDir = longUnopened(box, { ...idle, activeRunId: "a".repeat(32) })
+      const outcome = housekeep(box, NOW)
+
+      expect(outcome.status === "ran" ? outcome.staleRoots : ["x"]).toEqual([])
+      expect(existsSync(rootDir)).toBe(true)
+    })
+  })
+
+  test("a quarantined root, which is state a recovery pass has to find", () => {
+    // Sixty days of silence is not permission to discard it.
+    withSandbox((box) => {
+      const rootDir = longUnopened(box, {
+        ...idle,
+        quarantine: { runId: "a".repeat(32), reason: "terminationUnconfirmed", since: 1 },
+      })
+      const outcome = housekeep(box, NOW)
+
+      expect(outcome.status === "ran" ? outcome.staleRoots : ["x"]).toEqual([])
+      expect(existsSync(rootDir)).toBe(true)
+    })
+  })
+
+  test("a root whose coordination state cannot be read at all", () => {
+    // Nothing can say it is idle, and the answer to that is to leave it rather
+    // than delete it and find out.
+    withSandbox((box) => {
+      const rootDir = join(box.storage.toolRoot, "roots", KEY)
+      mkdirSync(join(rootDir, "runs"), { recursive: true })
+      writeFileSync(join(rootDir, "queue.json"), "{ not json", { mode: 0o600 })
+      writeRegistry(box.storage, {
+        schemaVersion: 1,
+        roots: { [KEY]: { lastSeenAtMs: NOW - 90 * DAY_MS } },
+      })
+
+      const outcome = housekeep(box, NOW)
+      expect(outcome.status === "ran" ? outcome.staleRoots : ["x"]).toEqual([])
+      expect(existsSync(rootDir)).toBe(true)
+    })
+  })
+})
+
+describe("a root directory nobody registered", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+  const ORPHAN = "f".repeat(64)
+
+  /** Storage with no registry entry — a crash between the two writes. */
+  function orphan(box: Sandbox, ageDays: number): string {
+    const rootDir = join(box.storage.toolRoot, "roots", ORPHAN)
+    mkdirSync(join(rootDir, "runs"), { recursive: true })
+    writeFileSync(join(rootDir, "queue.json"), JSON.stringify({ schemaVersion: 1, nextSequence: 1, tickets: [] }), {
+      mode: 0o600,
+    })
+    const when = new Date(NOW - ageDays * DAY_MS)
+    utimesSync(rootDir, when, when)
+    writeRegistry(box.storage, { schemaVersion: 1, roots: {} })
+    return rootDir
+  }
+
+  test("is collected by its own age, because no policy can otherwise see it", () => {
+    // The registry entry is the only record that a root exists, so storage
+    // without one is invisible to every policy including this one — and the
+    // entry and the directory are written by different calls, so a crash
+    // between them leaves exactly this.
+    withSandbox((box) => {
+      const rootDir = orphan(box, 90)
+      const outcome = housekeep(box, NOW)
+
+      expect(outcome.status === "ran" ? outcome.staleRoots : []).toEqual([ORPHAN])
+      expect(existsSync(rootDir)).toBe(false)
+    })
+  })
+
+  test("is left alone while it is young, which is what a live root looks like", () => {
+    // Storage is prepared before the registry entry is written, so a root
+    // being created right now is briefly indistinguishable from an orphan.
+    withSandbox((box) => {
+      const rootDir = orphan(box, 0)
+      housekeep(box, NOW)
+      expect(existsSync(rootDir)).toBe(true)
     })
   })
 })

@@ -73,7 +73,9 @@ export function rootKeyFor(canonicalTrustedRoot: string): string {
  *
  * Checked wherever a key arrives from durable state rather than from the
  * function above, because a key names a directory that housekeeping renames
- * and recursively deletes.
+ * and recursively deletes. A shared build cache is keyed the same way and by
+ * the same rule (issue #96), so it is checked with the same function rather
+ * than with a second copy of the same regular expression.
  */
 export function isRootKey(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
@@ -136,7 +138,19 @@ export function sharedDerivedDataFor(storage: Storage, canonicalContainerPath: s
   const key = createHash("sha256")
     .update(`xcode-container ${canonicalContainerPath}`, "utf8")
     .digest("hex")
-  return join(storage.rootDir, RUN_ARTIFACTS.derivedData, key)
+  return join(sharedCacheRoot(storage), key)
+}
+
+/**
+ * Where a root's shared build caches live, as a directory to be walked.
+ *
+ * Here rather than assembled by retention, for the reason `storageForRootKey`
+ * gives: layout is this file's business, and a caller that joins its own path
+ * to reclaim bytes is a caller that keeps working after the layout moves and
+ * silently reclaims nothing.
+ */
+export function sharedCacheRoot(storage: Storage): string {
+  return join(storage.rootDir, RUN_ARTIFACTS.derivedData)
 }
 
 /** Create every directory the runner needs, owner-only, before anything runs. */
