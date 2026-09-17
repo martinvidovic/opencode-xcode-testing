@@ -27,6 +27,17 @@ export const ESCALATION_BUDGET_MS = ESCALATION.reduce((total, step) => total + s
 export const DRAIN_BUDGET_MS = 5_000
 
 /**
+ * How long to wait for a child to say how it ended, once escalation is over.
+ *
+ * Escalation has already run its whole schedule by this point, ending in
+ * `SIGKILL`, so a child that has still not reported is one whose evidence is
+ * not coming. Waiting longer would not produce it — and this wait is taken by
+ * the process holding the run's Execution Slot, so waiting for ever is how a
+ * root stops accepting work with nobody able to say why.
+ */
+export const EXIT_EVIDENCE_BUDGET_MS = 5_000
+
+/**
  * The first trigger wins, and nothing later can displace it.
  *
  * `toolFailure` is the one conditional case: channel loss or a runner-side
@@ -87,13 +98,24 @@ export function descendantsConfirmedExited(observation: {
   return "yes"
 }
 
-/** An unconfirmed or uncertain lifecycle holds the root's execution slot. */
+/**
+ * An unconfirmed or uncertain lifecycle holds the root's execution slot.
+ *
+ * `childExitConfirmed` is separate from `descendantsConfirmedExited` because
+ * they are different observations that can disagree. The group being empty is
+ * read from the process table; the child's exit is reported by the runtime
+ * that owns it. A direct child whose exit never arrived is unconfirmed even
+ * when the group it led looks gone, and the slot is the thing that must not be
+ * handed to the next run on the strength of the weaker of the two.
+ */
 export function quarantineRequired(evidence: {
+  childExitConfirmed: EvidenceFact
   descendantsConfirmedExited: EvidenceFact
   durableStateUncertain: boolean
   logCaptureIncomplete: boolean
 }): boolean {
   return (
+    evidence.childExitConfirmed !== "yes" ||
     evidence.descendantsConfirmedExited !== "yes" ||
     evidence.durableStateUncertain ||
     evidence.logCaptureIncomplete

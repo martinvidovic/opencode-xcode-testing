@@ -29,6 +29,7 @@ import {
   descendantsConfirmedExited,
   DRAIN_BUDGET_MS,
   ESCALATION,
+  EXIT_EVIDENCE_BUDGET_MS,
   quarantineRequired,
   runnerFailureApplies,
   TerminationTrigger,
@@ -64,6 +65,8 @@ export type SupervisionPorts = {
   /** Injectable so the stub suite can prove the ordering without real waits. */
   escalation?: typeof ESCALATION
   startupDeadlineMs?: number
+  /** Injectable for the same reason as the escalation schedule. */
+  exitEvidenceBudgetMs?: number
 }
 
 export type SupervisionResult = {
@@ -92,7 +95,9 @@ export async function superviseRun(
 
   // Cancelled before there is anything to terminate: no trigger, no request.
   if (isCancelled(ports.cancellation)) {
-    return cancelledBeforeLaunch(record, trigger)
+    // Nothing has been spawned, so there is nothing whose exit could be in
+    // doubt.
+    return cancelledBeforeLaunch(ports, record, trigger, "yes")
   }
 
   const child = ports.spawn()
@@ -104,15 +109,8 @@ export async function superviseRun(
   )
 
   if (recorded === "expired" || recorded === undefined) {
-    child.abandon()
-    await child.exited
-    return {
-      record,
-      trigger: trigger.trigger,
-      termination: evidenceOf(trigger, { descendants: "yes" }),
-      execution: { execObserved: "no", successfulExit: "no" },
-      failure: { reason: "runnerFailure", phase: "launching" },
-    }
+    const gone = await abandon(ports, child)
+    return unlaunched(ports, record, trigger, gone, { reason: "runnerFailure", phase: "launching" })
   }
 
   record = advance(ports.storage, record, "childRecorded", {
@@ -122,9 +120,8 @@ export async function superviseRun(
   // Cancelling here terminates a gated child that never executed Xcode, which
   // is a cooperative exit rather than a termination request.
   if (isCancelled(ports.cancellation)) {
-    child.abandon()
-    await child.exited
-    return cancelledBeforeLaunch(record, trigger)
+    const gone = await abandon(ports, child)
+    return cancelledBeforeLaunch(ports, record, trigger, gone)
   }
 
   const startedAt = ports.timestamp()
@@ -133,15 +130,11 @@ export async function superviseRun(
   } catch {
     // Authorization that cannot be persisted is authorization that recovery
     // could not reason about, so the child is never released.
-    child.abandon()
-    await child.exited
-    return {
-      record,
-      trigger: trigger.trigger,
-      termination: evidenceOf(trigger, { descendants: "yes" }),
-      execution: { execObserved: "no", successfulExit: "no" },
-      failure: { reason: "processLaunchFailed", phase: "launching" },
-    }
+    const gone = await abandon(ports, child)
+    return unlaunched(ports, record, trigger, gone, {
+      reason: "processLaunchFailed",
+      phase: "launching",
+    })
   }
 
   const launchedAt = ports.now()
@@ -170,9 +163,15 @@ export async function superviseRun(
     await terminate(ports, trigger, recorded)
   }
 
-  const exit = await child.exited
+  // Bounded, both of them (issue #114). Escalation has already run to
+  // `SIGKILL` by here, so a child that has still not reported how it ended is
+  // one whose evidence is not coming — and the process doing the waiting is
+  // the one holding this run's Execution Slot. The two are separate promises
+  // on an interface, so bounding only the first would move the wait rather
+  // than end it.
   const processDurationMs = ports.now() - launchedAt
-  const execObserved = await child.execObserved
+  const observed = await observeExit(ports, child)
+  const execObserved = await observeExecution(ports, child)
 
   const drained = await drain(ports, recorded.pgid)
   const descendants = descendantsConfirmedExited({
@@ -196,6 +195,7 @@ export async function superviseRun(
   }
 
   const quarantine = quarantineRequired({
+    childExitConfirmed: observed.confirmed,
     descendantsConfirmedExited: descendants,
     durableStateUncertain,
     logCaptureIncomplete: descendants !== "yes",
@@ -207,8 +207,8 @@ export async function superviseRun(
     terminationTrigger: trigger.trigger,
     execObserved,
     descendantsConfirmedExited: descendants,
-    ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
-    ...(exit.signal === undefined ? {} : { signal: exit.signal }),
+    ...(observed.exit.exitCode === undefined ? {} : { exitCode: observed.exit.exitCode }),
+    ...(observed.exit.signal === undefined ? {} : { signal: observed.exit.signal }),
     ...(quarantine === undefined ? {} : { quarantined: true, quarantineReason: quarantine }),
     // Recorded whether or not it became the trigger. Losing it when something
     // else fixed the outcome first would leave recovery unable to tell an
@@ -221,7 +221,7 @@ export async function superviseRun(
     record,
     trigger: trigger.trigger,
     termination: evidenceOf(trigger, { descendants }),
-    execution: executionEvidence(execObserved, exit),
+    execution: executionEvidence(execObserved, observed),
     ...(interruptionPhase === undefined ? {} : { interruptionPhase }),
     ...(deadlineCrossedPhase === undefined ? {} : { deadlineCrossedPhase }),
     ...(quarantine === undefined ? {} : { quarantine }),
@@ -255,16 +255,82 @@ function persistTrigger(
 }
 
 function cancelledBeforeLaunch(
+  ports: SupervisionPorts,
   record: RunRecord,
   trigger: TerminationTrigger,
+  gone: EvidenceFact,
 ): SupervisionResult {
   return {
-    record,
-    trigger: trigger.trigger,
-    termination: evidenceOf(trigger, { descendants: "yes" }),
-    execution: { execObserved: "no", successfulExit: "no" },
+    ...unlaunchedEvidence(ports, record, trigger, gone),
     interruptionPhase: "launching",
   }
+}
+
+/**
+ * Refuse the gate, then look — briefly — for evidence that it went.
+ *
+ * An abandoned gate exits without executing Xcode, which is why none of these
+ * branches has anything to escalate. But "it will exit" is a prediction, and
+ * waiting for it without a bound is the same defect one step earlier than the
+ * one this issue is about: the wait happens before authorization, where there
+ * is not even a deadline running.
+ */
+async function abandon(ports: SupervisionPorts, child: GatedChild): Promise<EvidenceFact> {
+  child.abandon()
+  return (await observeExit(ports, child)).confirmed
+}
+
+/**
+ * The common shape of a run that ended before Xcode was ever released to run.
+ *
+ * `execObserved` is `no` rather than `unknown` on every one of these paths,
+ * and that is knowledge rather than assumption: the gate cannot `exec`
+ * anything until it has read an authorization that was never written. What is
+ * not known is whether the gate process itself has gone — so when its exit was
+ * not observed, the run says so, holds the Execution Slot, and leaves recovery
+ * to clear it on evidence rather than on optimism.
+ */
+function unlaunchedEvidence(
+  ports: SupervisionPorts,
+  record: RunRecord,
+  trigger: TerminationTrigger,
+  gone: EvidenceFact,
+): SupervisionResult {
+  if (gone === "yes") {
+    return {
+      record,
+      trigger: trigger.trigger,
+      termination: evidenceOf(trigger, { descendants: "yes" }),
+      execution: { execObserved: "no", successfulExit: "no" },
+    }
+  }
+
+  const quarantine = "the gated child's exit was never observed"
+  return {
+    // Written down, not merely returned: a slot held by nothing but a returned
+    // value is a slot recovery cannot reason about.
+    record: advance(ports.storage, record, "executionCompleted", {
+      terminationTrigger: trigger.trigger,
+      execObserved: "no",
+      descendantsConfirmedExited: gone,
+      quarantined: true,
+      quarantineReason: quarantine,
+    }),
+    trigger: trigger.trigger,
+    termination: evidenceOf(trigger, { descendants: gone }),
+    execution: { execObserved: "no", successfulExit: "unknown" },
+    quarantine,
+  }
+}
+
+function unlaunched(
+  ports: SupervisionPorts,
+  record: RunRecord,
+  trigger: TerminationTrigger,
+  gone: EvidenceFact,
+  failure: { reason: InfrastructureReason; phase: "launching" },
+): SupervisionResult {
+  return { ...unlaunchedEvidence(ports, record, trigger, gone), failure }
 }
 
 type RaceOutcome = "exited" | "cancelled" | "timedOut"
@@ -368,13 +434,38 @@ function evidenceOf(
   }
 }
 
-function executionEvidence(execObserved: EvidenceFact, exit: ChildExit): ExecutionEvidence {
+function executionEvidence(execObserved: EvidenceFact, observed: ExitObservation): ExecutionEvidence {
+  // An exit nobody saw is `unknown`, not a failure. "It did not exit
+  // successfully" is a claim about the run; the truth is that this supervisor
+  // never learned how it ended, and a caller told the first would go looking
+  // for a defect in tests that may well have passed.
+  if (observed.confirmed !== "yes") return { execObserved, successfulExit: "unknown" }
+
+  const exit = observed.exit
   return {
     execObserved,
     ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
     ...(exit.signal === undefined ? {} : { signal: exit.signal }),
     successfulExit: exit.signal !== undefined ? "no" : exit.exitCode === 0 ? "yes" : "no",
   }
+}
+
+/** How a child ended, and whether that is something anybody actually saw. */
+type ExitObservation = { exit: ChildExit; confirmed: EvidenceFact }
+
+async function observeExit(ports: SupervisionPorts, child: GatedChild): Promise<ExitObservation> {
+  const seen = await observed(ports, child.exited)
+  return seen === undefined ? { exit: {}, confirmed: "unknown" } : { exit: seen, confirmed: "yes" }
+}
+
+async function observeExecution(ports: SupervisionPorts, child: GatedChild): Promise<EvidenceFact> {
+  return (await observed(ports, child.execObserved)) ?? "unknown"
+}
+
+/** Whatever `work` produced inside the evidence budget, or nothing. */
+async function observed<T>(ports: SupervisionPorts, work: Promise<T>): Promise<T | undefined> {
+  const seen = await withDeadline(ports, work, ports.exitEvidenceBudgetMs ?? EXIT_EVIDENCE_BUDGET_MS)
+  return seen === "expired" ? undefined : seen
 }
 
 function never<T>(): Promise<T> {

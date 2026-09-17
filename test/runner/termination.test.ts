@@ -109,6 +109,7 @@ describe("quarantine", () => {
   test("is required whenever the lifecycle was not fully confirmed", () => {
     expect(
       quarantineRequired({
+        childExitConfirmed: "yes",
         descendantsConfirmedExited: "unknown",
         durableStateUncertain: false,
         logCaptureIncomplete: false,
@@ -116,6 +117,7 @@ describe("quarantine", () => {
     ).toBe(true)
     expect(
       quarantineRequired({
+        childExitConfirmed: "yes",
         descendantsConfirmedExited: "yes",
         durableStateUncertain: true,
         logCaptureIncomplete: false,
@@ -123,6 +125,7 @@ describe("quarantine", () => {
     ).toBe(true)
     expect(
       quarantineRequired({
+        childExitConfirmed: "yes",
         descendantsConfirmedExited: "yes",
         durableStateUncertain: false,
         logCaptureIncomplete: true,
@@ -130,9 +133,23 @@ describe("quarantine", () => {
     ).toBe(true)
   })
 
+  test("is required when the direct child's own exit was never observed", () => {
+    // Separate from the group: the process table can say a group is empty
+    // while the runtime that owned the child never reported how it ended.
+    expect(
+      quarantineRequired({
+        childExitConfirmed: "unknown",
+        descendantsConfirmedExited: "yes",
+        durableStateUncertain: false,
+        logCaptureIncomplete: false,
+      }),
+    ).toBe(true)
+  })
+
   test("is not required when every fact is confirmed", () => {
     expect(
       quarantineRequired({
+        childExitConfirmed: "yes",
         descendantsConfirmedExited: "yes",
         durableStateUncertain: false,
         logCaptureIncomplete: false,
