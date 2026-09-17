@@ -14,6 +14,7 @@ import { join } from "node:path"
 
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 import { defaultConfigDirectory } from "./host-tree.ts"
+import { gatePort, reportedPort } from "./ports.ts"
 import { readProvenance } from "./provenance.ts"
 
 /**
@@ -65,13 +66,13 @@ export type BootedHost = { port: number; stop(): Promise<void> }
  * real OpenCode would be changing the machine it is supposed to be measuring.
  */
 export async function bootHost(input: {
-  port: number
   configDirectory: string
   cwd: string
 }): Promise<BootedHost> {
+  const requested = gatePort()
   const child = spawn(
     "opencode",
-    ["serve", "--hostname=127.0.0.1", `--port=${input.port}`],
+    ["serve", "--hostname=127.0.0.1", `--port=${requested}`],
     {
       cwd: input.cwd,
       env: { ...process.env, OPENCODE_CONFIG_DIR: input.configDirectory },
@@ -79,9 +80,21 @@ export async function bootHost(input: {
     },
   )
 
-  await listening(child)
+  // What it says it bound, not what it was asked for. `opencode serve` ignores
+  // `--port=0` and falls back to its own default, so the request and the
+  // answer are not the same fact — and every later call has to use the answer.
+  let port: number
+  try {
+    port = await listening(child)
+  } catch (error) {
+    // A host that never finished starting is still a process, and on a port
+    // (issue #125). Left alive it holds that port for the rest of the day and
+    // makes the next invocation's failure a different one.
+    await exited(child)
+    throw error
+  }
   return {
-    port: input.port,
+    port,
     // Awaited, not fired and forgotten (issue #104). Signalling a host and
     // returning says only that the signal was sent: the child is still there,
     // and the plugin inside it is still preparing storage for the trusted root
@@ -101,7 +114,8 @@ export async function toolIds(host: BootedHost, directory: string): Promise<stri
   return (await response.json()) as string[]
 }
 
-function listening(child: ReturnType<typeof spawn>): Promise<void> {
+/** Resolves with the port the host reported it is listening on. */
+function listening(child: ReturnType<typeof spawn>): Promise<number> {
   return new Promise((resolve, reject) => {
     let output = ""
     const timer = setTimeout(
@@ -109,15 +123,20 @@ function listening(child: ReturnType<typeof spawn>): Promise<void> {
       SERVER_BOOT_MS,
     )
 
-    const settle = (error?: Error) => {
+    const settle = (error?: Error, port?: number) => {
       clearTimeout(timer)
-      if (error === undefined) resolve()
-      else reject(error)
+      if (error !== undefined) reject(error)
+      else if (port === undefined) {
+        // It said it was listening and did not say where. Nothing later can
+        // address it, and guessing the number it was asked for is how a gate
+        // ends up talking to whatever else is there.
+        reject(new Error("the host said it was listening without saying on which port"))
+      } else resolve(port)
     }
 
     child.stdout?.on("data", (chunk: Buffer) => {
       output += chunk.toString("utf8")
-      if (output.includes("server listening")) settle()
+      if (output.includes("server listening")) settle(undefined, reportedPort(output))
     })
     // Kept only so a failure can quote it; the host writes diagnostics here.
     child.stderr?.on("data", (chunk: Buffer) => {

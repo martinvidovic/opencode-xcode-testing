@@ -18,6 +18,8 @@ export const STUB_NPM = "@ai-sdk/openai-compatible"
 export type ScriptedCall = { tool: string; args: unknown }
 
 export type StubProvider = {
+  /** The port the kernel assigned, and what `baseURL` is built from. */
+  readonly port: number
   baseURL: string
   /** What the next turn should call. Cleared once emitted. */
   script(call: ScriptedCall): void
@@ -26,12 +28,21 @@ export type StubProvider = {
   stop(): void
 }
 
-export function startStubProvider(port: number): StubProvider {
+/**
+ * Start the stub provider on a port the kernel chooses (issue #125).
+ *
+ * `port: 0`, and then whatever came back. A fixed number is one a killed
+ * invocation can still be holding, and this server refuses a held port
+ * outright — so the suite does not start at all, for a reason reported
+ * nowhere near where anyone would look for it. Asking the kernel removes the
+ * question rather than answering it.
+ */
+export function startStubProvider(): StubProvider {
   let pending: ScriptedCall | undefined
   let turns = 0
 
   const server = Bun.serve({
-    port,
+    port: 0,
     async fetch(request) {
       const url = new URL(request.url)
 
@@ -89,7 +100,14 @@ export function startStubProvider(port: number): StubProvider {
     },
   })
 
+  // The port it bound, not the one it asked for — and it has to have one: a
+  // provider nothing can address is a suite that fails for a reason nobody
+  // would look for.
+  const port = server.port
+  if (port === undefined) throw new Error("the stub provider bound no port")
+
   return {
+    port,
     baseURL: `http://127.0.0.1:${port}/v1`,
     script(call) {
       pending = call
