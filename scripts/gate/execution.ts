@@ -168,7 +168,7 @@ export async function runExecutionGate(
     try {
       await scenarios(client, stub, { passing, broken }, watched, evidence)
     } finally {
-      await server.close()
+      server.close()
       restoreStderr()
     }
   } catch (error) {
