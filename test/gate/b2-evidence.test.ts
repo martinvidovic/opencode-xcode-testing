@@ -34,6 +34,7 @@ import { DrivenRoots } from "../../scripts/gate/driven-roots.ts"
 import { evidenceDirectory, preserveEvidence, pruneEvidence } from "../../scripts/gate/forensics.ts"
 import { keyFor, renderReport, type RunReport } from "../../scripts/gate/report.ts"
 import { prepareStorage, storageFor } from "../../src/runner/paths.ts"
+import { readRegistry, writeRegistry } from "../../src/runner/housekeeping.ts"
 import { field } from "../../src/adapter/document.ts"
 
 function withHome<T>(work: (home: string) => T): T {
@@ -458,6 +459,45 @@ describe("the storage a live host makes a gate suite create", () => {
       roots.add(join(home, "never-existed"))
       expect(roots.directories()).toEqual([])
       expect(roots.clean()).toEqual([])
+    })
+  })
+})
+
+describe("the registration that goes with that storage", () => {
+  test("is removed too, so an entry does not outlive what it describes", () => {
+    // Removing the directory and leaving the entry was the shape this had,
+    // and it is how three gate runs added twelve registry entries against
+    // three surviving directories (issue #101). Every later housekeeping pass
+    // then reopens the question of a root that has not existed since.
+    withHome((home) => {
+      const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-ws-"))
+      const roots = new DrivenRoots(home)
+      const root = drivenRoot(home, workspace, "passing")
+      const key = keyed(home, root).rootKey
+      roots.add(root)
+
+      writeRegistry(keyed(home, root), {
+        schemaVersion: 1,
+        roots: { [key]: { lastSeenAtMs: 1 }, ["b".repeat(64)]: { lastSeenAtMs: 2 } },
+      })
+
+      roots.clean()
+
+      const registered = Object.keys(readRegistry(keyed(home, root)).roots)
+      expect(registered).toEqual(["b".repeat(64)])
+      rmSync(workspace, { recursive: true, force: true })
+    })
+  })
+
+  test("leaves every other root's registration alone", () => {
+    withHome((home) => {
+      const roots = new DrivenRoots(home)
+      const storage = storageFor(home, home)
+      prepareStorage(storage)
+      writeRegistry(storage, { schemaVersion: 1, roots: { ["c".repeat(64)]: { lastSeenAtMs: 3 } } })
+
+      expect(roots.clean()).toEqual([])
+      expect(Object.keys(readRegistry(storage).roots)).toEqual(["c".repeat(64)])
     })
   })
 })

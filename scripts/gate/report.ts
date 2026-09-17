@@ -157,6 +157,29 @@ export type RunReport = {
    */
   b2Evidence?: B2Correlation[]
   /**
+   * What the tool occupies on this machine, and how it is made up (issue #101).
+   *
+   * Recorded because a bound nobody measures is a bound nobody can check, and
+   * because the measurement itself was the defect: user-wide accounting summed
+   * each root's `runs` and nothing else, which on the machine where this was
+   * first measured was 5.0 GB of the 34.3 GB actually there (#96).
+   *
+   * Bytes and counts. Nothing here names a root, a project or a path.
+   */
+  storage?: {
+    /** Every tool-owned byte under the roots directory. */
+    totalBytes: number
+    /** Of that, retained run evidence. */
+    runBytes: number
+    /** Of that, shared build caches. */
+    cacheBytes: number
+    /** Directories on disk, and registry entries, which need not agree. */
+    roots: number
+    registryEntries: number
+    /** The targets those bytes are measured against. */
+    userWideTargetBytes: number
+  }
+  /**
    * Why the run ended as it did, when there is something to say — redacted of
    * anything path-shaped before it gets here.
    *
@@ -264,6 +287,13 @@ export function renderReport(report: RunReport, path: string): string {
         : `evidence      kept under ${report.evidence.key} (${report.evidence.bytes} bytes)${
             report.evidence.partial === undefined ? "" : `; partial: ${report.evidence.partial}`
           }`,
+    )
+  }
+  if (report.storage !== undefined) {
+    const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(2)} GiB`
+    lines.push(
+      "",
+      `storage       ${gib(report.storage.totalBytes)} total: ${gib(report.storage.runBytes)} evidence, ${gib(report.storage.cacheBytes)} cache; ${report.storage.roots} roots, ${report.storage.registryEntries} registered; target ${gib(report.storage.userWideTargetBytes)}`,
     )
   }
   if (report.b2Evidence !== undefined && report.b2Evidence.length > 0) {

@@ -352,3 +352,39 @@ describe("a root directory nobody registered", () => {
     })
   })
 })
+
+describe("a registry entry whose storage has already gone", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+  const GHOST = "a".repeat(64)
+
+  test("is collected, rather than reconsidered on every later pass", () => {
+    // The commoner orphan, and the reverse of the other one: storage removed
+    // by hand, or by an earlier pass that could not finish. There is nothing
+    // left to delete, so the entry is what this collects — and it has to be,
+    // or every pass for ever reopens the same question about a root that does
+    // not exist. This machine had 417 entries against 348 directories.
+    withSandbox((box) => {
+      writeRegistry(box.storage, {
+        schemaVersion: 1,
+        roots: { [GHOST]: { lastSeenAtMs: NOW - 90 * DAY_MS } },
+      })
+
+      const outcome = housekeep(box, NOW)
+
+      expect(outcome.status === "ran" ? outcome.staleRoots : []).toEqual([GHOST])
+      expect(readRegistry(box.storage).roots[GHOST]).toBeUndefined()
+    })
+  })
+
+  test("is left alone while it is recent, whatever it points at", () => {
+    withSandbox((box) => {
+      writeRegistry(box.storage, {
+        schemaVersion: 1,
+        roots: { [GHOST]: { lastSeenAtMs: NOW - DAY_MS } },
+      })
+
+      housekeep(box, NOW)
+      expect(readRegistry(box.storage).roots[GHOST]).toBeDefined()
+    })
+  })
+})

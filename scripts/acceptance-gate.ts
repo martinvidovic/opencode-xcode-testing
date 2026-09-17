@@ -37,7 +37,7 @@ import {
   type Observations,
 } from "./gate/observations.ts"
 import { DrivenRoots } from "./gate/driven-roots.ts"
-import { preserveEvidence, type EvidenceSource } from "./gate/forensics.ts"
+import { measureStorage, preserveEvidence, type EvidenceSource } from "./gate/forensics.ts"
 import { readProvenance } from "./gate/provenance.ts"
 import { renderReport, writeReport, type RunReport } from "./gate/report.ts"
 import { safeFailure } from "../src/adapter/sanitize.ts"
@@ -116,6 +116,16 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     // writing. Storage the report already describes has been copied out by
     // now, so nothing this removes is anything a reader was sent to find.
     roots.clean()
+
+    // Measured after the sweep, so the report describes what this run left
+    // rather than what it found (issue #101).
+    try {
+      observed.storage = measureStorage()
+    } catch {
+      // A measurement that cannot be taken is a quieter report, not a worse
+      // outcome. Losing the account of why a run failed in the course of
+      // describing a disk would be the wrong trade.
+    }
 
     const report = reportFrom(observed, outcome, diagnostic)
 

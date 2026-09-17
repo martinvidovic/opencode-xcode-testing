@@ -27,9 +27,16 @@ import { cpSync, chmodSync, existsSync, lstatSync, readdirSync, rmSync, statSync
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-import { createPrivateDirectory, toolRootFor } from "../../src/runner/paths.ts"
-import { directorySize } from "../../src/runner/retention.ts"
-import { keyFor } from "./report.ts"
+import {
+  createPrivateDirectory,
+  isRootKey,
+  sharedCacheRoot,
+  storageForRootKey,
+  toolRootFor,
+} from "../../src/runner/paths.ts"
+import { directorySize, RETENTION } from "../../src/runner/retention.ts"
+import { readRegistry } from "../../src/runner/housekeeping.ts"
+import { keyFor, type RunReport } from "./report.ts"
 
 /**
  * The bound, stated in three ways because each catches what the others miss.
@@ -293,5 +300,63 @@ function isDirectory(path: string): boolean {
     return statSync(path).isDirectory()
   } catch {
     return false
+  }
+}
+
+/** The two subtrees measured on their own, so the third walk skips them. */
+function isRunsOrCache(rootDir: string, path: string): boolean {
+  return path === join(rootDir, "runs") || path === sharedCacheRootPath(rootDir)
+}
+
+function sharedCacheRootPath(rootDir: string): string {
+  return join(rootDir, "DerivedData")
+}
+
+/**
+ * What the tool occupies on this machine, for the durable report (issue #101).
+ *
+ * Measured at the end of a run rather than the start, so it describes what the
+ * run left rather than what it found — and measured through the same functions
+ * retention uses, so the report and the policy cannot disagree about what a
+ * byte is.
+ */
+export function measureStorage(homeDir = homedir()): NonNullable<RunReport["storage"]> {
+  const storage = storageForRootKey(homeDir, "0".repeat(64))
+  const rootsDir = join(storage.toolRoot, "roots")
+
+  let keys: string[]
+  try {
+    keys = readdirSync(rootsDir).filter(isRootKey)
+  } catch {
+    keys = []
+  }
+
+  // One walk of each root, split into its parts, rather than a walk for the
+  // total and another for each part. On this machine the tree is tens of
+  // gigabytes across hundreds of roots, and measuring it three times to fill
+  // in three fields makes the report the slowest thing in the run.
+  let runBytes = 0
+  let cacheBytes = 0
+  let otherBytes = 0
+
+  for (const key of keys) {
+    const rootDir = join(rootsDir, key)
+    const runs = directorySize(join(rootDir, "runs"))
+    const cache = directorySize(sharedCacheRoot(storageForRootKey(homeDir, key)))
+    runBytes += runs
+    cacheBytes += cache
+    // Locks, queue state, tombstones, trash: small, and counted rather than
+    // dropped, because a total that is the sum of the parts it lists is a
+    // total a reader can check.
+    otherBytes += directorySize(rootDir, (path) => !isRunsOrCache(rootDir, path)) 
+  }
+
+  return {
+    totalBytes: runBytes + cacheBytes + otherBytes,
+    runBytes,
+    cacheBytes,
+    roots: keys.length,
+    registryEntries: Object.keys(readRegistry(storage).roots).length,
+    userWideTargetBytes: RETENTION.userWideByteTarget,
   }
 }
