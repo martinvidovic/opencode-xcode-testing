@@ -35,6 +35,7 @@ import {
 } from "../../src/runner/retention.ts"
 import { totalToolBytes } from "../../src/runner/housekeeping.ts"
 import { seedRun, withSandbox, type Sandbox } from "./harness.ts"
+import { writeQueue } from "../../src/runner/queue.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const GIB = 1024 ** 3
@@ -70,12 +71,16 @@ function cache(box: Sandbox, container: string, bytes: number, daysAgo = 0): str
   return path
 }
 
-function retain(box: Sandbox, options: { userWideBytes?: number; activeRunId?: string } = {}) {
+function retain(
+  box: Sandbox,
+  options: { userWideBytes?: number; activeRunId?: string; nothingIsRunning?: boolean } = {},
+) {
   return runRetention({
     storage: box.storage,
     now: () => NOW,
     ...(options.userWideBytes === undefined ? {} : { userWideBytes: options.userWideBytes }),
     ...(options.activeRunId === undefined ? {} : { activeRunId: options.activeRunId }),
+    ...(options.nothingIsRunning === undefined ? {} : { nothingIsRunning: options.nothingIsRunning }),
   })
 }
 
@@ -235,6 +240,83 @@ describe("the report", () => {
       expect(report.cachesReclaimed).toHaveLength(1)
       expect(report.cacheBytesReclaimed).toBeGreaterThan(0)
       expect(report.reasons["a".repeat(32)]).toBe("age")
+    })
+  })
+})
+
+describe("a tree whose largest cache is pinned by a crashed run", () => {
+  /**
+   * The whole of #110, at the scale it was measured (issue #101, finding 1).
+   *
+   * One root holds far more than the user-wide target in a build cache, and
+   * its execution slot is held by a run that never completed. Every pass reads
+   * that slot, concludes a build may be writing there, and declines — so the
+   * total never converges, however many passes run.
+   */
+  function pinnedTree(box: Sandbox): { cache: string; run: string } {
+    completedRun(box, "a".repeat(32), 1024, 1)
+
+    const stuck = "f".repeat(32)
+    createRunDirectory(box.storage, stuck)
+    seedRun(box.storage, { runId: stuck, state: "launchAuthorized" })
+    writeQueue(box.storage, {
+      schemaVersion: 1,
+      nextSequence: 2,
+      tickets: [],
+      activeRunId: stuck,
+    })
+
+    return { cache: cache(box, "/work/Example.xcodeproj", 30 * GIB), run: stuck }
+  }
+
+  test("does not converge while the slot is taken at face value", () => {
+    withSandbox((box) => {
+      const { cache: pinned } = pinnedTree(box)
+      const report = retain(box, { userWideBytes: 30 * GIB })
+
+      expect(report.cachesReclaimed).toEqual([])
+      expect(report.retainedBytes).toBeGreaterThan(RETENTION.userWideByteTarget)
+      expect(existsSync(pinned)).toBe(true)
+    })
+  })
+
+  test("converges once recovery has said nothing is running", () => {
+    withSandbox((box) => {
+      const { cache: pinned } = pinnedTree(box)
+      const report = retain(box, { userWideBytes: 30 * GIB, nothingIsRunning: true })
+
+      expect(report.cachesReclaimed).toHaveLength(1)
+      expect(existsSync(pinned)).toBe(false)
+      expect(report.retainedBytes).toBeLessThanOrEqual(RETENTION.userWideByteTarget)
+    })
+  })
+
+  test("converges by deleting cache, not by evicting evidence that has not expired", () => {
+    // The two are separate events and must stay separate: a cache is a warm
+    // start `xcodebuild` rebuilds on demand, and a Result Bundle is evidence
+    // nothing can regenerate. Convergence reached by evicting the second is
+    // not the same outcome wearing a different name.
+    withSandbox((box) => {
+      const { run } = pinnedTree(box)
+      const report = retain(box, { userWideBytes: 30 * GIB, nothingIsRunning: true })
+
+      expect(report.evicted).toEqual([])
+      expect(report.cacheBytesReclaimed).toBeGreaterThan(0)
+      expect(existsSync(join(box.storage.runsDir, "a".repeat(32)))).toBe(true)
+      expect(existsSync(join(box.storage.runsDir, run))).toBe(true)
+    })
+  })
+
+  test("still evicts evidence that has expired, which is a different rule", () => {
+    // Age is hard and pre-existing: a run past its retention age goes whether
+    // or not anything else converged. Saying so here keeps the previous test
+    // from reading as "eviction never happens".
+    withSandbox((box) => {
+      completedRun(box, "b".repeat(32), 1024, 30)
+      const report = retain(box, { nothingIsRunning: true })
+
+      expect(report.evicted).toEqual(["b".repeat(32)])
+      expect(report.reasons["b".repeat(32)]).toBe("age")
     })
   })
 })

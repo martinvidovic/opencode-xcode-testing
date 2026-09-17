@@ -8,10 +8,11 @@
 
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs"
+import type { Storage } from "../../src/runner/paths.ts"
 import { join } from "node:path"
 
 import { acquireLock } from "../../src/runner/locks.ts"
-import { prepareStorage, storageFor } from "../../src/runner/paths.ts"
+import { prepareStorage, storageFor, storageForRootKey } from "../../src/runner/paths.ts"
 import {
   HOUSEKEEPING_MIN_INTERVAL_MS,
   housekeepingIsDue,
@@ -20,7 +21,9 @@ import {
   runHousekeeping,
   writeRegistry,
 } from "../../src/runner/housekeeping.ts"
-import { seedRun, withSandbox, type Sandbox } from "./harness.ts"
+import { fakeProbe, seedRun, withSandbox, type Sandbox } from "./harness.ts"
+import { reconcileRoot } from "../../src/runner/recovery.ts"
+import { readQueue, writeQueue } from "../../src/runner/queue.ts"
 import { createRunDirectory } from "../../src/runner/paths.ts"
 
 const NOW = Date.parse("2026-09-13T12:00:00.000Z")
@@ -39,6 +42,25 @@ function housekeep(box: Sandbox, nowMs: number) {
       queueFile: join(box.storage.toolRoot, "roots", rootKey, "queue.json"),
       rootKey,
     }),
+  })
+}
+
+/**
+ * The same pass, with recovery wired in (issue #110).
+ *
+ * Reconciliation is a port rather than something housekeeping reaches for,
+ * because deciding whether a process is alive needs a probe and this file has
+ * no business inventing one — recovery already answers that question, and
+ * asking it is the whole of the fix.
+ */
+function housekeepReconciling(box: Sandbox, nowMs: number, processes: Record<number, string>) {
+  const probe = fakeProbe({ processes })
+  return runHousekeeping({
+    storage: box.storage,
+    now: () => nowMs,
+    storageForRootKey: (rootKey) => storageForRootKey(box.homeDir, rootKey),
+    reconcile: (storage) =>
+      reconcileRoot({ storage, probe, timestamp: () => new Date(nowMs).toISOString() }),
   })
 }
 
@@ -385,6 +407,92 @@ describe("a registry entry whose storage has already gone", () => {
 
       housekeep(box, NOW)
       expect(readRegistry(box.storage).roots[GHOST]).toBeDefined()
+    })
+  })
+})
+
+describe("a root whose execution slot is held by a run nobody is running", () => {
+  const CACHE_KEY = "1".repeat(64)
+  const ROOT = "2".repeat(64)
+  const STUCK = "f".repeat(32)
+
+  /** A root holding a slot for a run that never completed, with a cache. */
+  function pinned(box: Sandbox): { storage: Storage; cache: string } {
+    const storage = storageForRootKey(box.homeDir, ROOT)
+    prepareStorage(storage)
+    createRunDirectory(storage, STUCK)
+    seedRun(storage, { runId: STUCK, state: "launchAuthorized" })
+    writeQueue(storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: STUCK })
+
+    // Old enough that the age rule alone would reclaim it, so what these
+    // tests vary is the slot and nothing else.
+    const cache = join(storage.rootDir, "DerivedData", CACHE_KEY)
+    mkdirSync(cache, { recursive: true })
+    writeFileSync(join(cache, "Build.o"), "x".repeat(4096))
+    const stale = new Date(NOW - 30 * 24 * 60 * 60 * 1000)
+    utimesSync(cache, stale, stale)
+
+    writeRegistry(box.storage, { schemaVersion: 1, roots: { [ROOT]: { lastSeenAtMs: NOW } } })
+    return { storage, cache }
+  }
+
+  test("keeps its cache when nothing reconciles the slot", () => {
+    // The current, correct refusal: a cache is safe to delete because it is
+    // regenerable, not because it looks idle, and a held slot is the only
+    // evidence available that a build may be writing into it.
+    withSandbox((box) => {
+      const { cache } = pinned(box)
+      housekeep(box, NOW)
+      expect(existsSync(cache)).toBe(true)
+    })
+  })
+
+  test("reclaims its cache once recovery has been asked, slot or no slot", () => {
+    // The defect (issue #110), and the insight that fixes it. The guard is
+    // about a build *writing* into a cache; the slot is a proxy for that, and
+    // a good one only while a run is in flight. This run crashed after
+    // `launchAuthorized`, so it still needs finalizing and recovery rightly
+    // keeps its slot — but nothing is running, and nothing is writing into
+    // that cache. On the machine where this was measured, one such root
+    // pinned 25.07 GiB of a 25.40 GiB total.
+    withSandbox((box) => {
+      const { storage, cache } = pinned(box)
+
+      const outcome = housekeepReconciling(box, NOW, {})
+
+      expect(outcome.status).toBe("ran")
+      expect(existsSync(cache)).toBe(false)
+      // Not silently worked around: the slot is still held, and the run is
+      // still there to be finalized by something that can interpret it.
+      expect(readQueue(storage).activeRunId).toBe(STUCK)
+    })
+  })
+
+  test("does not touch the run's own evidence, which nothing can regenerate", () => {
+    // Cache reclamation and evidence eviction are separate events. This run is
+    // neither complete nor expired, so nothing here may evict it.
+    withSandbox((box) => {
+      const { storage } = pinned(box)
+      housekeepReconciling(box, NOW, {})
+      expect(existsSync(join(storage.runsDir, STUCK))).toBe(true)
+    })
+  })
+
+  test("leaves a slot alone while its owner is alive", () => {
+    // Reconciliation is asked, not overruled: recovery decides liveness from
+    // process identity, and a live owner keeps the slot and the cache.
+    withSandbox((box) => {
+      const { storage, cache } = pinned(box)
+      seedRun(storage, {
+        runId: STUCK,
+        state: "launchAuthorized",
+        owner: { pid: 4_242, startedAt: "alive" },
+      })
+
+      housekeepReconciling(box, NOW, { 4_242: "alive" })
+
+      expect(readQueue(storage).activeRunId).toBe(STUCK)
+      expect(existsSync(cache)).toBe(true)
     })
   })
 })

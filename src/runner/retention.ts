@@ -79,6 +79,22 @@ export type RetentionEnvironment = {
   leased?: ReadonlySet<string>
   /** The active run, which holds the execution slot and is never evictable. */
   activeRunId?: string
+  /**
+   * Set when something has established that no process attributable to this
+   * root is alive (issue #110).
+   *
+   * The build-cache guard is about a build *writing* into a cache, and the
+   * execution slot is a proxy for that — a good one while a run is in flight,
+   * and a permanent one after a run crashes. A slot held by a run that has no
+   * live process is a run waiting to be finalized, not a build in progress,
+   * and nothing is writing into its cache.
+   *
+   * Only recovery can say this, because saying it needs a process probe. So
+   * it arrives as a fact from a caller that asked recovery, and its absence
+   * means the slot is believed — which is the conservative answer and the one
+   * this had before.
+   */
+  nothingIsRunning?: boolean
 }
 
 export type RetentionReport = {
@@ -453,9 +469,16 @@ function slotIsHeld(storage: Storage): boolean {
  * nobody has built in a fortnight is buying a warm start nobody is waiting
  * for, whatever the byte totals say.
  *
- * Nothing is reclaimed while a run holds the execution slot. A cache is safe
- * to delete because it is regenerable, not because it is idle, and the one
- * moment that is untrue is while a build is writing into it.
+ * Nothing is reclaimed while a build may be writing into a cache. A cache is
+ * safe to delete because it is regenerable, not because it is idle, and that
+ * one moment is the exception.
+ *
+ * The execution slot is the proxy for it, and a good one only while a run is
+ * in flight: a run that crashed leaves the slot held for ever, and every later
+ * pass reads it and declines (issue #110). So a caller that has asked recovery
+ * whether anything attributable to this root is still alive can say so, and
+ * that answer outranks the slot — a slot held by a run with no live process is
+ * a run waiting to be finalized, not a build in progress.
  */
 function reclaimCaches(
   environment: RetentionEnvironment & { userWideBytes?: number },
@@ -471,7 +494,10 @@ function reclaimCaches(
   // changing the queue at that instant — `xcodebuild` may be writing into one
   // of these directories right now. The execution slot in `queue.json` is the
   // fact that actually says so, and it is the fact every other path uses.
-  if (environment.activeRunId !== undefined || slotIsHeld(environment.storage)) {
+  const held =
+    environment.activeRunId !== undefined ||
+    (environment.nothingIsRunning !== true && slotIsHeld(environment.storage))
+  if (held) {
     return { keys: [], bytesReclaimed: 0, cacheBytes: total() }
   }
 

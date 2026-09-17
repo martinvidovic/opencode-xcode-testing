@@ -28,6 +28,7 @@ import {
   type Storage,
 } from "./paths.ts"
 import { directorySize, runRetention, type RetentionReport } from "./retention.ts"
+import type { RecoveryStatus } from "./recovery.ts"
 
 /** ADR 0002: user-wide housekeeping runs at most once per hour. */
 export const HOUSEKEEPING_MIN_INTERVAL_MS = 60 * 60 * 1000
@@ -125,6 +126,27 @@ export type HousekeepingEnvironment = {
   storageForRootKey(rootKey: string): Storage
   /** Runs currently under a read lease, per root key. */
   leased?(rootKey: string): ReadonlySet<string>
+  /**
+   * Give recovery the chance to reconcile a root before it is retained
+   * (issue #110).
+   *
+   * A port rather than something this file reaches for, because deciding
+   * whether a process is still alive needs a probe and housekeeping has no
+   * business inventing a second opinion about it. Recovery already answers
+   * that question — asking it is the whole of the fix.
+   *
+   * Without it, a run that crashed leaves its execution slot held for ever:
+   * retention reads the slot, concludes a build may be writing into that
+   * root's cache, and declines — correctly, given what it can see. Recovery
+   * releases such a slot and runs when a root is next opened, so a root
+   * nobody opens again is never reconciled. On the machine where this was
+   * measured, one such root pinned 25.07 GiB of a 25.40 GiB total.
+   *
+   * Optional, and absent means the old behaviour: the slot is believed and
+   * the cache is kept. Failing closed is the right default for a caller that
+   * cannot supply a probe.
+   */
+  reconcile?(storage: Storage): { status: RecoveryStatus }
 }
 
 /**
@@ -173,11 +195,30 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
     // of one entry pointing at storage somebody had removed by hand.
     if (!existsSync(rootStorage.rootDir)) continue
 
+    // Before retention, and outside the root lock it takes for itself: a slot
+    // this pass could have released is a cache this pass will refuse to
+    // reclaim, and the order is the whole of what makes the refusal temporary
+    // rather than permanent.
+    let nothingIsRunning = false
+    try {
+      // `busy` is recovery saying it found a live process attributable to this
+      // root. Anything else — including a run still waiting to be finalized —
+      // means nothing is writing into that root's build caches, whatever its
+      // execution slot still says.
+      const reconciled = environment.reconcile?.(rootStorage)
+      nothingIsRunning = reconciled !== undefined && reconciled.status !== "busy"
+    } catch {
+      // A root that cannot be reconciled keeps its slot, which is the
+      // conservative answer and the one this had before. It is not a reason
+      // to stop maintaining every root after it.
+    }
+
     const report = withTryLock(rootStorage.rootLock, () =>
       runRetention({
         storage: rootStorage,
         now: () => nowMs,
         userWideBytes,
+        nothingIsRunning,
         ...(environment.leased === undefined ? {} : { leased: environment.leased(rootKey) }),
       }),
     )

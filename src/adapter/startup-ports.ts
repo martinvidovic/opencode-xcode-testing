@@ -22,6 +22,7 @@
 import { monotonicNow } from "../domain/clock.ts"
 import { noteRootSeen, runHousekeeping } from "../runner/housekeeping.ts"
 import { systemProbe } from "../runner/identity.ts"
+import { reconcileRoot } from "../runner/recovery.ts"
 import { prepareStorage, storageForRootKey, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { bunOnPath, probeRuntimeCandidate } from "./probe.ts"
@@ -103,6 +104,20 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
         storage: wiring.storage,
         now: () => Date.now(),
         storageForRootKey: (rootKey) => storageForRootKey(wiring.homeDir, rootKey),
+        // Recovery, asked about every root this pass visits (issue #110).
+        // Without it a run that crashed leaves its execution slot held for
+        // ever, and retention reads that slot and declines to reclaim the
+        // root's build caches — for ever, because recovery otherwise runs
+        // only when a root is opened again.
+        //
+        // No claimant: this pass cannot finalize anything, and adopting a run
+        // it has no interpreter for would take it from an instance that has.
+        reconcile: (storage) =>
+          reconcileRoot({
+            storage,
+            probe: systemProbe,
+            timestamp: () => new Date().toISOString(),
+          }),
       })
     },
 
