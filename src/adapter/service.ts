@@ -28,6 +28,7 @@ import {
 import { join } from "node:path"
 
 import type { EvidenceFact, ExecutionEvidence } from "../domain/evidence.ts"
+import { LAZY_DEADLINE_MS } from "../domain/limits.ts"
 import { isRecord } from "../domain/json.ts"
 import { acquireReadLease } from "../runner/leases.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
@@ -1645,16 +1646,6 @@ function stabilize(
  * digest that never finishes must not hold a run open.
  */
 export const DIGEST_BUDGET_MS = 30_000
-
-/**
- * One fixed monotonic deadline per lazy detail operation, per #8.
- *
- * It covers toolchain verification, digest verification and extraction
- * together rather than each separately, because the caller is waiting on the
- * whole operation and dividing the budget would let three steps that each
- * finished "in time" take three times as long.
- */
-export const LAZY_DEADLINE_MS = 60_000
 
 /**
  * How much of a file is held in memory at once while digesting it.

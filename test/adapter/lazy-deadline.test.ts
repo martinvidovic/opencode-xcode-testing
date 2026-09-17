@@ -24,12 +24,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import {
-  createTestToolService,
-  INDEX_ARTIFACT,
-  LAZY_DEADLINE_MS,
-  type ServiceEnvironment,
-} from "../../src/adapter/service.ts"
+import { createTestToolService, INDEX_ARTIFACT, type ServiceEnvironment } from "../../src/adapter/service.ts"
+import { LAZY_DEADLINE_MS } from "../../src/domain/limits.ts"
 import type { XcresultCommand } from "../../src/interpreter/anomalies.ts"
 import type { XcresultTool } from "../../src/interpreter/ports.ts"
 import { INDEX_VERSION, type NormalizedIndex } from "../../src/interpreter/index-model.ts"

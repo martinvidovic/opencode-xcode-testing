@@ -20,8 +20,10 @@ export const SUPPORTED_XCODE_MAJOR = 26
 /** Eager interpretation budget, measured on the monotonic clock (#8). */
 export const EAGER_DEADLINE_MS = 120_000
 
-/** Per-operation budget for lazy, bundle-backed detail (#8). */
-export const LAZY_DEADLINE_MS = 60_000
+// Its pair, `LAZY_DEADLINE_MS`, is in `domain/limits.ts` rather than here.
+// The runner derives a Read Lease's lifetime from it and may not import the
+// interpreter, so the two budgets are split by the module direction rather
+// than by choice (issue #124).
 
 /** True when a recorded Xcode product version falls in the supported major. */
 export function isSupportedXcodeVersion(version: string): boolean {
