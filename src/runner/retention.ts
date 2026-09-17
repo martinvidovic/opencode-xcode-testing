@@ -77,6 +77,16 @@ export type RetentionEnvironment = {
   now(): number
   /** Runs currently held by an inspection read lease. */
   leased?: ReadonlySet<string>
+  /**
+   * Set when something that decides what may be evicted could not be read
+   * (issue #116): a malformed lease, or the queue that names the active run.
+   *
+   * Nothing in the root is evictable then. The missing fact is always *which*
+   * run is spoken for, so the only safe answer covers all of them — and it
+   * costs a pass rather than the evidence, because an unreadable lease ages
+   * out and an unreadable queue is rewritten by the next run.
+   */
+  evictionUncertain?: boolean
   /** The active run, which holds the execution slot and is never evictable. */
   activeRunId?: string
   /**
@@ -205,6 +215,7 @@ export function collectRuns(environment: RetentionEnvironment): RetainedRun[] {
         // Evicting before then would delete the run's record and leave the
         // scratch directory behind with nothing left to attribute it to.
         (record.derivedDataMode !== "isolated" || record.derivedDataCleaned === true) &&
+        environment.evictionUncertain !== true &&
         environment.leased?.has(runId) !== true &&
         environment.activeRunId !== runId,
     })
@@ -500,9 +511,13 @@ function reclaimCaches(
   // changing the queue at that instant — `xcodebuild` may be writing into one
   // of these directories right now. The execution slot in `queue.json` is the
   // fact that actually says so, and it is the fact every other path uses.
+  // `activeRunId` is deliberately not consulted here (issue #116). It now
+  // comes from the same `queue.json` that `coordinationState` reads, so a
+  // second check against it would say the same thing — except that it would
+  // say it *before* the `nothingIsRunning` override, which is exactly the
+  // permanent refusal #110 removed. It protects a run's evidence from
+  // eviction; the caches are decided below.
   const unchanged = { keys: [] as string[], bytesReclaimed: 0, cacheBytes: total() }
-  if (environment.activeRunId !== undefined) return unchanged
-
   const coordination = coordinationState(environment.storage)
 
   // Quarantine first, and not overridable. A liveness verdict says nothing is

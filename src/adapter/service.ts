@@ -29,6 +29,7 @@ import { join } from "node:path"
 
 import type { EvidenceFact, ExecutionEvidence } from "../domain/evidence.ts"
 import { isRecord } from "../domain/json.ts"
+import { acquireReadLease } from "../runner/leases.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
 import type { ResultProvenance, TestRunSummary, TestToolResult } from "../domain/result.ts"
 import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
@@ -1179,6 +1180,30 @@ async function inspectRetained(
   // defend against further down.
   if (!isRunId(request.runId)) return { status: "notFound", subject: "run" }
 
+  // Published before the first read and released after the last (issue #116).
+  //
+  // Retention runs in whichever OpenCode instance reaches the hour first, and
+  // it would otherwise evict a completed run while this one is paging through
+  // it — `notFound` for evidence that was there when it was asked for, or an
+  // `ENOENT` part-way through a Result Bundle already being read. The lease
+  // covers the whole call, lazy bundle extraction included, because that is
+  // the longest read here and the one whose disappearance mid-way is hardest
+  // to describe to a caller.
+  //
+  // Wall clock rather than `now`, which is monotonic: the reader of this
+  // lease is another process, and two monotonic clocks share no origin.
+  const lease = acquireReadLease(environment.storage, request.runId, Date.parse(environment.timestamp()))
+  try {
+    return await inspectLeased(environment, request)
+  } finally {
+    lease.release()
+  }
+}
+
+async function inspectLeased(
+  environment: ServiceEnvironment,
+  request: InspectRunRequest,
+): Promise<InspectionResponse<unknown>> {
   const path = join(runDirectory(environment.storage, request.runId), INDEX_ARTIFACT)
 
   let contents: string

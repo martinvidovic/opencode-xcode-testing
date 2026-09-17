@@ -32,16 +32,10 @@ function housekeep(box: Sandbox, nowMs: number) {
   return runHousekeeping({
     storage: box.storage,
     now: () => nowMs,
-    storageForRootKey: (rootKey) => ({
-      ...box.storage,
-      rootDir: join(box.storage.toolRoot, "roots", rootKey),
-      rootLock: join(box.storage.toolRoot, "roots", rootKey, "root.lock"),
-      runsDir: join(box.storage.toolRoot, "roots", rootKey, "runs"),
-      trashDir: join(box.storage.toolRoot, "roots", rootKey, "trash"),
-      tombstonesDir: join(box.storage.toolRoot, "roots", rootKey, "tombstones"),
-      queueFile: join(box.storage.toolRoot, "roots", rootKey, "queue.json"),
-      rootKey,
-    }),
+    // Derived rather than assembled: a hand-built view is one field behind
+    // the day a path is added, and the field it is missing points at another
+    // root's storage.
+    storageForRootKey: (rootKey) => storageForRootKey(box.homeDir, rootKey),
   })
 }
 
