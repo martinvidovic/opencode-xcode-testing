@@ -25,6 +25,7 @@ import type {
 import type { ResolvedTestRun } from "./request.ts"
 import type { EvidenceFact } from "./evidence.ts"
 import type { ScopeEvidence, TestIdentity } from "./scope.ts"
+import { requestedScopeDigest, type RequestedScope, type ScopeVerdict } from "./scope.ts"
 
 /** The version of the typed domain contract. Meaning changes bump it; additions do not. */
 export const SCHEMA_VERSION = 1
@@ -79,7 +80,7 @@ export type RequestResolutionFailed = {
   schemaVersion: SchemaVersion
   outcome: "infrastructureFailed"
   phase: ResolutionPhase
-  reason: ResolutionFailureReason | QueuedFailureReason | "runnerFailure"
+  reason: ResolutionFailureReason | QueuedFailureReason | "runnerFailure" | "adapterFailure"
   message: string
   queuedAt?: string
   queueDurationMs?: number
@@ -224,6 +225,25 @@ export const NO_DIAGNOSTICS: SummaryDiagnostics = {
  * each layer spelling out its own idea of "nothing is known", and a new field
  * on the envelope then has to be patched in several unrelated places.
  */
+/**
+ * Scope evidence for a Test Run whose selection was never checked.
+ *
+ * Beside `unobservedEnvelope` and for its reason: three callers were spelling
+ * out the same six fields, differing only in the verdict, and a seventh field
+ * on this shape would have had to be found in all of them.
+ */
+export function unobservedScope(scope: RequestedScope, verdict: ScopeVerdict): ScopeEvidence {
+  return {
+    kind: scope.kind,
+    digest: requestedScopeDigest(scope),
+    requestedSelectionCount: scope.kind === "selected" ? scope.tests.length : 0,
+    verdict,
+    attestations: [],
+    shown: 0,
+    truncated: false,
+  }
+}
+
 export function unobservedEnvelope(input: {
   runId: string
   resolved: ResolvedTestRun

@@ -59,3 +59,7 @@ _Avoid_: Build artifacts, intermediates, scratch
 **Stale Root**:
 A trusted root nobody has opened for long enough that its storage is collected whole. The registry keeps a hash and a `lastSeenAtMs` and deliberately never a path, so age is the only signal there is — which is both the privacy guarantee and the entire basis on which this can be decided.
 _Avoid_: Dead project, orphaned repo, abandoned root
+
+**Adapter Failure**:
+The infrastructure reason for a Test Run the Test Tool itself could not finish handling — a decoder meeting a shape it did not expect, a renderer meeting a payload it could not render. Deliberately not `runnerFailure`: that names the machinery which runs `xcodebuild`, and a caller told it goes to inspect a toolchain that is working. A contained failure keeps the run id, so the evidence stays reachable.
+_Avoid_: Internal error, unexpected error, crash

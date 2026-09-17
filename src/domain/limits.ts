@@ -147,3 +147,19 @@ export const MAX_TIMEOUT_SECONDS = 7_200
 
 /** Fixed deadline for container and scheme discovery. */
 export const DISCOVERY_TIMEOUT_SECONDS = 60
+
+/**
+ * How deep a structured payload may nest before a decode refuses it (#97).
+ *
+ * The test hierarchy is a tree — Test Plan, bundle, suite, case, and nested
+ * suites within those — and both the decoder and everything that walks its
+ * output are recursive. Real Xcode output is single digits deep. A payload
+ * that is thousands deep is not a hierarchy anyone wrote; it exhausts the
+ * stack, and a `RangeError` out of a decoder is a raw host error where a typed
+ * answer about the evidence belonged.
+ *
+ * Generous by two orders of magnitude against anything observed, because this
+ * is a stack bound and not a schema opinion: a real suite that nests more
+ * deeply than expected should be read, not rejected.
+ */
+export const MAX_PAYLOAD_DEPTH = 256
