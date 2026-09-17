@@ -17,12 +17,13 @@
  * which is recorded separately as `execObserved`.
  */
 
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import type { Readable, Writable } from "node:stream"
-import { openSync } from "node:fs"
+import { closeSync } from "node:fs"
 
 import type { EvidenceFact } from "../domain/evidence.ts"
 import type { ProcessIdentity } from "./identity.ts"
+import { openPrivateAppendFile } from "./paths.ts"
 
 /**
  * `sh` is the gate because it can genuinely `exec` the target, so the recorded
@@ -82,19 +83,37 @@ export type GateOptions = {
 }
 
 export function spawnGatedChild(options: GateOptions): GatedChild {
-  const logFd = openSync(options.logPath, "a", 0o600)
+  let logFd: number
+  try {
+    logFd = openPrivateAppendFile(options.logPath)
+  } catch (error) {
+    return neverStarted(error)
+  }
 
-  const child = spawn(
-    "/bin/sh",
-    ["-c", GATE_SCRIPT, "sh", options.command, ...options.args],
-    {
-      cwd: options.cwd,
-      env: options.environment,
-      // The child leads its own process group; the supervisor stays outside it.
-      detached: true,
-      stdio: ["ignore", logFd, logFd, "pipe", "pipe", "pipe"],
-    },
-  )
+  let child: ChildProcess
+  try {
+    child = spawn(
+      "/bin/sh",
+      ["-c", GATE_SCRIPT, "sh", options.command, ...options.args],
+      {
+        cwd: options.cwd,
+        env: options.environment,
+        // The child leads its own process group; the supervisor stays outside it.
+        detached: true,
+        stdio: ["ignore", logFd, logFd, "pipe", "pipe", "pipe"],
+      },
+    )
+  } catch (error) {
+    // `spawn` validates its arguments before it creates anything and throws
+    // where it stands, by which point the descriptor is already open — which
+    // is why the close below is a `finally` rather than a line after the call.
+    return neverStarted(error)
+  } finally {
+    // The child holds its own duplicate from the moment it exists, so ours has
+    // no further purpose. Keeping it pins the file for the supervisor's whole
+    // life and spends a descriptor per attempt.
+    closeSync(logFd)
+  }
 
   // `child.stdio` is typed as the five standard entries with union element
   // types, because `spawn` in general may be handed anything. This call was
@@ -140,7 +159,9 @@ export function spawnGatedChild(options: GateOptions): GatedChild {
     if (chunk.toString("utf8").includes("EXEC")) announcedExec = true
   })
 
+  let resolveExit: (exit: ChildExit) => void = () => {}
   const exited = new Promise<ChildExit>((resolve) => {
+    resolveExit = resolve
     child.on("exit", (code, signal) => {
       resolve({
         ...(code === null ? {} : { exitCode: code }),
@@ -149,14 +170,56 @@ export function spawnGatedChild(options: GateOptions): GatedChild {
     })
   })
 
+  // A child the kernel never created (issue #117).
+  //
+  // Two things go wrong at once here, and the quiet one is the dangerous one.
+  // An `error` event with no listener is a throw out of the event loop, which
+  // takes down the one process holding the deadline, the cancellation and the
+  // obligation to publish. And no `exit` follows a failed spawn — there was
+  // no process to exit — so both of supervision's observations would stay
+  // pending for ever, with the run's Execution Slot held and nothing saying why.
+  //
+  // Read as "it never launched" without qualification, which holds because
+  // nothing here ever signals this child through the object that would raise
+  // a later `error` on it: termination goes to the process group as
+  // `process.kill(-pgid, …)`. Anything that starts calling `child.kill` has
+  // to revisit this, since a failure to signal a child that ran perfectly
+  // well would arrive the same way.
+  let launched = true
+  child.on("error", (error) => {
+    launched = false
+    rejectRecorded(asError(error, "the gated child could not be started"))
+    resolveExit({})
+  })
+
+  // Every stream the gate holds needs a listener, for the same reason the
+  // child does: a pipe whose far end has gone reports it asynchronously, and
+  // an `error` event nobody is listening for is a throw out of the event loop.
+  // Only the record channel has anything to say about it — a failure there is
+  // a child that will never publish its identity.
+  recordStream?.on("error", (error: Error) => {
+    rejectRecorded(asError(error, "the gated child's record channel failed"))
+  })
+  for (const stream of [authorizeStream, execStream]) {
+    stream?.on("error", () => {})
+  }
+
   const execObserved = exited.then((exit): EvidenceFact => {
+    // Not `unknown`: that is reserved for a channel that could not say. A
+    // process that was never created is something this code knows for certain.
+    if (!launched) return "no"
     if (!announcedExec) return "unknown"
     return exit.exitCode !== undefined && EXEC_FAILURE_STATUSES.has(exit.exitCode) ? "no" : "yes"
   })
 
   return {
-    recorded,
+    recorded: handled(recorded),
     authorize() {
+      // Authorization is persisted first and released second, so there is
+      // always a window in which the child has gone before the write. A write
+      // to a stream whose far end has closed does not throw — it reports
+      // `EPIPE` as an `error` event a turn later, which the listener above
+      // absorbs. That is a released gate nobody was waiting at, not a failure.
       authorizeStream?.write("GO\n")
     },
     abandon() {
@@ -167,4 +230,48 @@ export function spawnGatedChild(options: GateOptions): GatedChild {
     execObserved,
     exited,
   }
+}
+
+/**
+ * A gate for a child that was never created.
+ *
+ * It settles both observations rather than throwing, because the caller is
+ * supervision, and supervision's answer to "the child failed to start" is
+ * already written: abandon, await the exit, publish a launching-phase
+ * failure. A throw from here would skip all of it.
+ */
+function neverStarted(error: unknown): GatedChild {
+  return {
+    recorded: handled(Promise.reject(asError(error, "the gated child could not be started"))),
+    authorize() {},
+    abandon() {},
+    execObserved: Promise.resolve("no"),
+    exited: Promise.resolve({}),
+  }
+}
+
+/**
+ * The same rejection, marked as heard.
+ *
+ * An unheard rejection ends the process, and `recorded` rejects for reasons
+ * that have nothing to do with whether anyone is listening yet: a gate that
+ * failed before it was returned has had no turn in which a handler could be
+ * attached at all, and a caller that reads `exited` or `execObserved` without
+ * reading `recorded` is asking a reasonable question in a reasonable order.
+ *
+ * This costs a diagnostic — an unheard rejection here is now silent — and it
+ * is worth it. The process this would end is the supervisor: the one thing
+ * holding a detached process group's deadline, its cancellation and its only
+ * route to a terminal outcome. A lost warning is cheaper than a live
+ * `xcodebuild` group with nothing watching it.
+ *
+ * The returned promise still rejects for whoever does await it.
+ */
+function handled<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {})
+  return promise
+}
+
+function asError(error: unknown, fallback: string): Error {
+  return error instanceof Error ? error : new Error(fallback)
 }
