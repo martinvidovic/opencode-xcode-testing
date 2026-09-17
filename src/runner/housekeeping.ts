@@ -108,6 +108,15 @@ export type HousekeepingOutcome =
       status: "ran"
       reports: Record<string, RetentionReport>
       /**
+       * Roots whose caches were left because something still held them.
+       *
+       * Reported rather than passed over in silence (issue #110): a pass that
+       * declines to reclaim and says nothing leaves a reader to wonder why the
+       * total did not move, which is how a slot nobody released stayed
+       * invisible for as long as it did.
+       */
+      held: string[]
+      /**
        * Roots collected whole, by opaque key (AC5).
        *
        * Reported apart from the per-root reports because it is a different
@@ -185,6 +194,7 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
 
   const userWideBytes = totalToolBytes(storage)
   const reports: Record<string, RetentionReport> = {}
+  const held: string[] = []
 
   for (const rootKey of surviving) {
     const rootStorage = environment.storageForRootKey(rootKey)
@@ -201,12 +211,8 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
     // rather than permanent.
     let nothingIsRunning = false
     try {
-      // `busy` is recovery saying it found a live process attributable to this
-      // root. Anything else — including a run still waiting to be finalized —
-      // means nothing is writing into that root's build caches, whatever its
-      // execution slot still says.
       const reconciled = environment.reconcile?.(rootStorage)
-      nothingIsRunning = reconciled !== undefined && reconciled.status !== "busy"
+      nothingIsRunning = reconciled !== undefined && probedAndIdle(reconciled.status)
     } catch {
       // A root that cannot be reconciled keeps its slot, which is the
       // conservative answer and the one this had before. It is not a reason
@@ -223,10 +229,41 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
       }),
     )
     // A held root lock means a live run owns that root; skipping it is correct.
-    if (report !== undefined) reports[rootKey] = report
+    if (report !== undefined) {
+      reports[rootKey] = report
+      // Nothing reclaimed while bytes remain is a root something is holding.
+      if (report.cacheBytes > 0 && report.cachesReclaimed.length === 0) held.push(rootKey)
+    }
   }
 
-  return { status: "ran", reports, staleRoots }
+  return { status: "ran", reports, staleRoots, held }
+}
+
+/**
+ * Whether recovery actually probed this root and found nothing alive.
+ *
+ * Two statuses, named rather than "anything but `busy`". That collapse was the
+ * tempting shape and it is wrong in three reachable ways, each of which turns
+ * a guard that fails closed into one that fails open:
+ *
+ * - `stillQuarantined` means `classify` returned **uncertain** — a recorded
+ *   identity could not be shown to be gone. That is the case recovery's own
+ *   header describes as an unaccounted-for `xcodebuild` that may still be
+ *   writing the same DerivedData, which is precisely what would be deleted.
+ * - `deferred` is returned *without probing at all*, because another instance
+ *   holds the root lock. That lock is not held for a build's duration, so the
+ *   sequence "reconcile defers, the other instance starts a build, this pass
+ *   takes the lock and reclaims" is a race rather than a theory.
+ * - `failed` is returned when the coordination state could not be read. The
+ *   reclamation guard deliberately treats an unreadable queue as held; taking
+ *   the same condition as proof of idleness would undo that on the one path
+ *   where nothing at all is known.
+ *
+ * `cancelled` is out for the same reason as `deferred`: it means the pass
+ * stopped early, not that it looked and found nothing.
+ */
+function probedAndIdle(status: RecoveryStatus): boolean {
+  return status === "recovered" || status === "alreadyHealthy"
 }
 
 /**

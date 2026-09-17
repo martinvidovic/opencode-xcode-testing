@@ -22,8 +22,8 @@ import {
   writeRegistry,
 } from "../../src/runner/housekeeping.ts"
 import { fakeProbe, seedRun, withSandbox, type Sandbox } from "./harness.ts"
-import { reconcileRoot } from "../../src/runner/recovery.ts"
-import { readQueue, writeQueue } from "../../src/runner/queue.ts"
+import { reconcileRoot, type RecoveryStatus } from "../../src/runner/recovery.ts"
+import { readQueue, writeQueue, type QueueState } from "../../src/runner/queue.ts"
 import { createRunDirectory } from "../../src/runner/paths.ts"
 
 const NOW = Date.parse("2026-09-13T12:00:00.000Z")
@@ -493,6 +493,94 @@ describe("a root whose execution slot is held by a run nobody is running", () =>
 
       expect(readQueue(storage).activeRunId).toBe(STUCK)
       expect(existsSync(cache)).toBe(true)
+    })
+  })
+})
+
+describe("what recovery's verdict is allowed to mean", () => {
+  const ROOT = "3".repeat(64)
+  const RUN = "e".repeat(32)
+
+  /** A root with an old cache, reclaimable the moment nothing holds it. */
+  function withCache(box: Sandbox, queue: Partial<QueueState> = {}): { storage: Storage; cache: string } {
+    const storage = storageForRootKey(box.homeDir, ROOT)
+    prepareStorage(storage)
+    createRunDirectory(storage, RUN)
+    seedRun(storage, { runId: RUN, state: "launchAuthorized" })
+    // A slot by default, so what these vary is recovery's verdict about it.
+    writeQueue(storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: RUN, ...queue })
+
+    const cache = join(storage.rootDir, "DerivedData", "4".repeat(64))
+    mkdirSync(cache, { recursive: true })
+    writeFileSync(join(cache, "Build.o"), "x".repeat(4096))
+    const stale = new Date(NOW - 30 * 24 * 60 * 60 * 1000)
+    utimesSync(cache, stale, stale)
+
+    writeRegistry(box.storage, { schemaVersion: 1, roots: { [ROOT]: { lastSeenAtMs: NOW } } })
+    return { storage, cache }
+  }
+
+  /** Housekeeping whose reconciliation returns a status without probing. */
+  function housekeepReturning(box: Sandbox, status: RecoveryStatus) {
+    return runHousekeeping({
+      storage: box.storage,
+      now: () => NOW,
+      storageForRootKey: (rootKey) => storageForRootKey(box.homeDir, rootKey),
+      reconcile: () => ({ status }),
+    })
+  }
+
+  test("only a status that means recovery looked and found nothing", () => {
+    // "Anything but busy" was the tempting shape and it is wrong in three
+    // reachable ways. `stillQuarantined` means an identity could not be shown
+    // to be gone — an unaccounted-for `xcodebuild` that may be writing the
+    // very cache this would delete. `deferred` is returned without probing at
+    // all. `failed` means the coordination state could not be read, which the
+    // reclamation guard deliberately treats as held.
+    for (const status of ["stillQuarantined", "deferred", "failed", "cancelled"] as const) {
+      withSandbox((box) => {
+        const { cache } = withCache(box)
+        housekeepReturning(box, status)
+        expect({ status, kept: existsSync(cache) }).toEqual({ status, kept: true })
+      })
+    }
+
+    for (const status of ["recovered", "alreadyHealthy"] as const) {
+      withSandbox((box) => {
+        const { cache } = withCache(box)
+        housekeepReturning(box, status)
+        expect({ status, kept: existsSync(cache) }).toEqual({ status, kept: false })
+      })
+    }
+  })
+
+  test("a quarantined root keeps its caches, slot or no slot", () => {
+    // Publishing a quarantine *clears* `activeRunId` — the two must never both
+    // look true — so a root held for the strongest possible reason has no slot
+    // to show for it. A guard reading only the slot would reclaim the caches
+    // of the one kind of root whose lifecycle could not be confirmed.
+    withSandbox((box) => {
+      const { storage, cache } = withCache(box)
+      // A quarantine is published *instead of* a slot, never beside one.
+      writeQueue(storage, {
+        schemaVersion: 1,
+        nextSequence: 2,
+        tickets: [],
+        quarantine: { runId: RUN, reason: "terminationUnconfirmed", since: "2026-09-17T00:00:00.000Z" },
+      })
+
+      housekeepReturning(box, "recovered")
+      expect(existsSync(cache)).toBe(true)
+    })
+  })
+
+  test("says which roots it left holding, rather than leaving a total unexplained", () => {
+    withSandbox((box) => {
+      withCache(box)
+      const outcome = housekeepReturning(box, "deferred")
+
+      expect(outcome.status).toBe("ran")
+      expect(outcome.status === "ran" ? outcome.held : []).toEqual([ROOT])
     })
   })
 })
