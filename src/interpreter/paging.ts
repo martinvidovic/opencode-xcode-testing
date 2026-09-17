@@ -27,7 +27,7 @@ import {
 } from "../domain/limits.ts"
 import type { ScopeAttestation } from "../domain/scope.ts"
 import { CURSOR_ORDERING_VERSION, decodeCursor, encodeCursor } from "./cursor.ts"
-import { capRecords, responseBytes } from "./cap.ts"
+import { capRecords, LOCATION_FIELDS, responseBytes } from "./cap.ts"
 import { focusedDiagnostic, focusedTest, type LazyOutcome } from "./focus.ts"
 import { chunkLog, logWindow, type ChunkedLog, type LogWindow } from "./log.ts"
 import type { NormalizedIndex } from "./index-model.ts"
@@ -478,7 +478,7 @@ function focusedResponse(
  * absence — and a caller told only "it did not fit" has no way to tell an
  * enormous test name from a pathological path.
  */
-function omittedResponse(
+export function omittedResponse(
   facet: InspectionFacet,
   truncation: TruncationState,
   blockedBy: readonly string[],
@@ -489,14 +489,8 @@ function omittedResponse(
   // literal; these are field paths derived from the record, so an unbounded
   // list would push an already-fitted response over the bound it was fitted
   // to — the cap broken by the message explaining the cap.
-  const named = blockedBy.slice(0, BLOCKED_FIELD_CAP)
-  const rest = blockedBy.length - named.length
-  const fields = rest > 0 ? `${named.join(", ")} and ${rest} more` : named.join(", ")
-
-  const reason =
-    named.length === 0
-      ? OMITTED_REASON
-      : `${OMITTED_REASON}: ${fields} would have to be shortened, and a shortened identifier or safe location names something that does not exist`
+  const named = boundedFields(blockedBy)
+  const reason = omissionReason(blockedBy)
 
   // Fixed literals, unlike `reason`. Both are authored here and of known
   // length, so the envelope stays a known size — and a record that did not fit
@@ -510,6 +504,74 @@ function omittedResponse(
     data: { view: "omitted", facet, reason, blockedBy: [...named] },
     truncation,
   }
+}
+
+/**
+ * Why this record could not be returned, in the caller's terms.
+ *
+ * Separated from the envelope it goes into so that the two bounds — the
+ * fields a response names and the fields a sentence names — are computed from
+ * one list rather than from two slices that have to agree.
+ */
+export function omissionReason(blockedBy: readonly string[]): string {
+  const named = boundedFields(blockedBy)
+  if (named.length === 0) return OMITTED_REASON
+
+  const rest = blockedBy.length - named.length
+  const fields = rest > 0 ? `${named.join(", ")} and ${rest} more` : named.join(", ")
+  return `${OMITTED_REASON}: ${fields} would have to be shortened, and ${consequenceOf(named)}`
+}
+
+/**
+ * What shortening those particular fields would cost, said as itself.
+ *
+ * An oversized test name and an oversized path are different things to go and
+ * look at, and they fail differently when halved: a shortened identifier
+ * addresses nothing, while a shortened location sends a reader to a file that
+ * is not there. Naming the fields and then describing both outcomes leaves
+ * the caller to work out which one happened — which they cannot, because the
+ * field names are the only evidence and reading them is what this sentence
+ * is for.
+ *
+ * Derived from the fields the sentence actually names, not from the whole
+ * list. A consequence asserted about a field that was capped away is one the
+ * caller has no evidence for — they are told a location was the problem and
+ * shown four identifiers.
+ */
+function consequenceOf(blockedBy: readonly string[]): string {
+  const locations = blockedBy.filter(isLocationField).length
+
+  if (locations === 0) return "a shortened identifier addresses nothing"
+  if (locations === blockedBy.length) {
+    return "a shortened safe location names a file that does not exist"
+  }
+  return "a shortened identifier addresses nothing, and a shortened safe location names a file that does not exist"
+}
+
+/**
+ * Whether a blocked field is a safe location rather than an identifier.
+ *
+ * Decided by the set `cap.ts` protects them under rather than by the spelling
+ * of the name, so a leaf added there classifies itself instead of silently
+ * becoming an identifier and telling a caller the opposite of the truth.
+ *
+ * The last segment is what carries it: these are paths into a record, and the
+ * leaf is the field that was too large.
+ */
+function isLocationField(field: string): boolean {
+  const leaf = field.split(".").at(-1)
+  return leaf !== undefined && LOCATION_FIELDS.has(leaf)
+}
+
+/**
+ * The blocked fields a response is allowed to name, in order.
+ *
+ * One place, because the list and the sentence about the list have to agree:
+ * naming five in the reason and returning four in `blockedBy` would be two
+ * answers to one question.
+ */
+function boundedFields(blockedBy: readonly string[]): string[] {
+  return blockedBy.slice(0, BLOCKED_FIELD_CAP)
 }
 
 /** How many blocking fields a reason names before it summarises the rest. */

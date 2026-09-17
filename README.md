@@ -240,10 +240,20 @@ you reach for them:
   input* cannot select arbitrary execution.)
 - **No automatic reruns.** A flaky test that passes on retry is information, not
   noise. Start another Test Run yourself if you want one.
-- **No paths in results.** The only handle a result exposes is an opaque run id.
-  Result Bundles, DerivedData and logs live outside your repository, under
-  `~/Library/Application Support/opencode-xcode-test`, so a `git clean` cannot
-  destroy an in-flight run's evidence.
+- **No private or artifact paths in results.** Nothing a result carries names
+  where on this machine anything lives. Result Bundles, DerivedData and logs
+  live outside your repository, under `~/Library/Application Support/opencode-xcode-test`
+  — so a `git clean` cannot destroy an in-flight run's evidence — and that
+  location never appears in a result: the only handle to it is an opaque run
+  id. Absolute paths, home directories and temporary directories are withheld
+  from every message, including the text of an error that happened to quote
+  one.
+
+  What a result *does* carry is the repository-relative container path you
+  configured, and bounded source locations for failures and build errors —
+  `Sources/App/Login.swift:42`, relative to the project when the file is
+  inside it, and reduced to the bare filename when it is not. Those are the
+  point: a diagnostic nobody can locate is a diagnostic nobody can act on.
 - **One Test Run at a time per project.** Isolated DerivedData alone does not
   make concurrent simulator, device or package-cache use trustworthy, so runs
   are serialized across processes.
