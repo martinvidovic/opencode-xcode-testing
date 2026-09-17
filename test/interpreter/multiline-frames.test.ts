@@ -133,10 +133,12 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
 })
 
 describe("a single-line failure", () => {
-  test("reports that no trace could be read, rather than inventing one", async () => {
-    // Unchanged, and the point of the distinction. "There were none" and "none
-    // could be read" are different facts, and prose that happens to contain a
-    // symbol-like word is not a frame.
+  test("invents no trace, and does not claim one was withheld", async () => {
+    // End to end, through ingestion, retained indexing, decoding and Focused
+    // Detail (issue #99). A plain assertion failure carries no trace because
+    // there was none to carry: prose that happens to contain a symbol-like
+    // word is not a frame, and an empty stack here is the complete answer
+    // rather than a collection somebody could not fill.
     const index = await retained("test-failed")
     const diagnostic = index.testFailures[0]
     if (diagnostic === undefined) throw new Error("the fixture produced no test failure")
@@ -144,7 +146,7 @@ describe("a single-line failure", () => {
     const focused = focusedDiagnostic(index, diagnostic, TRUSTED_ROOT, undefined)
 
     expect(present(focused).stackFrames).toEqual([])
-    expect(focused.truncation.collectionTruncated).toBe(true)
+    expect(focused.truncation.collectionTruncated).toBe(false)
   })
 
   test("is not carried twice in the index", async () => {
@@ -227,5 +229,150 @@ describe("what the index keeps", () => {
 
     const kept = Object.values(detailMessages)[0]
     expect(kept?.length).toBe(DETAIL_MESSAGE_CHAR_CAP)
+  })
+})
+
+describe("what the text says about its own frames", () => {
+  /**
+   * Three answers, not two (issue #99).
+   *
+   * Reading them as two described the commonest failure there is — a plain
+   * assertion with no trace — as a collection somebody could not fill, which
+   * sent a caller looking for evidence nobody had ever withheld.
+   *
+   * Driven through `buildBuildErrors` as well as through a test failure,
+   * because AC5 asks for one deterministic rule and a rule that behaved
+   * differently for the two would not be one.
+   */
+  function buildErrorFocus(message: string): ReturnType<typeof focusedDiagnostic> {
+    const { diagnostics, detailMessages } = buildBuildErrors(
+      [{ targetName: "App", message }],
+      { runId: "run-1", trustedRoot: TRUSTED_ROOT },
+    )
+    const diagnostic = diagnostics[0]
+    if (diagnostic === undefined) throw new Error("no build error was built")
+
+    const index = syntheticIndex({ buildErrors: [diagnostic], detailMessages })
+    return focusedDiagnostic(index, diagnostic, TRUSTED_ROOT, undefined)
+  }
+
+  /** A diagnostic of this file's own, since the one above is scoped elsewhere. */
+  const SUBJECT: DiagnosticSummary = {
+    id: "diag-frames",
+    kind: "testFailure",
+    message: "XCTAssertEqual failed",
+    inspectionAvailable: true,
+  }
+
+  const TRACE = [
+    "0   App   0x0000000104a2b1c4 App.configure() + 132",
+    "1   App   0x0000000104a2b200 App.main() + 44",
+  ]
+
+  test("a build error with no trace has a complete, empty stack", () => {
+    const focused = buildErrorFocus("cannot find 'foo' in scope")
+
+    expect(present(focused).stackFrames).toEqual([])
+    expect(focused.truncation.collectionTruncated).toBe(false)
+  })
+
+  test("a build error with a trace keeps its frames and its locations", () => {
+    const focused = buildErrorFocus(["cannot find 'foo' in scope", ...TRACE].join("\n"))
+
+    expect(present(focused).stackFrames).toHaveLength(2)
+    expect(focused.truncation.collectionTruncated).toBe(false)
+  })
+
+  test("a build error whose trace is cut off says so, and invents nothing", () => {
+    const focused = buildErrorFocus(
+      ["cannot find 'foo' in scope", TRACE[0]!, "2   App   0x0000000104a2b2f0"].join("\n"),
+    )
+
+    expect(present(focused).stackFrames).toHaveLength(1)
+    expect(focused.truncation.collectionTruncated).toBe(true)
+  })
+
+  test("is decided by the text, so the two kinds of diagnostic agree", () => {
+    // The determinism AC5 asks for, over all three answers rather than over
+    // the empty one: comparing two `false`s would pass against a rule that had
+    // not changed at all.
+    const cases = [
+      { what: "no trace", message: "cannot find 'foo' in scope", truncated: false },
+      { what: "a whole trace", message: ["failed", ...TRACE].join("\n"), truncated: false },
+      {
+        what: "a trace cut off",
+        message: ["failed", TRACE[0]!, "2   App   0x0000000104a2b2f0"].join("\n"),
+        truncated: true,
+      },
+    ]
+
+    for (const { what, message, truncated } of cases) {
+      const asBuildError = buildErrorFocus(message)
+      const asFailure = focusedDiagnostic(
+        syntheticIndex({ testFailures: [SUBJECT], detailMessages: { [SUBJECT.id]: message } }),
+        SUBJECT,
+        TRUSTED_ROOT,
+        undefined,
+      )
+
+      expect({ what, value: asBuildError.truncation.collectionTruncated }).toEqual({ what, value: truncated })
+      expect({ what, value: asFailure.truncation.collectionTruncated }).toEqual({ what, value: truncated })
+    }
+  })
+
+  test("calls an unsymbolicated frame a trace it could not read", () => {
+    // `???` for a module is ordinary in a real backtrace — a frame outside any
+    // image this run can name. It is a frame that was there and could not be
+    // read, which is what `partial` says, and inventing one to stand in for it
+    // is the thing #8 forbids.
+    const focused = buildErrorFocus(["failed", "3   ???   0x00000001045a1000"].join("\n"))
+
+    expect(present(focused).stackFrames).toEqual([])
+    expect(focused.truncation.collectionTruncated).toBe(true)
+  })
+
+  test("does not call a compiler diagnostic a cut-off source line", () => {
+    // `at <file>:<line>` is also how `xcodebuild` writes an ordinary error,
+    // and nothing in the text tells a truncated source frame from a sentence
+    // that begins the same way. Counting those as frame-shaped would put
+    // `partial` on complete build errors — this defect, moved from assertions
+    // to compiler output.
+    for (const message of [
+      "at Sources/App/Login.swift:42: error: cannot find 'foo' in scope",
+      "at Sources/App/Login.swift:42 (in LoginTests)",
+      "  at 10:30 the run began",
+    ]) {
+      expect(buildErrorFocus(message).truncation.collectionTruncated).toBe(false)
+    }
+  })
+
+  test("reads a single-line failure as having had no trace, not a lost one", () => {
+    // The fallback path. `detailMessages` carries a message only when it had
+    // newlines, so no entry means the original was one line — and one line
+    // cannot have held a backtrace. An empty stack is the complete answer.
+    const focused = focusedDiagnostic(
+      syntheticIndex({ testFailures: [SUBJECT], detailMessages: {} }),
+      SUBJECT,
+      TRUSTED_ROOT,
+      undefined,
+    )
+
+    expect(present(focused).stackFrames).toEqual([])
+    expect(focused.truncation.collectionTruncated).toBe(false)
+  })
+
+  test("reports its caps accurately either way", async () => {
+    // An empty complete stack must not make the rest of the truncation
+    // metadata lie in the other direction.
+    const index = await retained("test-failed")
+    const diagnostic = index.testFailures[0]
+    if (diagnostic === undefined) throw new Error("the fixture produced no test failure")
+
+    const focused = focusedDiagnostic(index, diagnostic, TRUSTED_ROOT, undefined)
+    expect(focused.truncation.fieldTruncated).toBe(false)
+    expect(focused.truncation.responseTruncated).toBe(false)
+    expect(Buffer.byteLength(JSON.stringify(focused.focused), "utf8")).toBeLessThanOrEqual(
+      RESPONSE_BYTE_CAP,
+    )
   })
 })

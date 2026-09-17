@@ -25,7 +25,7 @@ The compact, classified account of a Test Run exposed to the model, including en
 _Avoid_: Log, formatter output
 
 **Facet**:
-One named, separately-readable view of a retained Test Run — `scope`, `failures`, `buildErrors`, `tests`, `log`. Each reports its own availability, so "there were none" and "none could be read" stay distinguishable per view.
+One named, separately-readable view of a retained Test Run — `scope`, `failures`, `buildErrors`, `tests`, `log`. Each reports its own availability, so "there were none" and "none could be read" stay distinguishable per view. Within a view the same distinction runs to three: see **Stack Frame Evidence**.
 _Avoid_: Section, category, channel
 
 **Focused Detail**:
@@ -63,3 +63,7 @@ _Avoid_: Dead project, orphaned repo, abandoned root
 **Adapter Failure**:
 The infrastructure reason for a Test Run the Test Tool itself could not finish handling — a decoder meeting a shape it did not expect, a renderer meeting a payload it could not render. Deliberately not `runnerFailure`: that names the machinery which runs `xcodebuild`, and a caller told it goes to inspect a toolchain that is working. A contained failure keeps the run id, so the evidence stays reachable.
 _Avoid_: Internal error, unexpected error, crash
+
+**Stack Frame Evidence**:
+What a failure's text says about its own backtrace, which is three answers rather than two: **absent** — nothing in it was frame-shaped, so an empty stack is complete; **extracted** — every frame-shaped line was read; **partial** — frame-shaped lines were there and at least one could not be read. Only the third is a loss. Reading it as two described the commonest failure there is — a plain assertion with no trace — as evidence somebody had withheld.
+_Avoid_: No frames, missing stack, unavailable trace

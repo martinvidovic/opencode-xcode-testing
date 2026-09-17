@@ -97,15 +97,35 @@ describe("stack frames", () => {
     ])
   })
 
-  test("are absent, and said to be absent, when no trace is recognizable", () => {
+  test("are empty and complete when the failure carried no trace", () => {
     const view = focus("XCTAssertEqual failed: no trace here at all")
     const focused = present(view)
     const { truncation } = view
 
-    // "There were none" and "none could be read" are different facts, and #8
-    // requires the second to be reported rather than presented as the first.
+    // Three facts, not two (issue #99). "There were none", "none could be
+    // read" and "some could be read" are different, and this is the first:
+    // nothing was withheld, because nothing was there. Reported as truncation
+    // it sent a caller looking for evidence nobody had, on the commonest
+    // failure there is.
     expect(focused.stackFrames).toEqual([])
-    expect(truncation.collectionTruncated).toBe(true)
+    expect(truncation.collectionTruncated).toBe(false)
+  })
+
+  test("are incomplete when a trace was being written and could not be read", () => {
+    // The case that really is a loss: the text is frame-shaped, so a trace was
+    // there, and this tool did not manage to read all of it.
+    const view = focus(
+      [
+        "XCTAssertEqual failed",
+        "0   AppTests   0x0000000104a2b1c4 LoginTests.testSignsIn() + 132",
+        // An address and then nothing: a trace line cut off mid-write.
+        "1   AppTests   0x0000000104a2b1c8",
+      ].join("\n"),
+    )
+
+    // No frame is invented to stand in for the line that would not parse.
+    expect(present(view).stackFrames).toHaveLength(1)
+    expect(view.truncation.collectionTruncated).toBe(true)
   })
 
   test("are never synthesized from the diagnostic's own location", () => {
@@ -122,7 +142,10 @@ describe("stack frames", () => {
   })
 
   test("read nothing out of ordinary prose that merely mentions a symbol", () => {
-    expect(extractFrames("expected LoginTests.testSignsIn() to pass", ROOT).recognized).toBe(false)
+    const extracted = extractFrames("expected LoginTests.testSignsIn() to pass", ROOT)
+    expect(extracted.frames).toEqual([])
+    // Absent, not partial: nothing was withheld, because nothing was there.
+    expect(extracted.status).toBe("absent")
   })
 })
 

@@ -126,8 +126,9 @@ export function focusedDiagnostic(
 
   // Frames come from the text as it arrived, with its lines intact; the
   // message shown is still built from the normalized one. `detailMessages`
-  // says why. The fallback recognizes nothing, which for text that no longer
-  // has lines is the honest answer rather than a failure to try.
+  // says why. Text that no longer has lines cannot be frame-shaped, so the
+  // fallback reads as `absent` — an empty stack that is complete, which for
+  // collapsed text is the honest answer rather than a failure to try.
   const detail = index.detailMessages?.[diagnostic.id] ?? full
   const extracted = extractFrames(detail, trustedRoot)
   const outcomes = extracted.frames.map(capFrame)
@@ -162,15 +163,17 @@ export function focusedDiagnostic(
   return fit(view, {
     ...UNTRUNCATED,
     fieldTruncated: message.truncated || frameTextShortened || attachmentTextShortened,
-    // Zero frames because none could be read is a collection we could not
-    // fill, and #8 requires saying so rather than presenting an empty stack
-    // as a complete one.
+    // A stack that could not be fully read is a collection we could not
+    // fill, and #8 requires saying so rather than presenting a short stack as
+    // a complete one. A failure that had no trace at all is a different fact
+    // and is not truncation (issue #99): saying otherwise sent a caller
+    // looking for withheld evidence on every plain assertion failure there is.
     collectionTruncated:
       frames.truncated ||
       frameDropped ||
       activities.truncated ||
       attachments.truncated ||
-      !extracted.recognized,
+      extracted.status === "partial",
   })
 }
 
