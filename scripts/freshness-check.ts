@@ -19,10 +19,10 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { safeFailure } from "../src/adapter/sanitize.ts"
 import { RUN_ARTIFACTS } from "../src/runner/paths.ts"
 import { formatDestination } from "../src/runner/xcodebuild.ts"
-import { safeFailure } from "../src/adapter/sanitize.ts"
-import { discoverDestination, type DestinationDiscovery } from "./gate/destination.ts"
+import { discoverDestination } from "./gate/destination.ts"
 import { FIXTURE, generate } from "./generate-fixture-project.ts"
 
 export const DEFAULT_FIXTURE_DIR = join(import.meta.dir, "..", "test", "fixtures", "xcresult")
@@ -113,7 +113,7 @@ const REQUIRED_KEYS: Record<string, string[]> = {
  * build reports that it could not, never drift it did not observe.
  */
 export function produceAndExamineBundle(
-  options: { workspace?: FreshnessWorkspace; destination?: () => DestinationDiscovery } = {},
+  options: { workspace?: FreshnessWorkspace } = {},
 ): BundleExamination {
   const freshnessWorkspace = options.workspace ?? {
     allocate: () => mkdtempSync(join(tmpdir(), "xcode-test-freshness-")),
@@ -129,7 +129,7 @@ export function produceAndExamineBundle(
     // on the machine this was written on; a check that silently produced
     // nothing everywhere else would report `fresh` on the strength of having
     // looked at nothing.
-    const destination = (options.destination ?? discoverDestination)()
+    const destination = discoverDestination()
     if (destination.status !== "found") {
       return {
         status: "unavailable",
@@ -155,12 +155,7 @@ export function produceAndExamineBundle(
 
     return existsSync(bundlePath)
       ? examineBundle(bundlePath)
-      : {
-          status: "unavailable",
-          reason: `a Result Bundle could not be produced on this machine: ${firstLine(built.stdout)}`,
-          commands: [],
-          missingKeys: [],
-        }
+      : unavailableProducedBundle(built.stdout)
   } catch (error) {
     return {
       status: "unavailable",
@@ -176,6 +171,16 @@ export function produceAndExamineBundle(
 export type FreshnessWorkspace = {
   allocate(): string
   cleanup(workspace: string): void
+}
+
+/** Report an xcodebuild attempt that completed without a Result Bundle. */
+export function unavailableProducedBundle(output: string): BundleExamination {
+  return {
+    status: "unavailable",
+    reason: `a Result Bundle could not be produced on this machine: ${safeFailure(new Error(output))}`,
+    commands: [],
+    missingKeys: [],
+  }
 }
 
 /**

@@ -17,7 +17,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { examineBundle, produceAndExamineBundle, runFreshnessCheck } from "../../scripts/freshness-check.ts"
+import {
+  examineBundle,
+  produceAndExamineBundle,
+  runFreshnessCheck,
+  unavailableProducedBundle,
+} from "../../scripts/freshness-check.ts"
 
 /** A fake `xcresulttool` that answers each command from a table. */
 function reader(payloads: Record<string, unknown>) {
@@ -94,7 +99,7 @@ describe("examining a bundle", () => {
   })
 })
 
-describe("producing a bundle", () => {
+describe("producing a Result Bundle", () => {
   test("reports an unavailable examination when its workspace cannot be allocated", () => {
     let cleaned = false
 
@@ -144,26 +149,16 @@ describe("producing a bundle", () => {
     }
   })
 
-  test("cleans up an allocated workspace after a normal unavailable return", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "xcode-test-freshness-"))
-    const cleaned: string[] = []
+  test("sanitizes xcodebuild output when no Result Bundle was produced", () => {
+    const examination = unavailableProducedBundle(
+      "xcodebuild failed under /Users/someone/Library/Caches/xcode-test-freshness\nmore output",
+    )
 
-    try {
-      const examination = produceAndExamineBundle({
-        workspace: {
-          allocate: () => workspace,
-          cleanup: (path) => {
-            cleaned.push(path)
-          },
-        },
-        destination: () => ({ status: "none", diagnostic: "no simulator" }),
-      })
-
-      expect(examination.status).toBe("unavailable")
-      expect(cleaned).toEqual([workspace])
-    } finally {
-      rmSync(workspace, { recursive: true, force: true })
-    }
+    expect(examination.status).toBe("unavailable")
+    expect(examination.reason).toContain("Error")
+    expect(examination.reason).toContain("<path>")
+    expect(examination.reason).not.toContain("/Users/someone")
+    expect((examination.reason ?? "").length).toBeLessThanOrEqual(300)
   })
 })
 
