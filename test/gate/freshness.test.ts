@@ -143,6 +143,24 @@ describe("producing a bundle", () => {
       rmSync(directory, { recursive: true, force: true })
     }
   })
+
+  test("cleans up an allocated workspace after a successful examination", () => {
+    const workspace = "/workspace/freshness"
+    const cleaned: string[] = []
+
+    const examination = produceAndExamineBundle({
+      workspace: {
+        allocate: () => workspace,
+        cleanup: (path) => {
+          cleaned.push(path)
+        },
+      },
+      produce: () => ({ status: "examined", commands: [], missingKeys: [] }),
+    })
+
+    expect(examination.status).toBe("examined")
+    expect(cleaned).toEqual([workspace])
+  })
 })
 
 describe("the freshness report", () => {
