@@ -181,26 +181,19 @@ describe("a B1 host startup", () => {
     const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") })
     const configDirectory = mkdtempSync(join(tmpdir(), "xcode-test-occupied-port-"))
     const port = reservation.port
+    let first: Awaited<ReturnType<typeof bootHost>> | undefined
 
     try {
       if (port === undefined) throw new Error("expected the reserved port")
       reservation.stop(true)
 
-      const first = await bootHost({ configDirectory, cwd: REPO, port })
-      await first.stop()
+      first = await bootHost({ configDirectory, cwd: REPO, port })
+      await expect(bootHost({ configDirectory, cwd: REPO, port })).rejects.toThrow()
 
-      const held = Bun.serve({
-        hostname: "127.0.0.1",
-        port,
-        fetch: () => new Response("leftover listener"),
-      })
-      try {
-        await expect(bootHost({ configDirectory, cwd: REPO, port })).rejects.toThrow()
-        expect(await (await fetch(`http://127.0.0.1:${port}`)).text()).toBe("leftover listener")
-      } finally {
-        held.stop(true)
-      }
+      const response = await fetch(`http://127.0.0.1:${port}/global/health`)
+      expect(response.ok).toBe(true)
     } finally {
+      await first?.stop()
       rmSync(configDirectory, { recursive: true, force: true })
     }
   }, 30_000)
