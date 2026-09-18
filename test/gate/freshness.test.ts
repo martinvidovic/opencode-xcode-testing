@@ -22,6 +22,7 @@ import {
   produceAndExamineBundle,
   runFreshnessCheck,
   unavailableProducedBundle,
+  withFreshnessWorkspace,
 } from "../../scripts/freshness-check.ts"
 
 /** A fake `xcresulttool` that answers each command from a table. */
@@ -147,6 +148,38 @@ describe("producing a Result Bundle", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test("cleans up a workspace after a successful Result Bundle examination", () => {
+    const workspace = "/workspace/freshness"
+    const cleaned: string[] = []
+
+    const examination = withFreshnessWorkspace(
+      {
+        allocate: () => workspace,
+        cleanup: (path) => {
+          cleaned.push(path)
+        },
+      },
+      () => ({ status: "examined" as const, commands: [], missingKeys: [] }),
+    )
+
+    expect(examination.status).toBe("examined")
+    expect(cleaned).toEqual([workspace])
+  })
+
+  test("does not let cleanup failure make the Result Bundle check fatal", () => {
+    expect(() =>
+      withFreshnessWorkspace(
+        {
+          allocate: () => "/workspace/freshness",
+          cleanup: () => {
+            throw new Error("cleanup failed")
+          },
+        },
+        () => "examined",
+      ),
+    ).not.toThrow()
   })
 
   test("sanitizes xcodebuild output when no Result Bundle was produced", () => {

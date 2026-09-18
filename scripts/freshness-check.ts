@@ -119,43 +119,43 @@ export function produceAndExamineBundle(
     allocate: () => mkdtempSync(join(tmpdir(), "xcode-test-freshness-")),
     cleanup: (workspace: string) => rmSync(workspace, { recursive: true, force: true }),
   }
-  let workspace: string | undefined
   try {
-    workspace = freshnessWorkspace.allocate()
-    const tree = generate({ out: join(workspace, "project"), variant: "passing" })
-    const bundlePath = join(workspace, RUN_ARTIFACTS.resultBundle)
+    return withFreshnessWorkspace(freshnessWorkspace, (workspace) => {
+      const tree = generate({ out: join(workspace, "project"), variant: "passing" })
+      const bundlePath = join(workspace, RUN_ARTIFACTS.resultBundle)
 
-    // Discovered, not assumed. "iPhone 17" is a device that happens to exist
-    // on the machine this was written on; a check that silently produced
-    // nothing everywhere else would report `fresh` on the strength of having
-    // looked at nothing.
-    const destination = discoverDestination()
-    if (destination.status !== "found") {
-      return {
-        status: "unavailable",
-        reason: destination.diagnostic,
-        commands: [],
-        missingKeys: [],
+      // Discovered, not assumed. "iPhone 17" is a device that happens to exist
+      // on the machine this was written on; a check that silently produced
+      // nothing everywhere else would report `fresh` on the strength of having
+      // looked at nothing.
+      const destination = discoverDestination()
+      if (destination.status !== "found") {
+        return {
+          status: "unavailable",
+          reason: destination.diagnostic,
+          commands: [],
+          missingKeys: [],
+        }
       }
-    }
 
-    const built = execute("/usr/bin/xcodebuild", [
-      "test",
-      "-project",
-      join(tree.root, `${FIXTURE.projectName}.xcodeproj`),
-      "-scheme",
-      FIXTURE.scheme,
-      "-destination",
-      formatDestination(destination.destination),
-      "-resultBundlePath",
-      bundlePath,
-      "-derivedDataPath",
-      join(workspace, "DerivedData"),
-    ])
+      const built = execute("/usr/bin/xcodebuild", [
+        "test",
+        "-project",
+        join(tree.root, `${FIXTURE.projectName}.xcodeproj`),
+        "-scheme",
+        FIXTURE.scheme,
+        "-destination",
+        formatDestination(destination.destination),
+        "-resultBundlePath",
+        bundlePath,
+        "-derivedDataPath",
+        join(workspace, "DerivedData"),
+      ])
 
-    return existsSync(bundlePath)
-      ? examineBundle(bundlePath)
-      : unavailableProducedBundle(built.stdout)
+      return existsSync(bundlePath)
+        ? examineBundle(bundlePath)
+        : unavailableProducedBundle(built.stdout)
+    })
   } catch (error) {
     return {
       status: "unavailable",
@@ -163,14 +163,32 @@ export function produceAndExamineBundle(
       commands: [],
       missingKeys: [],
     }
-  } finally {
-    if (workspace !== undefined) freshnessWorkspace.cleanup(workspace)
   }
 }
 
 export type FreshnessWorkspace = {
   allocate(): string
   cleanup(workspace: string): void
+}
+
+/** Allocate one workspace, run the operation, then clean it up without masking its result. */
+export function withFreshnessWorkspace<T>(
+  freshnessWorkspace: FreshnessWorkspace,
+  use: (workspace: string) => T,
+): T {
+  let workspace: string | undefined
+  try {
+    workspace = freshnessWorkspace.allocate()
+    return use(workspace)
+  } finally {
+    if (workspace !== undefined) {
+      try {
+        freshnessWorkspace.cleanup(workspace)
+      } catch {
+        // Cleanup is best-effort: it must not turn this non-fatal check fatal.
+      }
+    }
+  }
 }
 
 /** Report an xcodebuild attempt that completed without a Result Bundle. */
