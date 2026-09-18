@@ -13,8 +13,11 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { examineBundle, runFreshnessCheck } from "../../scripts/freshness-check.ts"
+import { examineBundle, produceAndExamineBundle, runFreshnessCheck } from "../../scripts/freshness-check.ts"
 
 /** A fake `xcresulttool` that answers each command from a table. */
 function reader(payloads: Record<string, unknown>) {
@@ -88,6 +91,57 @@ describe("examining a bundle", () => {
     // check to encounter, and inventing drift from it would be a lie.
     expect(examination.status).toBe("unavailable")
     expect(examination.missingKeys).toEqual([])
+  })
+})
+
+describe("producing a bundle", () => {
+  test("reports an unavailable examination when its workspace cannot be allocated", () => {
+    let cleaned = false
+
+    const examination = produceAndExamineBundle({
+      workspace: {
+        allocate: () => {
+          throw new Error("EACCES: cannot create /Users/someone/Library/Caches/xcode-test-freshness")
+        },
+        cleanup: () => {
+          cleaned = true
+        },
+      },
+    })
+
+    expect(examination).toMatchObject({
+      status: "unavailable",
+      commands: [],
+      missingKeys: [],
+    })
+    expect(examination.reason).toContain("Error")
+    expect(examination.reason).not.toContain("/Users/someone")
+    expect(examination.reason).toContain("<path>")
+    expect((examination.reason ?? "").length).toBeLessThanOrEqual(300)
+    expect(cleaned).toBe(false)
+  })
+
+  test("cleans up an allocated workspace when fixture generation later fails", () => {
+    const directory = mkdtempSync(join(tmpdir(), "xcode-test-freshness-"))
+    const workspace = join(directory, "not-a-directory")
+    writeFileSync(workspace, "not a workspace")
+    const cleaned: string[] = []
+
+    try {
+      const examination = produceAndExamineBundle({
+        workspace: {
+          allocate: () => workspace,
+          cleanup: (path) => {
+            cleaned.push(path)
+          },
+        },
+      })
+
+      expect(examination.status).toBe("unavailable")
+      expect(cleaned).toEqual([workspace])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 

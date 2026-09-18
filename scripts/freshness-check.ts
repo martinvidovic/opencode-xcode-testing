@@ -21,6 +21,7 @@ import { join } from "node:path"
 
 import { RUN_ARTIFACTS } from "../src/runner/paths.ts"
 import { formatDestination } from "../src/runner/xcodebuild.ts"
+import { safeFailure } from "../src/adapter/sanitize.ts"
 import { discoverDestination } from "./gate/destination.ts"
 import { FIXTURE, generate } from "./generate-fixture-project.ts"
 
@@ -111,9 +112,16 @@ const REQUIRED_KEYS: Record<string, string[]> = {
  * and runs it. Non-fatal like everything else here: a machine that cannot
  * build reports that it could not, never drift it did not observe.
  */
-export function produceAndExamineBundle(): BundleExamination {
-  const workspace = mkdtempSync(join(tmpdir(), "xcode-test-freshness-"))
+export function produceAndExamineBundle(
+  options: { workspace?: FreshnessWorkspace } = {},
+): BundleExamination {
+  const freshnessWorkspace = options.workspace ?? {
+    allocate: () => mkdtempSync(join(tmpdir(), "xcode-test-freshness-")),
+    cleanup: (workspace: string) => rmSync(workspace, { recursive: true, force: true }),
+  }
+  let workspace: string | undefined
   try {
+    workspace = freshnessWorkspace.allocate()
     const tree = generate({ out: join(workspace, "project"), variant: "passing" })
     const bundlePath = join(workspace, RUN_ARTIFACTS.resultBundle)
 
@@ -156,13 +164,18 @@ export function produceAndExamineBundle(): BundleExamination {
   } catch (error) {
     return {
       status: "unavailable",
-      reason: `a Result Bundle could not be produced on this machine: ${(error as Error).name}`,
+      reason: `a Result Bundle could not be produced on this machine: ${safeFailure(error)}`,
       commands: [],
       missingKeys: [],
     }
   } finally {
-    rmSync(workspace, { recursive: true, force: true })
+    if (workspace !== undefined) freshnessWorkspace.cleanup(workspace)
   }
+}
+
+export type FreshnessWorkspace = {
+  allocate(): string
+  cleanup(workspace: string): void
 }
 
 /**
