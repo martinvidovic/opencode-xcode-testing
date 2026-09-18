@@ -145,7 +145,9 @@ function listening(child: ReturnType<typeof spawn>): Promise<number> {
       output += chunk.toString("utf8")
     })
     child.on("error", (error) => settle(error))
-    child.on("exit", (code) => settle(new Error(`the host exited with ${code ?? "no code"}`)))
+    child.on("close", (code) =>
+      settle(new Error(`the host exited with ${code ?? "no code"}: ${safeFailure(new Error(output))}`)),
+    )
   })
 }
 

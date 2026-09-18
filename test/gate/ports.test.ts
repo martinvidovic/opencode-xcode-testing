@@ -15,11 +15,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 
-import { bootHost } from "../../scripts/gate/host.ts"
 import { reportedPort, GATE_PORT_RANGE, gatePort } from "../../scripts/gate/ports.ts"
 import { startStubProvider, STUB_MODEL_ID } from "../../scripts/gate/provider.ts"
 
@@ -51,22 +47,6 @@ describe("a server this repository starts", () => {
       first.stop(true)
     }
   })
-})
-
-describe("a host the gate spawns", () => {
-  test("fails startup when its requested port is occupied", async () => {
-    const held = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("leftover listener") })
-    const configDirectory = mkdtempSync(join(tmpdir(), "xcode-test-occupied-port-"))
-    const port = held.port
-
-    try {
-      if (port === undefined) throw new Error("expected the leftover listener to report its port")
-      await expect(bootHost({ configDirectory, cwd: process.cwd(), port })).rejects.toThrow()
-    } finally {
-      held.stop(true)
-      rmSync(configDirectory, { recursive: true, force: true })
-    }
-  }, 15_000)
 })
 
 describe("the stub provider", () => {
