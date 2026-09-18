@@ -22,7 +22,7 @@ import { join } from "node:path"
 import { RUN_ARTIFACTS } from "../src/runner/paths.ts"
 import { formatDestination } from "../src/runner/xcodebuild.ts"
 import { safeFailure } from "../src/adapter/sanitize.ts"
-import { discoverDestination } from "./gate/destination.ts"
+import { discoverDestination, type DestinationDiscovery } from "./gate/destination.ts"
 import { FIXTURE, generate } from "./generate-fixture-project.ts"
 
 export const DEFAULT_FIXTURE_DIR = join(import.meta.dir, "..", "test", "fixtures", "xcresult")
@@ -113,7 +113,7 @@ const REQUIRED_KEYS: Record<string, string[]> = {
  * build reports that it could not, never drift it did not observe.
  */
 export function produceAndExamineBundle(
-  options: { workspace?: FreshnessWorkspace } = {},
+  options: { workspace?: FreshnessWorkspace; destination?: () => DestinationDiscovery } = {},
 ): BundleExamination {
   const freshnessWorkspace = options.workspace ?? {
     allocate: () => mkdtempSync(join(tmpdir(), "xcode-test-freshness-")),
@@ -129,7 +129,7 @@ export function produceAndExamineBundle(
     // on the machine this was written on; a check that silently produced
     // nothing everywhere else would report `fresh` on the strength of having
     // looked at nothing.
-    const destination = discoverDestination()
+    const destination = (options.destination ?? discoverDestination)()
     if (destination.status !== "found") {
       return {
         status: "unavailable",

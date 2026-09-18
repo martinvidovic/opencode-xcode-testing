@@ -144,6 +144,27 @@ describe("producing a bundle", () => {
     }
   })
 
+  test("cleans up an allocated workspace after a normal unavailable return", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "xcode-test-freshness-"))
+    const cleaned: string[] = []
+
+    try {
+      const examination = produceAndExamineBundle({
+        workspace: {
+          allocate: () => workspace,
+          cleanup: (path) => {
+            cleaned.push(path)
+          },
+        },
+        destination: () => ({ status: "none", diagnostic: "no simulator" }),
+      })
+
+      expect(examination.status).toBe("unavailable")
+      expect(cleaned).toEqual([workspace])
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("the freshness report", () => {
