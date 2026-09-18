@@ -9,13 +9,17 @@
  * `ports.ts` holds the reasoning, including why the two kinds of server are
  * fixed two different ways. What is here is what can be shown in this layer:
  * a server this repository starts, proved to come up with every one of the
- * old numbers held against it. The paths that *spawn* `opencode serve` need
- * the real binary and belong to the acceptance gate (ADR 0001, Layer 4);
- * their port handling is covered below only where it is a pure function.
+ * old numbers held against it. The spawned-host path uses the real binary to
+ * reproduce an occupied-port startup failure; its dynamic-port handling stays
+ * covered below at the pure helper seam.
  */
 
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
+import { bootHost } from "../../scripts/gate/host.ts"
 import { reportedPort, GATE_PORT_RANGE, gatePort } from "../../scripts/gate/ports.ts"
 import { startStubProvider, STUB_MODEL_ID } from "../../scripts/gate/provider.ts"
 
@@ -47,6 +51,22 @@ describe("a server this repository starts", () => {
       first.stop(true)
     }
   })
+})
+
+describe("a host the gate spawns", () => {
+  test("fails startup when its requested port is occupied", async () => {
+    const held = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("leftover listener") })
+    const configDirectory = mkdtempSync(join(tmpdir(), "xcode-test-occupied-port-"))
+    const port = held.port
+
+    try {
+      if (port === undefined) throw new Error("expected the leftover listener to report its port")
+      await expect(bootHost({ configDirectory, cwd: process.cwd(), port })).rejects.toThrow()
+    } finally {
+      held.stop(true)
+      rmSync(configDirectory, { recursive: true, force: true })
+    }
+  }, 15_000)
 })
 
 describe("the stub provider", () => {
