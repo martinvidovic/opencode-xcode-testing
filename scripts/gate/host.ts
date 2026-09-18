@@ -69,9 +69,9 @@ export async function bootHost(input: {
   configDirectory: string
   cwd: string
   /** Explicit only when a gate test must reproduce an occupied-port startup failure. */
-  port?: number
+  requestedPort?: number
 }): Promise<BootedHost> {
-  const requested = input.port ?? gatePort()
+  const requested = input.requestedPort ?? gatePort()
   const child = spawn(
     "opencode",
     ["serve", "--hostname=127.0.0.1", `--port=${requested}`],

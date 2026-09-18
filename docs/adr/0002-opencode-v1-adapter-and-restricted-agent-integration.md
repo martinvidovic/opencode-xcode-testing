@@ -525,7 +525,7 @@ they are deliberate rather than accidental:
   is still there. "The signal could not be delivered" is not a state a real
   machine can be asked to produce on demand, and it is the one that decides
   whether a trusted root is held or released.
-- `bootHost.port` (issue #133) — an explicit requested OpenCode port for the
+- `bootHost.requestedPort` (issue #133) — an explicit requested OpenCode port for the
   B1 host test. Holding it lets the test reproduce a new host failing while a
   client at that fixed endpoint still reaches the existing listener.
 
