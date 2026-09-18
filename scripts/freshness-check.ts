@@ -113,10 +113,7 @@ const REQUIRED_KEYS: Record<string, string[]> = {
  * build reports that it could not, never drift it did not observe.
  */
 export function produceAndExamineBundle(
-  options: {
-    workspace?: FreshnessWorkspace
-    produce?: (workspace: string) => BundleExamination
-  } = {},
+  options: { workspace?: FreshnessWorkspace } = {},
 ): BundleExamination {
   const freshnessWorkspace = options.workspace ?? {
     allocate: () => mkdtempSync(join(tmpdir(), "xcode-test-freshness-")),
@@ -125,7 +122,6 @@ export function produceAndExamineBundle(
   let workspace: string | undefined
   try {
     workspace = freshnessWorkspace.allocate()
-    if (options.produce !== undefined) return options.produce(workspace)
     const tree = generate({ out: join(workspace, "project"), variant: "passing" })
     const bundlePath = join(workspace, RUN_ARTIFACTS.resultBundle)
 
