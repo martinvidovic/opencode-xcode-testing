@@ -9,24 +9,23 @@
  * The two kinds of server fail differently, and neither failure says "port".
  * A server this repository starts refuses outright with `EADDRINUSE`, which
  * surfaces as a suite that could not begin. A host this repository only
- * *spawns* does not refuse at all: measured against a port another process was
- * holding, `opencode serve` reported that it was listening and went on
- * answering. What comes out of that is a scenario that saw the wrong server's
- * answer, reported as a defect in the tool — three such failures in one
- * session sent somebody looking for one.
+ * *spawns* fails startup when its requested port is occupied. The stale-host
+ * hazard is elsewhere: a client still configured with an old fixed endpoint
+ * reaches the listener the new host failed to replace, and reports that old
+ * host's answer as a defect in the tool.
  *
  * There is no probe here, for the reason probes do not work: a port that is
- * free when it is checked is not free when it is bound, and on the spawned
- * side a bind that cannot fail could not tell you either way. Two mechanisms
- * instead, and each is exact for what it covers.
+ * free when it is checked is not free when it is bound. Two mechanisms instead,
+ * each for what it covers.
  *
  * - A server this repository starts asks the kernel for a port — `port: 0`,
  *   and then whatever came back. That is collision-free by construction, not
  *   by luck.
- * - A server this repository only *spawns* — `opencode serve`, which ignores
- *   `--port=0` and falls back to its own default — is given a port chosen
- *   fresh for the invocation, and is then believed about which port it bound
- *   rather than assumed.
+ * - A server this repository only *spawns* — `opencode serve`, which treats
+ *   `--port=0` as its default `4096` — is given a port chosen fresh for the
+ *   invocation. Random selection reduces collisions; it cannot prevent them.
+ *   The host is then believed about which port it actually bound rather than
+ *   assumed.
  */
 
 import { randomInt } from "node:crypto"
@@ -46,7 +45,7 @@ export const GATE_PORT_RANGE = { first: 40_000, last: 49_000 } as const
  * Random rather than derived from anything, because the two things being
  * avoided are a leftover of an earlier gate run and a sibling one running
  * now. A fixed number collides with both by definition; a number drawn per
- * call collides with either only by coincidence.
+ * call makes either collision less likely, not impossible.
  *
  * Nothing excludes the stub provider's port: that one is assigned by the
  * kernel from the ephemeral range, which begins above this one ends.

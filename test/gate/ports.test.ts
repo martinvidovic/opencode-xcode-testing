@@ -82,9 +82,10 @@ describe("the stub provider", () => {
     }
   })
 
-  test("two of them do not collide, however many run at once", async () => {
+  test("asks the kernel for independent ports", async () => {
     // Two overlapping gate invocations, in the one respect this file can
-    // reproduce in-process.
+    // reproduce in-process. This is kernel allocation, not a random-port
+    // guarantee: the kernel makes simultaneous binds distinct.
     const stubs = [startStubProvider(), startStubProvider(), startStubProvider()]
     try {
       expect(new Set(stubs.map((stub) => stub.port)).size).toBe(stubs.length)
@@ -107,10 +108,10 @@ describe("a port chosen for a spawned host", () => {
     }
   })
 
-  test("differs between gate runs, which is the whole mechanism", () => {
+  test("varies across gate runs", () => {
     // Not "never one of the old four" — that would be a coincidence test that
     // fails one run in twelve. The property is that nothing is written down,
-    // and a number that is drawn is a number two gate runs do not share.
+    // and a number that is drawn makes two gate runs less likely to share one.
     const drawn = new Set(Array.from({ length: 50 }, () => gatePort()))
 
     expect(drawn.size).toBeGreaterThan(1)

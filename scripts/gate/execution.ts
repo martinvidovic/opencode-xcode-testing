@@ -155,10 +155,10 @@ export async function runExecutionGate(
 
     const { client, server } = await createOpencode({
       // Chosen for this gate run rather than fixed (issue #125). Two gate
-      // runs overlapping used to pick the same two numbers, and a spawned
-      // `opencode serve` does not refuse a port somebody else holds — it
-      // reports that it is listening and answers, which is how a collision
-      // arrived as a scenario failure about something else entirely.
+      // runs overlapping used to pick the same two numbers. An occupied port
+      // makes the new `opencode serve` fail startup; the hazard is a client
+      // still aimed at that old fixed endpoint reaching the leftover listener
+      // and turning its answer into a scenario failure about something else.
       //
       // The SDK reads the URL the host prints and builds its client from it,
       // so what is passed here is the request and what it talks to is the

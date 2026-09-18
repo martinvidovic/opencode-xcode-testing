@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Make the host's own `@opencode-ai/plugin` resolvable from this checkout.
+ * Make OpenCode's host-managed `@opencode-ai/plugin` resolvable from this checkout.
  *
  * A source-loaded plugin resolves its imports from its **own** location, not
  * from OpenCode's config directory — so a checkout with no `node_modules` fails
@@ -9,8 +9,9 @@
  * which is exactly why this is a scripted step rather than a sentence in a
  * README that people skim.
  *
- * This creates a symlink rather than installing a dependency: the package is
- * host-provided at runtime, and the repository commits no manifest for it.
+ * This creates a symlink rather than installing a dependency: OpenCode installs
+ * and manages the package in its config environment, and the repository commits
+ * no manifest for it.
  *
  * Usage: bun scripts/link-host-package.ts [--config <dir>]
  */

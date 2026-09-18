@@ -29,7 +29,7 @@ checking this claim needs all three:
 | Artifact | What it is | Where it comes from |
 | --- | --- | --- |
 | OpenCode host `1.18.29` / upstream `v1.18.30` | the binary the gate executes, and the tag every API fact is cited against | `opencode --version`; the upstream git tag |
-| `@opencode-ai/plugin` | the package this adapter's `tool` hook and types are written against | the host's own `node_modules` under its config directory, symlinked into this checkout by `scripts/link-host-package.ts` |
+| `@opencode-ai/plugin` | the package this adapter's `tool` hook and types are written against | installed and managed by OpenCode in its config environment, then symlinked into this checkout by `scripts/link-host-package.ts` because source-loaded code resolves imports there |
 | `@opencode-ai/sdk` | the package the (b1) and (b2) gates drive a host through | the same tree, installed as a dependency of the plugin package |
 
 The two packages are **host-managed**: OpenCode installs them into its config directory on first
@@ -305,9 +305,11 @@ import of `@opencode-ai/plugin` for `tool.schema`, permitted **only in `src/adap
 even type-only — so those layers stay host-agnostic in source, not merely at runtime, and ADR
 0001's runner and interpreter test layers never need a host.
 
-`@opencode-ai/plugin` is not host-provided; the host npm-installs it into every config directory
-asynchronously. If that install has not completed, module load fails loudly, which is correct
-structural-failure behavior rather than silent degradation. The host also writes
+`@opencode-ai/plugin` is installed and managed by OpenCode in its config environment, not provided
+by this repository. A source-loaded checkout still resolves imports from its own location, so
+`scripts/link-host-package.ts` symlinks that host-installed package into the checkout. If the host
+install has not completed, module load fails loudly, which is correct structural-failure behavior
+rather than silent degradation. The host also writes
 `.opencode/package.json`, `package-lock.json`, `bun.lock` and a `.gitignore` listing them — that
 file set is the host's, not ours, which is why a zero-dependency plugin never needs to commit a
 manifest.
@@ -481,9 +483,10 @@ come from the adapter-inclusive gate (issue #14).
    The ADR expected an unresolved import to "fail loudly"; in practice the host swallows the
    module-load error, and the plugin loads nothing and says nothing — indistinguishable from a
    project that has not opted in. Installation therefore has a scripted step
-   (`scripts/link-host-package.ts`) that symlinks the package the host already installed for
-   itself. This does not make it a repository dependency: nothing is committed, and shipped code
-   still imports it exactly once, in `src/adapter`.
+   (`scripts/link-host-package.ts`) that symlinks the package OpenCode installed in its config
+   environment into the checkout, where source-loaded code resolves imports. This does not make it
+   a repository dependency: nothing is committed, and shipped code still imports it exactly once,
+   in `src/adapter`.
 
 2. **`worktree` is not always a project root.** A host that finds no git worktree reports `/`
    rather than omitting the field. Taking it at face value makes the filesystem root the trusted

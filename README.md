@@ -80,10 +80,12 @@ OpenCode's config directory — so a checkout with no `node_modules` cannot find
 is a plugin that loads nothing and says nothing, which is indistinguishable from
 a project you have not enabled yet.
 
-`link-host-package.ts` symlinks the package the host already installed for
-itself. It is a symlink rather than an install because the package is
-host-provided at runtime and this repository commits no manifest for it. Run
-OpenCode once first if the script reports the package is not there yet.
+`link-host-package.ts` symlinks the package OpenCode installed and manages in
+its config environment into this checkout. It is a symlink rather than an
+install because the package is host-managed and this repository commits no
+manifest for it; the link is still necessary because source-loaded code resolves
+imports from the checkout. Run OpenCode once first if the script reports the
+package is not there yet.
 
 ### Global install (the documented default)
 
