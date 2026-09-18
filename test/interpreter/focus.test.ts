@@ -15,12 +15,13 @@ import {
   FOCUSED_ACTIVITY_DEPTH_CAP,
   FOCUSED_ACTIVITY_NODE_CAP,
   FOCUSED_MESSAGE_CHAR_CAP,
+  FOCUSED_TEST_ATTEMPT_CAP,
   RESPONSE_BYTE_CAP,
   STACK_FRAME_TEXT_CHAR_CAP,
 } from "../../src/domain/limits.ts"
 import type { ActivityNode, DiagnosticSummary } from "../../src/domain/inspection.ts"
 import { extractFrames } from "../../src/interpreter/frames.ts"
-import { focusedDiagnostic, type LazyDetail } from "../../src/interpreter/focus.ts"
+import { focusedDiagnostic, focusedTest, type LazyDetail } from "../../src/interpreter/focus.ts"
 import { type NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { present, syntheticIndex } from "./harness.ts"
 
@@ -211,6 +212,70 @@ describe("attachments", () => {
 
     expect(focused.attachments).toHaveLength(ATTACHMENT_METADATA_CAP)
     expect(truncation.collectionTruncated).toBe(true)
+  })
+})
+
+describe("test attempts", () => {
+  function occurrenceWithAttempts(count: number): NormalizedIndex["occurrences"][number] {
+    return {
+      id: "occ-1",
+      identity: {
+        bundle: "AppTests",
+        suite: "LoginTests",
+        test: "testSignsIn()",
+        canonical: "AppTests/LoginTests/testSignsIn()",
+      },
+      identityComplete: true,
+      status: "failed",
+      position: "0",
+      attempts: Array.from({ length: count }, (_, ordinal) => ({ ordinal, status: "failed" as const })),
+      failures: [],
+    }
+  }
+
+  test("keeps the earliest attempts in order before materializing the Focused Detail", () => {
+    const occurrence = occurrenceWithAttempts(FOCUSED_TEST_ATTEMPT_CAP + 1)
+    const diagnostic = { ...DIAGNOSTIC, testId: occurrence.id }
+    const index = syntheticIndex({
+      occurrences: [occurrence],
+      testFailures: [diagnostic],
+    })
+
+    const view = focusedTest(index, occurrence, { activities: [], attachments: [] })
+    const focused = present(view)
+
+    expect(focused.attempts.map((attempt) => attempt.ordinal)).toEqual(
+      Array.from({ length: FOCUSED_TEST_ATTEMPT_CAP }, (_, ordinal) => ordinal),
+    )
+    expect(focused.status).toBe("failed")
+    expect(focused.diagnostics).toEqual([diagnostic])
+    expect(focused.activities).toEqual([])
+    expect(view.truncation).toMatchObject({
+      collectionTruncated: true,
+      fieldTruncated: false,
+      responseTruncated: false,
+    })
+    expect(occurrence.attempts).toHaveLength(FOCUSED_TEST_ATTEMPT_CAP + 1)
+  })
+
+  test("may shed bounded attempts when protected identity fields consume the response budget", () => {
+    const occurrence = occurrenceWithAttempts(FOCUSED_TEST_ATTEMPT_CAP)
+    const identityText = "x".repeat(31_000)
+    occurrence.identity = {
+      bundle: "AppTests",
+      suite: "LoginTests",
+      test: identityText,
+      canonical: identityText,
+    }
+
+    const view = focusedTest(syntheticIndex(), occurrence, undefined)
+    const focused = present(view)
+
+    expect(focused.attempts.length).toBeLessThan(FOCUSED_TEST_ATTEMPT_CAP)
+    expect(view.truncation).toMatchObject({
+      collectionTruncated: true,
+      responseTruncated: true,
+    })
   })
 })
 

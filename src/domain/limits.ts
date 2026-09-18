@@ -45,6 +45,9 @@ export const FOCUSED_MESSAGE_CHAR_CAP = 16_000
 /** Stack frames carried by a focused diagnostic. */
 export const FOCUSED_STACK_FRAME_CAP = 100
 
+/** Attempts carried by a focused test. */
+export const FOCUSED_TEST_ATTEMPT_CAP = 100
+
 /** Activity nodes carried by a focused diagnostic. */
 export const FOCUSED_ACTIVITY_NODE_CAP = 100
 

@@ -5,7 +5,7 @@
  * exactly happened here". The difference is not a larger page — it is a
  * different shape, with the detail a compact record deliberately leaves out:
  * the full message rather than the capped one, the identity the diagnostic
- * belongs to, the frames beneath it, and every attempt a flaky test made.
+ * belongs to, the frames beneath it, and bounded attempts a flaky test made.
  *
  * Two things are load-bearing throughout. Every cap that bites is **reported**,
  * because a silently shortened message is indistinguishable from a short one.
@@ -34,6 +34,7 @@ import {
   FOCUSED_ACTIVITY_NODE_CAP,
   FOCUSED_MESSAGE_CHAR_CAP,
   FOCUSED_STACK_FRAME_CAP,
+  FOCUSED_TEST_ATTEMPT_CAP,
   RESPONSE_BYTE_CAP,
   RESPONSE_ENVELOPE_BYTES,
   STACK_FRAME_PATH_LIMIT,
@@ -193,6 +194,7 @@ export function focusedTest(
     index.testFailures.filter((entry) => entry.testId === occurrence.id),
     SUMMARY_TEST_FAILURE_CAP,
   )
+  const attempts = capCollection(occurrence.attempts, FOCUSED_TEST_ATTEMPT_CAP)
   const activities = capActivities(lazy?.activities ?? [])
 
   const view: FocusedTest = {
@@ -200,7 +202,7 @@ export function focusedTest(
     identity: occurrence.identity,
     status: occurrence.status,
     ...(occurrence.durationMs === undefined ? {} : { durationMs: occurrence.durationMs }),
-    attempts: occurrence.attempts.map(
+    attempts: attempts.value.map(
       (attempt): TestAttempt => ({
         ordinal: attempt.ordinal,
         status: attempt.status,
@@ -213,7 +215,7 @@ export function focusedTest(
 
   return fit(view, {
     ...UNTRUNCATED,
-    collectionTruncated: diagnostics.truncated || activities.truncated,
+    collectionTruncated: diagnostics.truncated || attempts.truncated || activities.truncated,
   })
 }
 
