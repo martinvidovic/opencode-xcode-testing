@@ -7,8 +7,8 @@
  * could move the root, every path guarantee beneath it would be decorative.
  *
  * The configuration root is tracked separately so configuration-relative
- * behavior cannot be confused with containment. For root-level sessions it is
- * currently the containment root; bounded module discovery is issue #137.
+ * behavior cannot be confused with containment. It is discovered independently
+ * from the canonical launch directory through the containment root.
  */
 
 import { readFileSync, statSync } from "node:fs"
