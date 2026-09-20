@@ -1,9 +1,9 @@
 /**
  * The Containment Root, Configuration Root, and enablement marker (ADR 0002, #6).
  *
- * The root is the boundary every path guarantee rests on. If a tool argument
- * could move it, the rest of the safety story would be decorative — so it is
- * resolved once, from host handles only, and canonicalized.
+ * The Containment Root is the boundary every path guarantee rests on. If a tool
+ * argument could move it, the rest of the safety story would be decorative —
+ * so it is resolved once, from host handles only, and canonicalized.
  */
 
 import { describe, expect, test } from "bun:test"
