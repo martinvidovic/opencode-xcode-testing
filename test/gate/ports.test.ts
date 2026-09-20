@@ -9,9 +9,9 @@
  * `ports.ts` holds the reasoning, including why the two kinds of server are
  * fixed two different ways. What is here is what can be shown in this layer:
  * a server this repository starts, proved to come up with every one of the
- * old numbers held against it. The spawned-host path uses the real binary to
- * reproduce an occupied-port startup failure; its dynamic-port handling stays
- * covered below at the pure helper seam.
+ * old numbers held against it. The spawned-host path reproduces an occupied
+ * port through a controlled launcher; its dynamic-port handling stays covered
+ * below at the pure helper seam.
  */
 
 import { describe, expect, test } from "bun:test"

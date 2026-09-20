@@ -20,6 +20,11 @@ import { SCENARIO } from "./scenarios.ts"
 import type { DrivenRoots } from "./driven-roots.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
+export type B1Gates = {
+  registration(): Promise<void>
+  installation(): Promise<void>
+}
+
 /**
  * `runInstallationGate` runs whatever happened to registration, on purpose:
  * its check is the one that proves the README's instructions work, and a host
@@ -32,9 +37,16 @@ import { safeFailure } from "../../src/adapter/sanitize.ts"
  * first gate's exception cancel its second would be asserting the opposite,
  * on the machines least able to tell.
  */
-export async function runB1Suite(record: ScenarioSink, roots: DrivenRoots): Promise<void> {
+export async function runB1Suite(
+  record: ScenarioSink,
+  roots: DrivenRoots,
+  gates: B1Gates = {
+    registration: () => runRegistrationGate(record, roots),
+    installation: () => runInstallationGate(record, roots),
+  },
+): Promise<void> {
   try {
-    await runRegistrationGate(record, roots)
+    await gates.registration()
   } catch (error) {
     // A last resort with a worse diagnostic than the gate's own, which is
     // what makes it a last resort: anything that reaches here got past the
@@ -47,5 +59,5 @@ export async function runB1Suite(record: ScenarioSink, roots: DrivenRoots): Prom
     })
   }
 
-  await runInstallationGate(record, roots)
+  await gates.installation()
 }

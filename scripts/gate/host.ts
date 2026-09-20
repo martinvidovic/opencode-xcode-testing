@@ -8,7 +8,7 @@
  * boot timeout and the port cannot drift apart between them.
  */
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process"
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 
@@ -58,6 +58,11 @@ export async function bounded<T>(what: string, call: Promise<T>): Promise<T> {
 }
 
 export type BootedHost = { port: number; stop(): Promise<void> }
+export type HostLauncher = (input: {
+  command: string
+  arguments: string[]
+  options: SpawnOptions
+}) => ChildProcess
 
 /**
  * Start `opencode serve` against a config directory of our own choosing.
@@ -70,17 +75,17 @@ export async function bootHost(input: {
   cwd: string
   /** Explicit only when a gate test must reproduce an occupied-port startup failure. */
   requestedPort?: number
-}): Promise<BootedHost> {
+}, launch: HostLauncher = ({ command, arguments: args, options }) => spawn(command, args, options)): Promise<BootedHost> {
   const requested = input.requestedPort ?? gatePort()
-  const child = spawn(
-    "opencode",
-    ["serve", "--hostname=127.0.0.1", `--port=${requested}`],
-    {
+  const child = launch({
+    command: "opencode",
+    arguments: ["serve", "--hostname=127.0.0.1", `--port=${requested}`],
+    options: {
       cwd: input.cwd,
       env: { ...process.env, OPENCODE_CONFIG_DIR: input.configDirectory },
       stdio: ["ignore", "pipe", "pipe"],
     },
-  )
+  })
 
   // What it says it bound, not what it was asked for. `opencode serve` ignores
   // `--port=0` and falls back to its own default, so the request and the

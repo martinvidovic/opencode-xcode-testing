@@ -510,8 +510,8 @@ come from the adapter-inclusive gate (issue #14).
 
 ADR 0001 dropped its documented size-injection seam in favour of exercising the
 real mechanism, and that direction still holds wherever the real mechanism is
-reachable. Two seams nonetheless live in shipped interfaces, recorded here so
-they are deliberate rather than accidental:
+reachable. The shipped interfaces and gate orchestration seams below are
+recorded so they are deliberate rather than accidental:
 
 - `ServiceEnvironment.xcresultToolFor` — how a Result Bundle is read. The
   recovery path interprets artifacts left by a process that is gone; without
@@ -525,13 +525,18 @@ they are deliberate rather than accidental:
   is still there. "The signal could not be delivered" is not a state a real
   machine can be asked to produce on demand, and it is the one that decides
   whether a trusted root is held or released.
-- `bootHost.requestedPort` (issue #133) — an explicit requested OpenCode port for the
-  B1 host test. Holding it lets the test reproduce a new host failing while a
-  client at that fixed endpoint still reaches the existing listener.
+- `runB1Suite` gate callbacks (issue #135) — the registration and documented
+  installation checks can be controlled independently. This proves a registration
+  failure cannot suppress installation without unit tests booting an OpenCode host.
+- `bootHost`'s launcher and requested port (issue #135) — a controlled child can
+  fail to bind while a stale fixed endpoint remains reachable. The test observes
+  the same child lifecycle as production without spawning OpenCode.
 
-Both default to the real implementation and are overridden only by tests. Where
-a real mechanism *is* reachable — locks, atomic renames, apparent file size —
-it continues to be used directly.
+The gate seams default to the real implementation and are overridden only by
+tests. The acceptance gate still boots a real OpenCode host for B1 registration,
+documented installation, and B2 execution. Where a real mechanism *is*
+reachable — locks, atomic renames, apparent file size — it continues to be used
+directly.
 
 ## Risks accepted
 

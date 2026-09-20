@@ -53,9 +53,10 @@ function registrationWith(body: string | undefined): Scenario[] {
 
     const script = `
       import { runRegistrationGate } from ${JSON.stringify(join(REPO, "scripts", "gate", "registration.ts"))}
+      import { DrivenRoots } from ${JSON.stringify(join(REPO, "scripts", "gate", "driven-roots.ts"))}
 
       const scenarios = []
-      await runRegistrationGate((result) => scenarios.push(result))
+      await runRegistrationGate((result) => scenarios.push(result), new DrivenRoots(${JSON.stringify(home)}), "9.9.9")
       process.stdout.write(${JSON.stringify(SENTINEL)} + JSON.stringify(scenarios))
     `
 

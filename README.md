@@ -340,9 +340,12 @@ Xcode update would be switched off within a week.
 
 ### The acceptance gate
 
-`bun run check` needs nothing but Bun. The acceptance gate needs a real machine —
-Xcode, a simulator, and OpenCode — because it is the only thing that proves the
-whole path works rather than that each piece agrees with its own tests:
+`bun run check` needs Bun and this checkout's installed development dependencies
+(`bun install`). It does not require OpenCode, Xcode, a simulator, a linked host
+package, or a real OpenCode host. The acceptance gate needs a real machine —
+Xcode, a simulator, OpenCode, and the host-package link from the installation
+steps above — because it is the only thing that proves the whole path works
+rather than that each piece agrees with its own tests:
 
 ```bash
 bun scripts/acceptance-gate.ts            # everything
