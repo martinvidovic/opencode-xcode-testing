@@ -5,7 +5,7 @@
  * inspection, the container path of a request, and the contents of files that
  * a crash, a full volume, or anything else on the machine may have left
  * behind. The property under test is single and blunt — none of it can read,
- * write, retain or inspect anything outside the trusted root it belongs to.
+ * write, retain or inspect anything outside the containment root it belongs to.
  *
  * These are real temp directories with real symlinks, because the guarantees
  * are filesystem guarantees: a mock would only prove that the mock agrees.
@@ -422,7 +422,7 @@ describe("a persisted run record", () => {
   })
 })
 
-describe("two trusted roots", () => {
+describe("two containment roots", () => {
   test("share no run storage, even for the same run identifier", async () => {
     await withSandbox(({ homeDir, storage }) => {
       const other = sandbox("/workspace/other")

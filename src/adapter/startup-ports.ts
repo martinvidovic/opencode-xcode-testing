@@ -29,10 +29,10 @@ import { bunOnPath, probeRuntimeCandidate } from "./probe.ts"
 import { reconcileRootBounded } from "./reconciliation.ts"
 import { cachedRuntime, rememberRuntime, resolveRuntime, type RuntimeResolution } from "./runtime.ts"
 import type { StartupPorts } from "./startup.ts"
-import { enablementMarkerExists } from "./trusted-root.ts"
+import { enablementMarkerExists } from "./project-roots.ts"
 
 export type StartupWiring = {
-  trustedRoot: string
+  configurationRoot: string
   homeDir: string
   storage: Storage
   configuration: ConfigurationOutcome
@@ -46,7 +46,7 @@ export type StartupWiring = {
 
 export function startupPortsFor(wiring: StartupWiring): StartupPorts {
   return {
-    markerExists: () => enablementMarkerExists(wiring.trustedRoot),
+    markerExists: () => enablementMarkerExists(wiring.configurationRoot),
     requiredFiles: wiring.requiredFiles,
     regularFileExists: wiring.regularFileExists,
     readHostVersion: wiring.readHostVersion,
@@ -69,7 +69,7 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
 
       const pathCandidate = await bunOnPath()
       const runtime = await resolveRuntime({
-        trustedRoot: wiring.trustedRoot,
+        configurationRoot: wiring.configurationRoot,
         ...(configured === undefined ? {} : { configured }),
         hostExecutable: process.execPath,
         ...(pathCandidate === undefined ? {} : { pathCandidate }),

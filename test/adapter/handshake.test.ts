@@ -41,7 +41,7 @@ type StubMode =
   | `ready-then-linger:${number}`
 
 /**
- * A trusted root that resolves, with the committed stub scripted.
+ * A containment root that resolves, with the committed stub scripted.
  *
  * Resolution validates the container against the real filesystem, so a run in
  * this file has to reach the supervisor before it can be about the supervisor
@@ -62,7 +62,7 @@ function environmentFor(
 ): ServiceEnvironment {
   return {
     storage: box.storage,
-    trustedRoot: project(box, mode),
+    containmentRoot: project(box, mode),
     homeDir: box.homeDir,
     toolchain: identityFor(loadFixture("passed")),
     runtime: { path: process.execPath },

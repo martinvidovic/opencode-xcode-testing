@@ -40,7 +40,7 @@ function fixtureReader(name: string): XcresultTool {
 function environmentFor(box: Sandbox, fixture = "passed"): ServiceEnvironment {
   return {
     storage: box.storage,
-    trustedRoot: "/workspace",
+    containmentRoot: "/workspace",
     homeDir: box.homeDir,
     toolchain: identityFor(loadFixture(fixture)),
     runtime: { path: "/opt/bun" },

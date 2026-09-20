@@ -12,12 +12,12 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { decodeMessages, encodeMessage, MAX_FRAME_BYTES, type LaunchSpec } from "../../src/runner/control.ts"
-import { createRunDirectory } from "../../src/runner/paths.ts"
+import { createRunDirectory, RUN_ARTIFACTS, runDirectory } from "../../src/runner/paths.ts"
 import { readRunRecord, type RunRecord } from "../../src/runner/state.ts"
 import { EXIT_PROTOCOL } from "../../src/runner/supervisor-entry.ts"
 import {
@@ -41,13 +41,48 @@ type Conversation = {
   hello?: false
 }
 
+test("the supervised command runs from the containment root", async () => {
+  const containmentRoot = realpathSync(mkdtempSync(join(tmpdir(), "xcode-test-containment-")))
+  const launchDirectory = mkdtempSync(join(tmpdir(), "xcode-test-launch-"))
+  const box = sandbox(containmentRoot)
+  const runId = "d".repeat(32)
+
+  try {
+    createRunDirectory(box.storage, runId)
+    seedRun(box.storage, { runId, timeoutSeconds: 60 })
+    const { toSupervisor, ended } = spawnWithControlChannel(SUPERVISOR_ENTRYPOINT, {
+      cwd: launchDirectory,
+    })
+    toSupervisor?.write(
+      encodeMessage({
+        type: "hello",
+        homeDir: box.homeDir,
+        containmentRoot,
+        runId,
+        command: "/bin/pwd",
+        args: [],
+        environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+        developerDirectory: "/unused",
+      }),
+    )
+
+    expect((await ended).exitCode).toBe(0)
+    const rawLog = join(runDirectory(box.storage, runId), RUN_ARTIFACTS.rawLog)
+    expect(readFileSync(rawLog, "utf8").trim()).toBe(containmentRoot)
+  } finally {
+    box.dispose()
+    rmSync(containmentRoot, { recursive: true, force: true })
+    rmSync(launchDirectory, { recursive: true, force: true })
+  }
+}, 40_000)
+
 /**
  * Drive a real supervisor through real inherited descriptors, and report the
  * record it left behind.
  */
 async function converse(talk: Conversation): Promise<{ record: RunRecord | undefined; end: ProcessEnd }> {
-  const trustedRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
-  const box = sandbox(trustedRoot)
+  const containmentRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
+  const box = sandbox(containmentRoot)
   const runId = "c".repeat(32)
 
   try {
@@ -55,7 +90,7 @@ async function converse(talk: Conversation): Promise<{ record: RunRecord | undef
     seedRun(box.storage, { runId, timeoutSeconds: 60 })
 
     const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(SUPERVISOR_ENTRYPOINT, {
-      cwd: trustedRoot,
+      cwd: containmentRoot,
     })
 
     const ready = new Promise<void>((resolve) => {
@@ -72,7 +107,7 @@ async function converse(talk: Conversation): Promise<{ record: RunRecord | undef
 
     const spec: LaunchSpec = {
       homeDir: box.homeDir,
-      trustedRoot,
+      containmentRoot,
       runId,
       command: "/bin/sleep",
       args: [String(CHILD_SECONDS)],
@@ -94,7 +129,7 @@ async function converse(talk: Conversation): Promise<{ record: RunRecord | undef
     return { end: await ended, record: readRunRecord(box.storage, runId) }
   } finally {
     box.dispose()
-    rmSync(trustedRoot, { recursive: true, force: true })
+    rmSync(containmentRoot, { recursive: true, force: true })
   }
 }
 

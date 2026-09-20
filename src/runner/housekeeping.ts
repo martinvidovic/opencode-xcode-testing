@@ -88,7 +88,7 @@ export function writeRegistry(storage: Storage, registry: Registry): void {
   writePrivateFileAtomic(storage.registryFile, `${JSON.stringify(registry, null, 2)}\n`)
 }
 
-/** Record that this trusted root was opened, so housekeeping can find it later. */
+/** Record that this containment root was opened, so housekeeping can find it later. */
 export function noteRootSeen(storage: Storage, nowMs: number): void {
   withTryLock(storage.registryLock, () => {
     const registry = readRegistry(storage)

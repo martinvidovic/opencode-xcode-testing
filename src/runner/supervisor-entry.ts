@@ -196,7 +196,7 @@ class ControlChannel {
 function parseSpec(candidate: Partial<SupervisorLaunchSpec>): SupervisorLaunchSpec | undefined {
   if (
     typeof candidate.homeDir !== "string" ||
-    typeof candidate.trustedRoot !== "string" ||
+    typeof candidate.containmentRoot !== "string" ||
     // Validated here rather than trusted: this is the supervisor's boundary,
     // and a spec that cannot address storage must become EXIT_PROTOCOL rather
     // than an exception thrown later from somewhere that derives a path.
@@ -216,7 +216,7 @@ export async function main(): Promise<number> {
     const spec = await channel.launchSpec()
     if (spec === undefined) return EXIT_PROTOCOL
 
-    const storage = storageFor(spec.homeDir, spec.trustedRoot)
+    const storage = storageFor(spec.homeDir, spec.containmentRoot)
     const record = readRunRecord(storage, spec.runId)
     if (record === undefined) return EXIT_PROTOCOL
 
@@ -241,7 +241,7 @@ export async function main(): Promise<number> {
           spawnGatedChild({
             command: spec.command,
             args: spec.args,
-            cwd: spec.trustedRoot,
+            cwd: spec.containmentRoot,
             environment: spec.environment,
             logPath: logPathFor(storage, spec.runId),
           }),

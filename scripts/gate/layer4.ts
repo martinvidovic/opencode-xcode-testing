@@ -23,7 +23,7 @@ import type { TestToolResult } from "../../src/domain/result.ts"
 import { isTestRunSummary } from "../../src/domain/result.ts"
 import type { TestToolOutcome } from "../../src/domain/outcome.ts"
 import { createTestToolService } from "../../src/adapter/service.ts"
-import { readProjectConfiguration } from "../../src/adapter/trusted-root.ts"
+import { readProjectConfiguration } from "../../src/adapter/project-roots.ts"
 import { prepareStorage, runDirectory, storageFor, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
 import { loadCursorSecret } from "../../src/runner/secrets.ts"
 import { examineBundle, type BundleExamination } from "../freshness-check.ts"
@@ -209,10 +209,10 @@ export function countsAsFailure(result: ScenarioResult): boolean {
 }
 
 /** Where the passing run's Result Bundle was retained, if it produced one. */
-function bundleOf(homeDir: string, trustedRoot: string, result: TestToolResult): string | undefined {
+function bundleOf(homeDir: string, containmentRoot: string, result: TestToolResult): string | undefined {
   if (!isTestRunSummary(result)) return undefined
   const path = join(
-    runDirectory(storageFor(homeDir, trustedRoot), result.runId),
+    runDirectory(storageFor(homeDir, containmentRoot), result.runId),
     RUN_ARTIFACTS.resultBundle,
   )
   return existsSync(path) ? path : undefined
@@ -511,20 +511,20 @@ function prepareProject(
  * and a supplied project is not.
  */
 function serviceFor(
-  trustedRoot: string,
+  containmentRoot: string,
   homeDir: string,
   options: ExecutionContext & { configured?: undefined | "fixture" },
 ) {
-  const storage = storageFor(homeDir, trustedRoot)
+  const storage = storageFor(homeDir, containmentRoot)
   prepareStorage(storage)
 
   return createTestToolService({
     storage,
-    trustedRoot,
+    containmentRoot,
     homeDir,
     configuration:
       options.configured === undefined
-        ? readProjectConfiguration(trustedRoot)
+        ? readProjectConfiguration(containmentRoot)
         : {
             status: "loaded",
             configuration: {

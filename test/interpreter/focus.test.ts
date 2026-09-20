@@ -336,7 +336,7 @@ describe("a stack frame whose path is longer than the display budget", () => {
     return ["XCTAssertEqual failed", `    at ${path}:42:9`].join("\n")
   }
 
-  // Inside the trusted root, because a path outside it is reduced to its
+  // Inside the containment root, because a path outside it is reduced to its
   // basename before this rule is ever reached — the long ones that survive
   // are repository paths, which is exactly the case that matters.
   const ENORMOUS = `${ROOT}/Sources/${"Nested/".repeat(400)}Login.swift`

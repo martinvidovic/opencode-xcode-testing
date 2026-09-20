@@ -33,7 +33,7 @@ function resolve(
   const repo = repository(options.build)
   try {
     const environment: ResolutionEnvironment = {
-      trustedRoot: repo.root,
+      containmentRoot: repo.root,
       ...(options.configuration === undefined
         ? {}
         : { configuration: { status: "loaded" as const, configuration: options.configuration } }),
@@ -61,6 +61,37 @@ function errorsOf(request: Partial<TestRunRequest>, options = {}): Array<{ field
 }
 
 describe("a resolvable request", () => {
+  test("uses the containment root for container and scheme discovery", () => {
+    const repo = repository()
+    const seen: string[] = []
+    try {
+      const outcome = resolveTestRun(
+        {
+          requestedScope: { kind: "all" },
+          destination: { kind: "named", platform: "iOS Simulator", name: "iPhone 17" },
+        },
+        {
+          containmentRoot: repo.root,
+          discover: {
+            container: (root) => {
+              seen.push(`container:${root}`)
+              return { status: "found", value: { kind: "project", path: "Example.xcodeproj" } }
+            },
+            scheme: (root) => {
+              seen.push(`scheme:${root}`)
+              return { status: "found", value: "App" }
+            },
+          },
+        },
+      )
+
+      expect(outcome.status).toBe("resolved")
+      expect(seen).toEqual([`container:${repo.root}`, `scheme:${repo.root}`])
+    } finally {
+      repo.dispose()
+    }
+  })
+
   test("resolves every setting with the provenance it came from", () => {
     const { outcome } = resolve({ scheme: "App", timeoutSeconds: 120 })
     expect(outcome.status).toBe("resolved")
@@ -140,7 +171,7 @@ describe("the destination", () => {
   test("is required, because guessing one runs the tests somewhere else", () => {
     const outcome = resolveTestRun(
       { requestedScope: { kind: "all" } },
-      { trustedRoot: "/nonexistent" },
+      { containmentRoot: "/nonexistent" },
     )
     expect(outcome.status).toBe("rejected")
     if (outcome.status !== "rejected") return

@@ -99,12 +99,19 @@ Descriptions are loaded from sidecar `.txt` files. A description-vs-outcome-voca
 check runs in the adapter test layer, so descriptions cannot drift from the outcome vocabulary the
 renderer actually emits.
 
-### Trusted root and configuration
+### Containment root and configuration root
 
 `context.worktree` when present, else `context.directory`; resolved once, canonicalized (symlinks
-resolved, must be an existing real directory), and **never influenced by tool args**.
-Canonicalization failure is a hard resolution error. Configuration lookup is exactly
-`<trusted-root>/.opencode/xcode-test.json` with no upward search.
+resolved, must be an existing real directory), and **never influenced by tool args**. This is the
+**containment root**: the boundary for path safety, repository scanning, execution, and diagnostics.
+Canonicalization failure is a hard resolution error.
+
+The **configuration root** is tracked independently and owns configuration lookup and
+configuration-relative settings. For root-level sessions it is currently the same canonical
+directory as the containment root, so lookup remains exactly
+`<configuration-root>/.opencode/xcode-test.json` with no upward search and storage identity is
+unchanged. Nearest module configuration discovery and composite storage identity are separate,
+later decisions.
 
 ### Rendering and the output budget
 
@@ -366,16 +373,16 @@ the description-vocabulary check, and cancellation edges.
 **(b1) Host registration, credential-free — always gating.** Boots a headless instance via
 `createOpencode()` and asserts, without any model provider: that the three tool IDs register; each
 tool's description and exact `parameters` JSON schema; and that the restricted-agent templates,
-materialized into the temp trusted root, produce a permission ruleset that hides `bash` and exposes
-the family.
+materialized into the temporary containment root, produce a permission ruleset that hides `bash`
+and exposes the family.
 
 **(b2) Execution.** Tool execution requires a real provider turn, and no built-in stub model
 provider exists, so the required scenarios — passing, `testFailed`, zero-match, `buildFailed`,
 inspection-without-rerun, and run-report emission — are driven through a **local
 OpenAI-compatible stub provider** (`provider.<id>.npm` plus `options.baseURL`) emitting scripted
 tool calls: deterministic, credential-free, no network. The stub's npm package is host-managed test
-infrastructure inside the temp trusted root, not a repository dependency, so the zero-dependency
-rule is unaffected.
+infrastructure inside the temporary containment root, not a repository dependency, so the
+zero-dependency rule is unaffected.
 
 A real `testFailed` run is required in (b2) specifically because neither ADR 0001's harness gate
 nor layer (a) ever renders realistic diagnostics from a real Result Bundle under the budget
@@ -435,7 +442,7 @@ from the original contract is not misled.
    `lastHousekeepingAt` in the global registry). Without this, an unconfigured project pays for
    user-wide maintenance on every session start.
 3. **#6 — Configuration schema.** A new **optional `runtime` field** under `schemaVersion` 1,
-   documented as **machine-local**; a relative value resolves against the trusted root. A committed
+   documented as **machine-local**; a relative value resolves against the configuration root. A committed
    configuration must not assume one machine's absolute layout.
 4. **#6 — Configuration presence.** The configuration file's **presence becomes the per-project
    enablement marker**. Its fields remain optional; its existence is now required for the Test Tool
@@ -488,17 +495,17 @@ come from the adapter-inclusive gate (issue #14).
    a repository dependency: nothing is committed, and shipped code still imports it exactly once,
    in `src/adapter`.
 
-2. **`worktree` is not always a project root.** A host that finds no git worktree reports `/`
-   rather than omitting the field. Taking it at face value makes the filesystem root the trusted
-   root, which silently disables the plugin in every non-git project and would key artifact storage
-   and container discovery to the whole filesystem. The trusted root now treats `/` and the empty
-   string as absent and falls back to `context.directory`.
+2. **`worktree` is not always a usable containment root.** A host that finds no git worktree
+   reports `/` rather than omitting the field. Taking it at face value makes the filesystem root the
+   containment root, which silently disables the plugin in every non-git project and would key
+   artifact storage and container discovery to the whole filesystem. Root resolution now treats
+   `/` and the empty string as absent and falls back to `context.directory`.
 
 3. **The stub-provider route for (b2) works**, so execution-level validation gates with the full
    scenario set rather than degrading to a checklist. See the deferral note above.
 
-4. **Shared DerivedData is keyed by canonical container, not by trusted root** (issue #26).
-   "Shared" was written as shared *across runs*, and one directory per trusted root reads like the
+4. **Shared DerivedData is keyed by canonical container, not by containment root** (issue #26).
+   "Shared" was written as shared *across runs*, and one directory per containment root reads like the
    same thing right up to the point where a repository holds two Xcode containers — which is
    ordinary. Both would then write one DerivedData and overwrite each other's build products, so
    every run after a switch pays a full rebuild and reads a cache that describes something else. A
@@ -524,7 +531,7 @@ recorded so they are deliberate rather than accidental:
   unhandshaken supervisor is signalled, and how the machine is asked whether it
   is still there. "The signal could not be delivered" is not a state a real
   machine can be asked to produce on demand, and it is the one that decides
-  whether a trusted root is held or released.
+  whether a containment root is held or released.
 - `runB1Suite` gate callbacks (issue #135) — the registration and documented
   installation checks can be controlled independently. This proves a registration
   failure cannot suppress installation without unit tests booting an OpenCode host.
@@ -545,6 +552,6 @@ directly.
 - Bun caches failed module resolution permanently within a process, so a broken import cannot
   self-heal on retry. Startup structural verification is what turns that into an immediate, legible
   failure.
-- A worktree with two session directories produces two plugin instances against one trusted root.
+- A worktree with two session directories produces two plugin instances against one containment root.
   #3's cross-process FIFO and root lock carry this; the try-lock-without-wait rule keeps the second
   instance from duplicating work or delaying startup.

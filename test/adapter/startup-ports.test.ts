@@ -30,10 +30,10 @@ import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
 const RUN = "run-after-a-crash"
 const TIMESTAMP = "2026-09-14T09:00:00.000Z"
 
-/** A trusted root that has opted in, with a quarantine nothing still owns. */
-function crashedRoot(box: Sandbox, trustedRoot: string): void {
-  mkdirSync(join(trustedRoot, ".opencode"), { recursive: true })
-  writeFileSync(join(trustedRoot, ".opencode", "xcode-test.json"), '{ "schemaVersion": 1 }\n')
+/** A containment root that has opted in, with a quarantine nothing still owns. */
+function crashedRoot(box: Sandbox, containmentRoot: string): void {
+  mkdirSync(join(containmentRoot, ".opencode"), { recursive: true })
+  writeFileSync(join(containmentRoot, ".opencode", "xcode-test.json"), '{ "schemaVersion": 1 }\n')
 
   createRunDirectory(box.storage, RUN)
   seedRun(box.storage, {
@@ -53,9 +53,9 @@ function crashedRoot(box: Sandbox, trustedRoot: string): void {
 }
 
 /** The real ports, with only the host-shaped edges stubbed out. */
-function portsFor(box: Sandbox, trustedRoot: string) {
+function portsFor(box: Sandbox, configurationRoot: string) {
   return startupPortsFor({
-    trustedRoot,
+    configurationRoot,
     homeDir: box.homeDir,
     storage: box.storage,
     configuration: { status: "absent" },
@@ -69,12 +69,26 @@ function portsFor(box: Sandbox, trustedRoot: string) {
 }
 
 describe("the ports the plugin entrypoint actually builds", () => {
+  test("look for enablement at the configuration root", async () => {
+    await withSandbox(async (box) => {
+      const containmentRoot = join(box.homeDir, "project")
+      const configurationRoot = join(containmentRoot, "module")
+      mkdirSync(join(configurationRoot, ".opencode"), { recursive: true })
+      writeFileSync(
+        join(configurationRoot, ".opencode", "xcode-test.json"),
+        '{ "schemaVersion": 1 }\n',
+      )
+
+      expect(portsFor(box, configurationRoot).markerExists()).toBe(true)
+    })
+  })
+
   test("reconcile the root, rather than giving up before looking at it", async () => {
     await withSandbox(async (box) => {
-      const trustedRoot = join(box.homeDir, "project")
-      crashedRoot(box, trustedRoot)
+      const containmentRoot = join(box.homeDir, "project")
+      crashedRoot(box, containmentRoot)
 
-      const outcome = await runStartup(portsFor(box, trustedRoot))
+      const outcome = await runStartup(portsFor(box, containmentRoot))
 
       expect(outcome.status).toBe("ready")
       if (outcome.status !== "ready") return
@@ -90,11 +104,11 @@ describe("the ports the plugin entrypoint actually builds", () => {
 
   test("are given a deadline on the clock the pass reads", async () => {
     await withSandbox(async (box) => {
-      const trustedRoot = join(box.homeDir, "project")
-      crashedRoot(box, trustedRoot)
+      const containmentRoot = join(box.homeDir, "project")
+      crashedRoot(box, containmentRoot)
 
       let handed: number | undefined
-      const ports = portsFor(box, trustedRoot)
+      const ports = portsFor(box, containmentRoot)
       const real = ports.reconcileRoot.bind(ports)
       ports.reconcileRoot = async (deadlineMs: number) => {
         handed = deadlineMs
@@ -113,8 +127,8 @@ describe("the ports the plugin entrypoint actually builds", () => {
 
   test("honour the deadline they are handed rather than one of their own", async () => {
     await withSandbox(async (box) => {
-      const trustedRoot = join(box.homeDir, "project")
-      crashedRoot(box, trustedRoot)
+      const containmentRoot = join(box.homeDir, "project")
+      crashedRoot(box, containmentRoot)
 
       // The port's side of the pair, and the direction the other tests cannot
       // see. A port that quietly derived its own deadline — from the wall
@@ -122,7 +136,7 @@ describe("the ports the plugin entrypoint actually builds", () => {
       // reconcile anyway, because a wall-clock deadline is effectively
       // infinite to a monotonic reader. The budget would stop bounding
       // anything, silently, while every other assertion here still held.
-      await portsFor(box, trustedRoot).reconcileRoot(monotonicNow() - 1)
+      await portsFor(box, containmentRoot).reconcileRoot(monotonicNow() - 1)
 
       expect(readQueue(box.storage).quarantine?.runId).toBe(RUN)
     })
@@ -133,9 +147,9 @@ describe("the ports the plugin entrypoint actually builds", () => {
       // The other half of the contract: an unmarked project pays nothing. A
       // reconciliation that ran here would be work done on a root that has not
       // asked for any.
-      const trustedRoot = join(box.homeDir, "project")
-      crashedRoot(box, trustedRoot)
-      writeFileSync(join(trustedRoot, ".opencode", "xcode-test.json"), "")
+      const containmentRoot = join(box.homeDir, "project")
+      crashedRoot(box, containmentRoot)
+      writeFileSync(join(containmentRoot, ".opencode", "xcode-test.json"), "")
       mkdirSync(join(box.homeDir, "unmarked"), { recursive: true })
 
       const outcome = await runStartup(portsFor(box, join(box.homeDir, "unmarked")))

@@ -99,7 +99,7 @@ export type NormalizationOutcome = {
  */
 export function normalizeTestNodes(
   nodes: RawTestNode[],
-  options: { trustedRoot: string; configurationId?: string; deviceId?: string },
+  options: { containmentRoot: string; configurationId?: string; deviceId?: string },
 ): NormalizationOutcome {
   const outcome: NormalizationOutcome = {
     occurrences: [],
@@ -179,13 +179,13 @@ function collectOccurrence(
   // here, so every occurrence published can name the bundle it came from.
   ancestry: Ancestry & { bundle: string },
   path: string,
-  options: { trustedRoot: string; configurationId?: string; deviceId?: string },
+  options: { containmentRoot: string; configurationId?: string; deviceId?: string },
   outcome: NormalizationOutcome,
 ): void {
   const attempts: NormalizedAttempt[] = []
   const failures: NormalizedFailure[] = []
 
-  collectDescendants(node, path, options.trustedRoot, attempts, failures, outcome)
+  collectDescendants(node, path, options.containmentRoot, attempts, failures, outcome)
 
   const own = mapStatus(node.result, outcome)
   if (own === "missing") outcome.missingStatusCount += 1
@@ -218,7 +218,7 @@ function collectOccurrence(
 function collectDescendants(
   node: RawTestNode,
   path: string,
-  trustedRoot: string,
+  containmentRoot: string,
   attempts: NormalizedAttempt[],
   failures: NormalizedFailure[],
   outcome: NormalizationOutcome,
@@ -237,10 +237,10 @@ function collectDescendants(
     }
 
     if (child.nodeType === FAILURE_NODE_TYPE) {
-      failures.push({ ...decodeFailureMessage(child, trustedRoot), position: childPath })
+      failures.push({ ...decodeFailureMessage(child, containmentRoot), position: childPath })
     }
 
-    collectDescendants(child, childPath, trustedRoot, attempts, failures, outcome)
+    collectDescendants(child, childPath, containmentRoot, attempts, failures, outcome)
   })
 }
 
@@ -406,11 +406,11 @@ const MESSAGE_LOCATION = /^([^\s:]+):(\d+)(?::(\d+))?:\s+/
 
 export function decodeFailureMessage(
   node: RawTestNode,
-  trustedRoot: string,
+  containmentRoot: string,
 ): { message: string; location?: SafeLocation } {
   // An explicit reference node wins where one exists; the text is the fallback
   // that real payloads actually take.
-  const explicit = locationField(node, trustedRoot)
+  const explicit = locationField(node, containmentRoot)
   const match = MESSAGE_LOCATION.exec(node.name)
 
   if (match === null) return { message: node.name, ...explicit }
@@ -424,16 +424,16 @@ export function decodeFailureMessage(
   return {
     message,
     location: {
-      path: safeDisplayPath(match[1] ?? "", trustedRoot),
+      path: safeDisplayPath(match[1] ?? "", containmentRoot),
       ...(Number.isInteger(line) && line > 0 ? { line } : {}),
       ...(column !== undefined && Number.isInteger(column) && column > 0 ? { column } : {}),
     },
   }
 }
 
-function locationField(node: RawTestNode, trustedRoot: string): { location?: SafeLocation } {
+function locationField(node: RawTestNode, containmentRoot: string): { location?: SafeLocation } {
   const reference = node.children.find((child) => child.nodeType === SOURCE_REFERENCE_NODE_TYPE)
   const url = reference?.nodeIdentifierURL ?? reference?.nodeIdentifier ?? reference?.name
-  const location = safeLocationFromSourceURL(url, trustedRoot)
+  const location = safeLocationFromSourceURL(url, containmentRoot)
   return location === undefined ? {} : { location }
 }

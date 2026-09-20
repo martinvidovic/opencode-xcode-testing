@@ -7,7 +7,7 @@
  * model — fixing one field at a time across five round trips is a worse
  * experience than one rejection listing all five.
  *
- * **The trusted root is never influenced by an argument.** Container paths are
+ * **The containment root is never influenced by an argument.** Container paths are
  * validated as repository-relative, traversal and symlink escape are rejected,
  * and the runner is handed a canonical absolute path it derived itself.
  */
@@ -52,11 +52,11 @@ export type ConfigurationOutcome =
 
 export type ResolutionEnvironment = {
   /** Canonical, adapter-supplied, and never derived from an argument. */
-  trustedRoot: string
+  containmentRoot: string
   configuration?: ConfigurationOutcome
   discover?: {
-    container(trustedRoot: string): DiscoveryOutcome<XcodeContainer>
-    scheme(trustedRoot: string, container: XcodeContainer): DiscoveryOutcome<string>
+    container(containmentRoot: string): DiscoveryOutcome<XcodeContainer>
+    scheme(containmentRoot: string, container: XcodeContainer): DiscoveryOutcome<string>
   }
 }
 
@@ -162,17 +162,17 @@ function resolveContainer(
   const provenance = request.xcodeContainer !== undefined ? "request" : "configuration"
 
   if (requested !== undefined) {
-    const validated = validateContainerPath(requested, environment.trustedRoot, errors)
+    const validated = validateContainerPath(requested, environment.containmentRoot, errors)
     return validated === undefined
       ? undefined
       : { value: validated.container, provenance, absolutePath: validated.absolutePath }
   }
 
-  const found = discover.container(environment.trustedRoot)
+  const found = discover.container(environment.containmentRoot)
   if (found.status === "found") {
     // Discovery walks the repository, so what it returns is no more canonical
     // than what a caller names; it goes through the same validation.
-    const validated = validateContainerPath(found.value, environment.trustedRoot, errors)
+    const validated = validateContainerPath(found.value, environment.containmentRoot, errors)
     return validated === undefined
       ? undefined
       : {
@@ -209,7 +209,7 @@ export type ValidatedContainer = {
 }
 
 /**
- * A container path must stay inside the trusted root both lexically and after
+ * A container path must stay inside the containment root both lexically and after
  * the filesystem resolves it — the second check is what catches a symlink that
  * points out of the repository.
  *
@@ -221,7 +221,7 @@ export type ValidatedContainer = {
  */
 export function validateContainerPath(
   container: XcodeContainer,
-  trustedRoot: string,
+  containmentRoot: string,
   errors: RequestError[],
 ): ValidatedContainer | undefined {
   const field = "xcodeContainer.path"
@@ -246,13 +246,13 @@ export function validateContainerPath(
 
   let canonical: string
   try {
-    canonical = realpathSync(join(trustedRoot, normalized))
+    canonical = realpathSync(join(containmentRoot, normalized))
   } catch {
     push(errors, field, "notFound", "the named Xcode container does not exist")
     return undefined
   }
 
-  const escape = relative(realpathSync(trustedRoot), canonical)
+  const escape = relative(realpathSync(containmentRoot), canonical)
   if (escape.startsWith("..") || isAbsolute(escape)) {
     push(errors, field, "symlinkEscape", "a container path may not resolve outside the repository")
     return undefined
@@ -280,7 +280,7 @@ function resolveScheme(
     }
   }
 
-  const found = discover.scheme(environment.trustedRoot, container)
+  const found = discover.scheme(environment.containmentRoot, container)
   if (found.status === "found") return { value: found.value, provenance: "discovery" }
   if (found.status === "ambiguous") {
     push(

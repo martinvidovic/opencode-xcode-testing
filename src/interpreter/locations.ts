@@ -15,7 +15,7 @@ import type { SafeLocation } from "../domain/inspection.ts"
  */
 export function safeLocationFromSourceURL(
   sourceURL: string | undefined,
-  trustedRoot: string,
+  containmentRoot: string,
 ): SafeLocation | undefined {
   if (sourceURL === undefined) return undefined
 
@@ -27,14 +27,14 @@ export function safeLocationFromSourceURL(
   const column = fragmentNumber(fragment, "StartingColumnNumber")
 
   return {
-    path: safeDisplayPath(path, trustedRoot),
+    path: safeDisplayPath(path, containmentRoot),
     ...(line === undefined ? {} : { line }),
     ...(column === undefined ? {} : { column }),
   }
 }
 
 /**
- * A repository-contained path, relative to the trusted root; otherwise the
+ * A repository-contained path, relative to the containment root; otherwise the
  * basename alone. Xcode line numbers are 1-based and passed through as given.
  *
  * Starting with the root is not the same as being inside it. A path like
@@ -43,8 +43,8 @@ export function safeLocationFromSourceURL(
  * the repository — so the remainder is checked for traversal, and anything
  * that leaves is reduced to a display name like any other outside path.
  */
-export function safeDisplayPath(path: string, trustedRoot: string): string {
-  const root = trustedRoot.endsWith("/") ? trustedRoot : `${trustedRoot}/`
+export function safeDisplayPath(path: string, containmentRoot: string): string {
+  const root = containmentRoot.endsWith("/") ? containmentRoot : `${containmentRoot}/`
   if (!path.startsWith(root)) return basename(path)
 
   const relative = path.slice(root.length)

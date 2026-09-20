@@ -18,7 +18,7 @@ import {
   CONFIG_DIRECTORY,
   CONFIG_FILENAME,
   readProjectConfiguration,
-} from "../../src/adapter/trusted-root.ts"
+} from "../../src/adapter/project-roots.ts"
 
 /** Write this configuration into a throwaway project and read it back. */
 function read(configuration: unknown) {

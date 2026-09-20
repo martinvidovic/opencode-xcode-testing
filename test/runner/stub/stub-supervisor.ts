@@ -7,7 +7,7 @@
  * durable state transitions, and the completion message, on demand and in
  * milliseconds.
  *
- * Behaviour is scripted through a `.stub-mode` file in the trusted root, so
+ * Behaviour is scripted through a `.stub-mode` file in the containment root, so
  * nothing in shipped code has to know this stub exists:
  *   ready-then-complete  (default) full protocol, exit 0
  *   silent               exit 0 without ever handshaking
@@ -27,7 +27,7 @@
 
 import { createReadStream, createWriteStream } from "node:fs"
 
-import { readFileSync } from "node:fs"
+import { readFileSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 
 import { decodeMessages, encodeMessage, MAX_FRAME_BYTES } from "../../../src/runner/control.ts"
@@ -37,7 +37,7 @@ import { advance, readRunRecord } from "../../../src/runner/state.ts"
 const control = createWriteStream("", { fd: 4 })
 const incoming = createReadStream("", { fd: 3 })
 
-type Spec = { homeDir: string; trustedRoot: string; runId: string }
+type Spec = { homeDir: string; containmentRoot: string; runId: string }
 
 let buffer = ""
 incoming.on("data", (chunk) => {
@@ -48,8 +48,9 @@ incoming.on("data", (chunk) => {
   for (const message of messages) {
     if (message.type !== "hello") continue
     const spec = message as unknown as Spec
+    if (realpathSync(process.cwd()) !== realpathSync(spec.containmentRoot)) process.exit(70)
 
-    const mode = modeFor(spec.trustedRoot)
+    const mode = modeFor(spec.containmentRoot)
     if (mode === "silent") process.exit(0)
     if (mode === "hang") {
       // Explicitly kept alive rather than relying on an inherited descriptor:
@@ -103,7 +104,7 @@ async function serve(spec: Spec, mode: string): Promise<never> {
   const lingerMs = lingerOf(mode)
   if (lingerMs > 0) await sleep(lingerMs)
 
-  const storage = storageFor(spec.homeDir, spec.trustedRoot)
+  const storage = storageFor(spec.homeDir, spec.containmentRoot)
   let record = readRunRecord(storage, spec.runId)
   if (record !== undefined) {
     for (const state of ["supervisorReady", "childRecorded", "launchAuthorized"] as const) {
@@ -142,9 +143,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function modeFor(trustedRoot: string): string {
+function modeFor(containmentRoot: string): string {
   try {
-    return readFileSync(join(trustedRoot, ".stub-mode"), "utf8").trim()
+    return readFileSync(join(containmentRoot, ".stub-mode"), "utf8").trim()
   } catch {
     return "ready-then-complete"
   }

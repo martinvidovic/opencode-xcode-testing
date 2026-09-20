@@ -85,9 +85,9 @@ describe("the advisory lock", () => {
 })
 
 describe("the storage layout", () => {
-  test("keys a trusted root by hash, never by its path", () => {
-    const key = rootKeyFor("/workspace/example")
-    expect(key).toMatch(/^[0-9a-f]{64}$/)
+  test("preserves the root-level storage identity while keeping its path private", () => {
+    const key = storageFor("/home/somebody", "/workspace/example").rootKey
+    expect(key).toBe("ee22d65fd4c3c5421d9145d522b67d9aa1a5640bdd893a61ad22efd7bde3cc7c")
     expect(key).not.toContain("workspace")
   })
 

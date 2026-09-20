@@ -153,7 +153,7 @@ export async function main(argv: string[], observed: Observations): Promise<numb
 
   const pathCandidate = await bunOnPath()
   const runtime = await resolveRuntime({
-    trustedRoot: process.cwd(),
+    configurationRoot: process.cwd(),
     hostExecutable: process.execPath,
     ...(pathCandidate === undefined ? {} : { pathCandidate }),
     probe: probeRuntimeCandidate,

@@ -31,7 +31,7 @@ export type DerivedDataMode = "shared" | "isolated"
 export const DERIVED_DATA_MODES = ["shared", "isolated"] as const
 
 /**
- * `<trusted-root>/.opencode/xcode-test.json`. Per ADR 0002 its presence is the
+ * `<configuration-root>/.opencode/xcode-test.json`. Per ADR 0002 its presence is the
  * per-project enablement marker; its fields remain optional.
  */
 export type ProjectConfiguration = {
@@ -41,7 +41,7 @@ export type ProjectConfiguration = {
   destination?: Destination
   derivedData?: { mode: DerivedDataMode }
   timeoutSeconds?: number
-  /** Machine-local per ADR 0002. A relative value resolves against the trusted root. */
+  /** Machine-local per ADR 0002. A relative value resolves against the configuration root. */
   runtime?: string
 }
 

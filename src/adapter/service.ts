@@ -106,7 +106,7 @@ import type {
 
 export type ServiceEnvironment = {
   storage: Storage
-  trustedRoot: string
+  containmentRoot: string
   homeDir: string
   configuration?: ConfigurationOutcome
   toolchain: ToolchainIdentity
@@ -248,7 +248,7 @@ function startRun(
 
   const result = (async (): Promise<TestToolResult> => {
     const resolution = resolveTestRun(request, {
-      trustedRoot: environment.trustedRoot,
+      containmentRoot: environment.containmentRoot,
       ...(environment.configuration === undefined
         ? {}
         : { configuration: environment.configuration }),
@@ -265,7 +265,7 @@ function startRun(
 
     // The run's durable state is created under the root lock, before the slot
     // transfers to it. A crash in the other order would leave an active slot
-    // naming a run nothing can reconcile against, and wedge the trusted root.
+    // naming a run nothing can reconcile against, and wedge the containment root.
     const admission = await admit(admissionEnvironment(environment), {
       ...(cancellation === undefined ? {} : { signal: cancellation }),
       prepare: (runId) => {
@@ -436,7 +436,7 @@ async function superviseAndInterpret(
   const { summary, index } = await interpretRun({
     facts: {
       runId: record.runId,
-      trustedRoot: environment.trustedRoot,
+      containmentRoot: environment.containmentRoot,
       resultBundlePresent: existsSync(resultBundlePath),
       bundleDigestVerified: stabilized.verified,
       toolchain: environment.toolchain,
@@ -655,7 +655,7 @@ export async function finalizeRecovered(
   const { summary, index } = await interpretRun({
     facts: {
       runId,
-      trustedRoot: environment.trustedRoot,
+      containmentRoot: environment.containmentRoot,
       resultBundlePresent: existsSync(resultBundlePath),
       // Verified against the digest recorded at stabilization, whether that
       // happened on the eager path or a moment ago. A mismatch degrades
@@ -997,7 +997,7 @@ function runSupervisor(
 ): Promise<SupervisionOutcome> {
   return new Promise((resolve) => {
     const child = spawn(environment.runtime.path, [environment.supervisorEntrypoint], {
-      cwd: environment.trustedRoot,
+      cwd: environment.containmentRoot,
       env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
       // Detached so it outlives this call, with a private inherited control
       // channel: fd 3 is ours to write, fd 4 is the supervisor's to answer on.
@@ -1077,7 +1077,7 @@ function runSupervisor(
       encodeMessage({
         type: "hello",
         homeDir: environment.homeDir,
-        trustedRoot: environment.trustedRoot,
+        containmentRoot: environment.containmentRoot,
         runId: input.runId,
         command: XCODEBUILD,
         args: input.args,
@@ -1236,7 +1236,7 @@ async function inspectLeased(
       return untrustworthyEvidence()
     }
     // A tombstone distinguishes "deleted" from "never known"; without one, the
-    // run is genuinely unknown within this trusted root's namespace.
+    // run is genuinely unknown within this containment root's namespace.
     return tombstoneExists(environment.storage, request.runId)
       ? { status: "expired" }
       : { status: "notFound", subject: "run" }
@@ -1287,7 +1287,7 @@ async function inspectLeased(
     parsed,
     request,
     environment.cursorSecret,
-    environment.trustedRoot,
+    environment.containmentRoot,
     lazy,
   ) as InspectionResponse<unknown>
 }

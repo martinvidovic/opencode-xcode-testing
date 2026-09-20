@@ -73,8 +73,8 @@ export type CancellationSignal = { aborted: boolean }
 /** What the runner knows about a finished process before anything is decoded. */
 export type ExecutionFacts = {
   runId: string
-  /** Canonical absolute trusted root, used only to make paths repository-relative. */
-  trustedRoot: string
+  /** Canonical containment root, used only to make paths repository-relative. */
+  containmentRoot: string
   /** Whether the expected Result Bundle path exists at all. */
   resultBundlePresent: boolean
   /** Stabilization-time digest re-verification, per #8. */

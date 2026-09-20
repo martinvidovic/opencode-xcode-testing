@@ -22,7 +22,7 @@ import { readRunRecord } from "../../src/runner/state.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
 import { infrastructureReason, interruption, summaryOf } from "./scenarios.ts"
 
-/** A trusted root with a container that exists, so nothing has to be discovered. */
+/** A containment root with a container that exists, so nothing has to be discovered. */
 function project(): { root: string; dispose(): void } {
   const root = mkdtempSync(join(tmpdir(), "xcode-test-cancel-"))
   mkdirSync(join(root, "Example.xcodeproj"), { recursive: true })
@@ -65,7 +65,7 @@ function harness(entrypoint: string): Harness {
 
   const environment: ServiceEnvironment = {
     storage,
-    trustedRoot: repo.root,
+    containmentRoot: repo.root,
     homeDir: home,
     toolchain: identityFor(loadFixture("passed")),
     runtime: { path: runtimePath },

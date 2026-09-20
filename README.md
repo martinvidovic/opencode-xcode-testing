@@ -137,7 +137,7 @@ Installation alone registers nothing. The plugin registers its tools only when
 this file exists:
 
 ```
-<project>/.opencode/xcode-test.json
+<configuration-root>/.opencode/xcode-test.json
 ```
 
 The minimum is one line:
@@ -166,14 +166,21 @@ are all optional:
 
 | Field | Resolution when omitted |
 | --- | --- |
-| `xcodeContainer` | Discovered beneath the project. Exactly one workspace wins; only if there are no workspaces are projects considered. Two of either is a structured ambiguity you must resolve, never a guess. |
+| `xcodeContainer` | Discovered beneath the containment root. Exactly one workspace wins; only if there are no workspaces are projects considered. Two of either is a structured ambiguity you must resolve, never a guess. |
 | `scheme` | Discovered from **checked-in shared schemes only**, and only when there is exactly one. A scheme under `xcuserdata` exists on one machine and would make discovery depend on whose laptop it ran on. |
 | `destination` | **Required.** There is no safe default: guessing one runs your tests somewhere you did not ask for. |
 | `derivedData` | `shared`. Use `isolated` for a per-run directory. |
 | `timeoutSeconds` | `900`. Range is 1 to 7200. |
 
-Container paths are repository-relative, and are rejected if they traverse out
-of the project or resolve outside it through a symlink.
+The plugin tracks two root roles explicitly. The **containment root** is the
+canonical safety boundary used for discovery, container paths, execution, and
+diagnostics. The **configuration root** owns the configuration above and its
+relative settings. Root-level sessions currently use the same canonical
+directory for both roles; bounded module-level configuration discovery is a
+separate capability.
+
+Container paths are containment-root-relative, and are rejected if they
+traverse out of containment or resolve outside it through a symlink.
 
 ### `runtime` is machine-local
 
@@ -185,7 +192,7 @@ on `PATH`:
 ```
 
 Treat this like the `plugin` entry: it describes one machine. A relative value
-resolves against the project root, which is the only form worth committing. An
+resolves against the configuration root, which is the only form worth committing. An
 explicit `runtime` that is set but unusable is a **hard error, never a
 fallback** — a setting that silently degrades is worse than one that fails.
 
@@ -253,7 +260,7 @@ you reach for them:
 
   What a result *does* carry is the repository-relative container path you
   configured, and bounded source locations for failures and build errors —
-  `Sources/App/Login.swift:42`, relative to the project when the file is
+  `Sources/App/Login.swift:42`, relative to the containment root when the file is
   inside it, and reduced to the bare filename when it is not. Those are the
   point: a diagnostic nobody can locate is a diagnostic nobody can act on.
 - **One Test Run at a time per project.** Isolated DerivedData alone does not

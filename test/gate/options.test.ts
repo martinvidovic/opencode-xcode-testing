@@ -80,7 +80,7 @@ describe("--project", () => {
   test("is canonical, so every layer below decides containment against a real directory", () => {
     project((path) => {
       // `realpath`, not merely absolute. On macOS the temp directory is itself
-      // reached through a symlink, so a trusted root taken at face value would
+      // reached through a symlink, so a containment root taken at face value would
       // be compared against something it does not equal — which is the whole
       // of what containment below this depends on.
       expect(parsed(["--project", path]).project).toBe(realpathSync(path))

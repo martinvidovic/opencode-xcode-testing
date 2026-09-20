@@ -7,7 +7,7 @@
  * still running, and a root held forever after everything has gone.
  *
  * The second is the easier failure to ship, because it looks like caution. It
- * is not — a trusted root that can never be used again has the same practical
+ * is not — a containment root that can never be used again has the same practical
  * effect as a tool that does not work, and the only way out is deleting state
  * by hand.
  */

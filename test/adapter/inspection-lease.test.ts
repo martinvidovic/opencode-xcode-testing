@@ -79,7 +79,7 @@ function indexFor(): NormalizedIndex {
 function environmentFor(box: Sandbox, overrides: Partial<ServiceEnvironment> = {}): ServiceEnvironment {
   return {
     storage: box.storage,
-    trustedRoot: "/workspace",
+    containmentRoot: "/workspace",
     homeDir: box.homeDir,
     toolchain: identityFor(loadFixture("passed")),
     runtime: { path: "/opt/bun" },

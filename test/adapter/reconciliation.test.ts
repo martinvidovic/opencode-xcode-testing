@@ -1,7 +1,7 @@
 /**
  * The clock a startup deadline is measured against (issue #42).
  *
- * Reconciliation is the pass that returns a trusted root to service after a
+ * Reconciliation is the pass that returns a containment root to service after a
  * crash. Nothing downstream reads its report, a healthy machine expects it to
  * find nothing, and a pass that examined nothing at all is indistinguishable
  * from a pass that found nothing wrong. So a bound that is wrong by the age of

@@ -41,7 +41,7 @@ import type { ScenarioResult } from "./report.ts"
  * One failed B2 scenario, and where to read about it.
  *
  * Opaque identifiers only. `rootKey` is the hash the tool already files a
- * trusted root under and `runId` is the one it already renders to the model —
+ * containment root under and `runId` is the one it already renders to the model —
  * neither says anything about where on this machine anything lives, which is
  * the property that lets this reach a durable report at all.
  */
@@ -102,12 +102,12 @@ export class B2Evidence {
   }
 
   /** Note one tool response, and the run it named. */
-  observe(what: string, trustedRoot: string, text: string): void {
+  observe(what: string, containmentRoot: string, text: string): void {
     const runId = fieldValue(text, "run")
     const exchange: Exchange = {
       what,
-      root: basename(trustedRoot),
-      rootKey: this.#roots.keyOf(trustedRoot),
+      root: basename(containmentRoot),
+      rootKey: this.#roots.keyOf(containmentRoot),
       ...(runId === undefined ? {} : { runId }),
       text,
     }

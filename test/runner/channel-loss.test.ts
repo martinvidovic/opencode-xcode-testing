@@ -37,8 +37,8 @@ describe("a supervisor whose adapter has gone", () => {
     // four cases. Splitting them would mean either four real child lifetimes
     // to learn what one shows, or state shared between tests — and this repo
     // uses neither.
-    const trustedRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
-    const box = sandbox(trustedRoot)
+    const containmentRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
+    const box = sandbox(containmentRoot)
     const runId = "a".repeat(32)
 
     try {
@@ -46,7 +46,7 @@ describe("a supervisor whose adapter has gone", () => {
       seedRun(box.storage, { runId, timeoutSeconds: 60 })
 
       const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(SUPERVISOR_ENTRYPOINT, {
-        cwd: trustedRoot,
+        cwd: containmentRoot,
       })
 
       // Closed before `hello` goes, so there is no window in which the reply
@@ -59,7 +59,7 @@ describe("a supervisor whose adapter has gone", () => {
         encodeMessage({
           type: "hello",
           homeDir: box.homeDir,
-          trustedRoot,
+          containmentRoot,
           runId,
           command: "/bin/sleep",
           args: [String(CHILD_SECONDS)],
@@ -98,7 +98,7 @@ describe("a supervisor whose adapter has gone", () => {
       expect(record?.controlChannelLost).toBe(true)
     } finally {
       box.dispose()
-      rmSync(trustedRoot, { recursive: true, force: true })
+      rmSync(containmentRoot, { recursive: true, force: true })
     }
   }, 30_000)
 
@@ -109,8 +109,8 @@ describe("a supervisor whose adapter has gone", () => {
     // guarantee the gate exists to give. Forced rather than argued from the
     // gate script, because "the child would exit" is exactly the kind of claim
     // that stays true only until someone changes the script.
-    const trustedRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
-    const logPath = join(trustedRoot, "run.log")
+    const containmentRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
+    const logPath = join(containmentRoot, "run.log")
 
     try {
       // Held at the gate and never authorized, in a process that is then
@@ -120,7 +120,7 @@ describe("a supervisor whose adapter has gone", () => {
         const child = spawnGatedChild({
           command: "/bin/sleep",
           args: ["30"],
-          cwd: ${JSON.stringify(trustedRoot)},
+          cwd: ${JSON.stringify(containmentRoot)},
           environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
           logPath: ${JSON.stringify(logPath)},
         })
@@ -152,17 +152,17 @@ describe("a supervisor whose adapter has gone", () => {
       // child proves it was recorded before it may execute anything.
       expect(readFileSync(logPath, "utf8")).toBe("")
     } finally {
-      rmSync(trustedRoot, { recursive: true, force: true })
+      rmSync(containmentRoot, { recursive: true, force: true })
     }
   }, 30_000)
 
   test("spawns nothing when the channel closes before the spec arrives", async () => {
     // The first startup boundary, where there is nothing yet to abandon. A
     // supervisor that never learned what to run must not invent one.
-    const trustedRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
+    const containmentRoot = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
     try {
       const { toSupervisor, fromSupervisor, ended } = spawnWithControlChannel(SUPERVISOR_ENTRYPOINT, {
-        cwd: trustedRoot,
+        cwd: containmentRoot,
       })
       fromSupervisor?.destroy()
       toSupervisor?.end()
@@ -173,7 +173,7 @@ describe("a supervisor whose adapter has gone", () => {
       expect(end.signal).toBeNull()
       expect(end.exitCode).toBe(EXIT_PROTOCOL)
     } finally {
-      rmSync(trustedRoot, { recursive: true, force: true })
+      rmSync(containmentRoot, { recursive: true, force: true })
     }
   }, 30_000)
 })

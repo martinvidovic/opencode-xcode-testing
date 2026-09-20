@@ -149,7 +149,7 @@ export type RunReport = {
    * replace.
    *
    * Opaque identifiers only, and by construction: `rootKey` is the hash the
-   * tool already files a trusted root under, `runId` is the one it already
+   * tool already files a containment root under, `runId` is the one it already
    * renders to the model, and `root` is a workspace-relative name. Nothing
    * here can name a path on anyone's machine.
    *

@@ -18,7 +18,7 @@ import {
   type RuntimeProbe,
 } from "../../src/adapter/runtime.ts"
 
-const TRUSTED_ROOT = "/workspace/example"
+const CONFIGURATION_ROOT = "/workspace/example/module"
 
 /** A probe that accepts exactly the candidates it is told to accept. */
 function probeAccepting(...usable: string[]): RuntimeProbe {
@@ -29,7 +29,7 @@ function probeAccepting(...usable: string[]): RuntimeProbe {
 describe("an explicitly configured runtime", () => {
   test("wins over everything else", async () => {
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       configured: "/opt/bun/bin/bun",
       hostExecutable: "/opt/opencode",
       pathCandidate: "bun",
@@ -38,10 +38,10 @@ describe("an explicitly configured runtime", () => {
     expect(outcome).toMatchObject({ status: "resolved", path: "/opt/bun/bin/bun", source: "configuration" })
   })
 
-  test("resolves a relative value against the trusted root", async () => {
-    const expected = join(TRUSTED_ROOT, "tools/bun")
+  test("resolves a relative value against the configuration root", async () => {
+    const expected = join(CONFIGURATION_ROOT, "tools/bun")
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       configured: "tools/bun",
       hostExecutable: "/opt/opencode",
       probe: probeAccepting(expected),
@@ -52,7 +52,7 @@ describe("an explicitly configured runtime", () => {
   test("is a hard error when it is set but unusable, never a fallback", async () => {
     // A setting that silently degrades fails somewhere else, later.
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       configured: "/opt/broken/bun",
       hostExecutable: "/opt/opencode",
       pathCandidate: "bun",
@@ -70,7 +70,7 @@ describe("an explicitly configured runtime", () => {
 describe("the host executable", () => {
   test("is used when it genuinely runs TypeScript", async () => {
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       hostExecutable: "/opt/bun",
       pathCandidate: "bun",
       probe: probeAccepting("/opt/bun"),
@@ -80,7 +80,7 @@ describe("the host executable", () => {
 
   test("falls through to PATH when it cannot, which is the expected case", async () => {
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       hostExecutable: "/opt/homebrew/bin/opencode",
       pathCandidate: "bun",
       probe: probeAccepting("bun"),
@@ -91,7 +91,7 @@ describe("the host executable", () => {
   test("is probed before PATH, so a working host executable is preferred", async () => {
     const probed: string[] = []
     await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       hostExecutable: "/opt/opencode",
       pathCandidate: "bun",
       probe: async (candidate) => {
@@ -106,7 +106,7 @@ describe("the host executable", () => {
 describe("when nothing works", () => {
   test("fails closed rather than falling back silently", async () => {
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       hostExecutable: "/opt/opencode",
       pathCandidate: "bun",
       probe: probeAccepting(),
@@ -116,7 +116,7 @@ describe("when nothing works", () => {
 
   test("names Bun, the candidates it tried, and the setting that would fix it", async () => {
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       hostExecutable: "/opt/opencode",
       probe: probeAccepting(),
     })
@@ -130,7 +130,7 @@ describe("when nothing works", () => {
 
   test("copes with Bun being absent from PATH entirely", async () => {
     const outcome = await resolveRuntime({
-      trustedRoot: TRUSTED_ROOT,
+      configurationRoot: CONFIGURATION_ROOT,
       hostExecutable: "/opt/opencode",
       probe: probeAccepting(),
     })

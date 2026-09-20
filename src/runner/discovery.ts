@@ -7,7 +7,7 @@
  * ambiguity the caller can resolve is strictly better than a coin flip.
  *
  * Symlinked directories are not followed. A repository that links to a sibling
- * checkout would otherwise let discovery wander outside the trusted root.
+ * checkout would otherwise let discovery wander outside the containment root.
  */
 
 import { lstatSync, readdirSync } from "node:fs"
@@ -27,8 +27,8 @@ const EXCLUDED = new Set<string>(DISCOVERY_EXCLUDED_DIRECTORIES)
  * found anywhere, because a project inside a workspace is a component of it,
  * not an alternative to it.
  */
-export function discoverContainer(trustedRoot: string): DiscoveryOutcome<XcodeContainer> {
-  const found = scan(trustedRoot)
+export function discoverContainer(containmentRoot: string): DiscoveryOutcome<XcodeContainer> {
+  const found = scan(containmentRoot)
 
   if (found.workspaces.length === 1) {
     return { status: "found", value: { kind: "workspace", path: found.workspaces[0] as string } }
@@ -45,8 +45,8 @@ export function discoverContainer(trustedRoot: string): DiscoveryOutcome<XcodeCo
 
 export type ContainerScan = { workspaces: string[]; projects: string[] }
 
-/** Walk the trusted root once, collecting both container kinds. */
-export function scan(trustedRoot: string): ContainerScan {
+/** Walk the containment root once, collecting both container kinds. */
+export function scan(containmentRoot: string): ContainerScan {
   const workspaces: string[] = []
   const projects: string[] = []
 
@@ -62,15 +62,15 @@ export function scan(trustedRoot: string): ContainerScan {
       const path = join(directory, entry)
       const stats = safeLstat(path)
       // Not following a symlinked directory is what keeps discovery inside the
-      // trusted root; a linked vendor checkout is not this repository's project.
+      // containment root; a linked vendor checkout is not this repository's project.
       if (stats === undefined || stats.isSymbolicLink() || !stats.isDirectory()) continue
 
       if (entry.endsWith(".xcworkspace")) {
-        workspaces.push(relative(trustedRoot, path))
+        workspaces.push(relative(containmentRoot, path))
         continue
       }
       if (entry.endsWith(".xcodeproj")) {
-        projects.push(relative(trustedRoot, path))
+        projects.push(relative(containmentRoot, path))
         continue
       }
       if (entry.startsWith(".") || EXCLUDED.has(entry)) continue
@@ -79,7 +79,7 @@ export function scan(trustedRoot: string): ContainerScan {
     }
   }
 
-  walk(trustedRoot)
+  walk(containmentRoot)
   return { workspaces: workspaces.sort(), projects: projects.sort() }
 }
 
@@ -90,15 +90,15 @@ export function scan(trustedRoot: string): ContainerScan {
  * anything `xcodebuild` can see.
  */
 export function discoverScheme(
-  trustedRoot: string,
+  containmentRoot: string,
   container: XcodeContainer,
 ): DiscoveryOutcome<string> {
-  const searched = [join(trustedRoot, container.path)]
+  const searched = [join(containmentRoot, container.path)]
 
   // A workspace's schemes usually live in the projects it wraps, so those count
-  // too — but only the shared ones, and only inside the trusted root.
+  // too — but only the shared ones, and only inside the containment root.
   if (container.kind === "workspace") {
-    for (const project of scan(trustedRoot).projects) searched.push(join(trustedRoot, project))
+    for (const project of scan(containmentRoot).projects) searched.push(join(containmentRoot, project))
   }
 
   const schemes = new Set<string>()

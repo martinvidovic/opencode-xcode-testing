@@ -8,6 +8,14 @@ A local OpenCode capability for running scoped Xcode tests while exposing only t
 The OpenCode-facing capability that executes and inspects Xcode tests. Exposed as a family of three separately-deniable tool IDs — `xcode_test`, `xcode_test_inspect`, `xcode_test_recover` — which together form one capability.
 _Avoid_: Test plugin, test wrapper
 
+**Containment Root**:
+The canonical directory supplied by the adapter that bounds repository scanning, container resolution, execution working directories, and diagnostic path disclosure. Tool arguments can never move it.
+_Avoid_: Trusted root
+
+**Configuration Root**:
+The canonical directory whose `.opencode/xcode-test.json` enables and configures the Test Tool, and against which configuration-relative values resolve. It is tracked independently from the Containment Root even when both identify the same directory.
+_Avoid_: Config root
+
 **Test Run**:
 One execution of a Requested Scope, including its retained diagnostics and reported outcome.
 _Avoid_: Build, invocation
@@ -45,7 +53,7 @@ The private pair of inherited pipe endpoints between the adapter and a superviso
 _Avoid_: Control socket, IPC link
 
 **Execution Slot**:
-The single permission to run `xcodebuild` under one trusted root. V1 serializes Test Runs per root, so holding the slot is what makes a run the active one; releasing it is what lets the next be admitted.
+The single permission to run `xcodebuild` under one Containment Root. V1 serializes Test Runs per root, so holding the slot is what makes a run the active one; releasing it is what lets the next be admitted.
 _Avoid_: Lock, mutex, semaphore
 
 **Exit Evidence**:
@@ -53,11 +61,11 @@ What a supervisor actually observed about how a Test Run's direct child ended �
 _Avoid_: Exit info, exit result
 
 **Quarantine**:
-A hold on a trusted root's Execution Slot, raised when a Test Run's lifecycle could not be confirmed and cleared only on identity-safe evidence that nothing attributable to it is still running. It refuses new Test Runs with a reason rather than making them wait.
+A hold on a Containment Root's Execution Slot, raised when a Test Run's lifecycle could not be confirmed and cleared only on identity-safe evidence that nothing attributable to it is still running. It refuses new Test Runs with a reason rather than making them wait.
 _Avoid_: Lockout, freeze, block
 
 **Read Lease**:
-A short, expiring file published under a trusted root while an inspection reads one Test Run's retained evidence, and removed when it finishes. It is what stops user-wide retention — which runs in whichever OpenCode instance reaches the hour first — from evicting evidence another instance is reading. It expires rather than being probed, so a crashed reader costs one pass and never pins evidence; anything unreadable among them counts as held.
+A short, expiring file published under a Containment Root's current storage scope while an inspection reads one Test Run's retained evidence, and removed when it finishes. It is what stops user-wide retention — which runs in whichever OpenCode instance reaches the hour first — from evicting evidence another instance is reading. It expires rather than being probed, so a crashed reader costs one pass and never pins evidence; anything unreadable among them counts as held.
 _Avoid_: Read lock, pin, reservation
 
 **Run Record**:
@@ -69,7 +77,7 @@ The `DerivedData` tree the tool keeps for one Xcode container so the next build 
 _Avoid_: Build artifacts, intermediates, scratch
 
 **Stale Root**:
-A trusted root nobody has opened for long enough that its storage is collected whole. The registry keeps a hash and a `lastSeenAtMs` and deliberately never a path, so age is the only signal there is — which is both the privacy guarantee and the entire basis on which this can be decided.
+A stored Containment Root nobody has opened for long enough that its storage is collected whole. The registry keeps a hash and a `lastSeenAtMs` and deliberately never a path, so age is the only signal there is — which is both the privacy guarantee and the entire basis on which this can be decided.
 _Avoid_: Dead project, orphaned repo, abandoned root
 
 **Adapter Failure**:

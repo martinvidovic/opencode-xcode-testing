@@ -33,7 +33,7 @@ const RUN = "run-pre-launch"
 function environmentFor(box: Sandbox): ServiceEnvironment {
   return {
     storage: box.storage,
-    trustedRoot: "/workspace",
+    containmentRoot: "/workspace",
     homeDir: box.homeDir,
     toolchain: identityFor(loadFixture("passed")),
     runtime: { path: "/opt/bun" },

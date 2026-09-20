@@ -18,7 +18,7 @@ import { renderTestToolResult } from "../../src/adapter/output.ts"
 import { FAILED_EXIT, interpretFixture } from "../interpreter/harness.ts"
 import { unavailableService } from "../../src/adapter/service.ts"
 import type { ResultProvenance } from "../../src/domain/result.ts"
-import { readProjectConfiguration } from "../../src/adapter/trusted-root.ts"
+import { readProjectConfiguration } from "../../src/adapter/project-roots.ts"
 import { resolveTestRun } from "../../src/runner/resolution.ts"
 import { prepareStorage, storageFor, storageForRootKey, type Storage } from "../../src/runner/paths.ts"
 
@@ -54,7 +54,7 @@ describe("a present but invalid project configuration", () => {
 
         const outcome = resolveTestRun(
           { requestedScope: { kind: "all" } },
-          { trustedRoot: root, configuration },
+          { containmentRoot: root, configuration },
         )
 
         expect(outcome.status).toBe("rejected")
@@ -72,7 +72,7 @@ describe("a present but invalid project configuration", () => {
       (root) => {
         const outcome = resolveTestRun(
           { requestedScope: { kind: "all" } },
-          { trustedRoot: root, configuration: readProjectConfiguration(root) },
+          { containmentRoot: root, configuration: readProjectConfiguration(root) },
         )
         if (outcome.status !== "rejected") throw new Error("expected a rejection")
         expect(outcome.result.errors[0]?.message).toContain("unknown fields")
@@ -95,7 +95,7 @@ describe("a present but invalid project configuration", () => {
           xcodeContainer: { kind: "project", path: "Example.xcodeproj" },
           scheme: "App",
         },
-        { trustedRoot: root, configuration },
+        { containmentRoot: root, configuration },
       )
       expect(outcome.status).toBe("resolved")
     }, (root) => {

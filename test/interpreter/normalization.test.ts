@@ -277,7 +277,7 @@ describe("a bundle node Xcode gave no name", () => {
           ],
         },
       ],
-      { trustedRoot: "/repo" },
+      { containmentRoot: "/repo" },
     )
 
     expect(occurrences).toEqual([])
@@ -300,7 +300,7 @@ describe("a bundle node Xcode gave no name", () => {
           ],
         },
       ],
-      { trustedRoot: "/repo" },
+      { containmentRoot: "/repo" },
     )
 
     expect(occurrences[0]?.identityComplete).toBe(true)
@@ -326,7 +326,7 @@ describe("a test that ran and cannot be named", () => {
           ],
         },
       ],
-      { trustedRoot: "/repo" },
+      { containmentRoot: "/repo" },
     )
   }
 
@@ -347,7 +347,7 @@ describe("a test that ran and cannot be named", () => {
     // nothing above it is the plan or launch node it has always been.
     const outcome = normalizeTestNodes(
       [{ nodeType: "Test Case", name: "launch", result: "Passed", children: [] }],
-      { trustedRoot: "/repo" },
+      { containmentRoot: "/repo" },
     )
 
     expect(outcome.pseudoTestCount).toBe(1)

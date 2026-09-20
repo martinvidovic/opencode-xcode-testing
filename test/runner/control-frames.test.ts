@@ -114,7 +114,7 @@ describe("the traffic the protocol is for", () => {
       encodeMessage({
         type: "hello",
         homeDir: "/Users/someone",
-        trustedRoot: "/Users/someone/project",
+        containmentRoot: "/Users/someone/project",
         runId: "r".repeat(32),
         command: "/usr/bin/xcodebuild",
         args: ["test", "-scheme", "App", "-destination", "id=SIMULATOR"],
@@ -147,7 +147,7 @@ describe("the traffic the protocol is for", () => {
     const hello = encodeMessage({
       type: "hello",
       homeDir: "/Users/someone",
-      trustedRoot: "/Users/someone/very/deeply/nested/workspace/project",
+      containmentRoot: "/Users/someone/very/deeply/nested/workspace/project",
       runId: "r".repeat(32),
       command: "/usr/bin/xcodebuild",
       args: Array.from({ length: 40 }, (_, index) => `-only-testing:AppTests/SuiteNumber${index}`),

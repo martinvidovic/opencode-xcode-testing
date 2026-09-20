@@ -185,7 +185,7 @@ export const TRUSTED_ROOT = "/workspace"
 export function factsFor(fixture: Fixture, overrides: Partial<ExecutionFacts> = {}): ExecutionFacts {
   return {
     runId: "run-0000",
-    trustedRoot: TRUSTED_ROOT,
+    containmentRoot: TRUSTED_ROOT,
     resultBundlePresent: true,
     bundleDigestVerified: "yes",
     toolchain: identityFor(fixture),

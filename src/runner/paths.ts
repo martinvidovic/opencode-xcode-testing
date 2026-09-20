@@ -3,7 +3,7 @@
  *
  * Everything the runner writes — Result Bundles, raw logs, isolated
  * DerivedData, metadata, locks, queue state, tombstones — lives outside the
- * repository, in a user-scoped root keyed by a hash of the canonical trusted
+ * repository, in a user-scoped root keyed by a hash of the canonical containment
  * root. Two consequences follow, and both are deliberate: a `git clean` can
  * never destroy an in-flight run's evidence, and no public contract ever needs
  * to name a path.
@@ -46,11 +46,11 @@ export const RUN_ARTIFACTS = {
 export type Storage = {
   /** `<home>/Library/Application Support/opencode-xcode-test`. */
   toolRoot: string
-  /** The global registry directory, shared across trusted roots. */
+  /** The global registry directory, shared across containment roots. */
   registryDir: string
   registryFile: string
   registryLock: string
-  /** Everything scoped to one trusted root. */
+  /** Everything scoped to one containment root in the current storage contract. */
   rootDir: string
   rootLock: string
   runsDir: string
@@ -59,7 +59,7 @@ export type Storage = {
   tombstonesDir: string
   /** Where inspections publish their read leases, one file each. */
   leasesDir: string
-  /** The opaque key this trusted root is stored under. */
+  /** The opaque key this containment root is stored under. */
   rootKey: string
 }
 
@@ -67,8 +67,11 @@ export type Storage = {
  * A hash, not the path itself: the storage layout must not spell out where
  * someone's repositories live, and a fixed-length key keeps path lengths bounded.
  */
-export function rootKeyFor(canonicalTrustedRoot: string): string {
-  return createHash("sha256").update(`trusted-root ${canonicalTrustedRoot}`, "utf8").digest("hex")
+export function rootKeyFor(canonicalContainmentRoot: string): string {
+  // Keep the historical namespace: root-level sessions must retain their state.
+  return createHash("sha256")
+    .update(`trusted-root ${canonicalContainmentRoot}`, "utf8")
+    .digest("hex")
 }
 
 /**
@@ -84,8 +87,8 @@ export function isRootKey(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
 }
 
-export function storageFor(homeDir: string, canonicalTrustedRoot: string): Storage {
-  return storageForRootKey(homeDir, rootKeyFor(canonicalTrustedRoot))
+export function storageFor(homeDir: string, canonicalContainmentRoot: string): Storage {
+  return storageForRootKey(homeDir, rootKeyFor(canonicalContainmentRoot))
 }
 
 /**
@@ -131,7 +134,7 @@ export function toolRootFor(homeDir: string): string {
 /**
  * Where shared DerivedData for one container lives.
  *
- * Keyed by the **canonical container**, not by the trusted root. A repository
+ * Keyed by the **canonical container**, not by the containment root. A repository
  * with two containers is ordinary, and letting both write one DerivedData
  * would have them overwrite each other's build products — a shared cache that
  * makes builds slower and results less trustworthy is not a cache. The key is
@@ -423,11 +426,11 @@ function syncFile(path: string): void {
 }
 
 /**
- * Canonicalize the adapter-supplied trusted root. Symlinks are resolved once,
+ * Canonicalize the adapter-supplied containment root. Symlinks are resolved once,
  * here, and never again: every later path decision is made against the real
  * directory, so a link swapped afterwards cannot redirect storage.
  */
-export function canonicalizeTrustedRoot(path: string): string {
+export function canonicalizeContainmentRoot(path: string): string {
   const canonical = realpathSync(path)
   assertIsDirectory(canonical)
   return canonical

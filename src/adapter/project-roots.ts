@@ -1,14 +1,14 @@
 /**
- * The trusted root and the project configuration (ADR 0002, #6).
+ * Project roots and project configuration (ADR 0002, #6).
  *
- * The trusted root is `context.worktree` when the host supplies one, else
+ * The containment root is `context.worktree` when the host supplies one, else
  * `context.directory`, resolved exactly once and **never influenced by a tool
  * argument**. That is the boundary the whole safety story rests on: if a model
  * could move the root, every path guarantee beneath it would be decorative.
  *
- * Configuration lookup is exactly `<trusted-root>/.opencode/xcode-test.json`
- * with no upward search — a search would let a file two directories up quietly
- * decide what a project tests.
+ * The configuration root is tracked separately so configuration-relative
+ * behavior cannot be confused with containment. For root-level sessions it is
+ * currently the containment root; bounded module discovery is issue #137.
  */
 
 import { readFileSync, statSync } from "node:fs"
@@ -17,34 +17,38 @@ import { join } from "node:path"
 import { DERIVED_DATA_MODES, type ProjectConfiguration } from "../domain/request.ts"
 import { MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS } from "../domain/limits.ts"
 import { isRecord, oneOf } from "../domain/json.ts"
-import { canonicalizeTrustedRoot } from "../runner/paths.ts"
+import { canonicalizeContainmentRoot } from "../runner/paths.ts"
 
 export const CONFIG_DIRECTORY = ".opencode"
 export const CONFIG_FILENAME = "xcode-test.json"
 
 export type PluginContext = { worktree?: string; directory: string }
 
-export type TrustedRootResolution =
-  | { status: "resolved"; trustedRoot: string }
+export type ProjectRootsResolution =
+  | { status: "resolved"; containmentRoot: string; configurationRoot: string }
   | { status: "failed"; message: string }
 
 /**
  * Canonicalization failure is a hard resolution error, not a fallback: a root
  * we cannot resolve is a root we cannot make any promise about.
  */
-export function resolveTrustedRoot(context: PluginContext): TrustedRootResolution {
+export function resolveProjectRoots(context: PluginContext): ProjectRootsResolution {
   const candidate = usableWorktree(context.worktree) ?? context.directory
   try {
-    return { status: "resolved", trustedRoot: canonicalizeTrustedRoot(candidate) }
+    const containmentRoot = canonicalizeContainmentRoot(candidate)
+    return { status: "resolved", containmentRoot, configurationRoot: containmentRoot }
   } catch {
-    return { status: "failed", message: "the trusted root could not be resolved to a real directory" }
+    return {
+      status: "failed",
+      message: "the containment root could not be resolved to a real directory",
+    }
   }
 }
 
 /**
  * A host that finds no git worktree does not omit the field — it reports the
  * filesystem root, or an empty string. Taking either at face value would make
- * `/` the trusted root, which silently disables the plugin in every non-git
+ * `/` the containment root, which silently disables the plugin in every non-git
  * project and, worse, would key artifact storage and container discovery to the
  * whole filesystem.
  */
@@ -54,14 +58,14 @@ function usableWorktree(worktree: string | undefined): string | undefined {
   return trimmed
 }
 
-export function configurationPath(trustedRoot: string): string {
-  return join(trustedRoot, CONFIG_DIRECTORY, CONFIG_FILENAME)
+export function configurationPath(configurationRoot: string): string {
+  return join(configurationRoot, CONFIG_DIRECTORY, CONFIG_FILENAME)
 }
 
 /** The file's presence is the per-project enablement marker (ADR 0002). */
-export function enablementMarkerExists(trustedRoot: string): boolean {
+export function enablementMarkerExists(configurationRoot: string): boolean {
   try {
-    return statSync(configurationPath(trustedRoot)).isFile()
+    return statSync(configurationPath(configurationRoot)).isFile()
   } catch {
     return false
   }
@@ -88,8 +92,8 @@ const KNOWN_FIELDS = new Set([
  * typo'd key that silently does nothing is how a project ends up testing
  * something other than what its configuration says.
  */
-export function readProjectConfiguration(trustedRoot: string): ConfigurationResult {
-  const path = configurationPath(trustedRoot)
+export function readProjectConfiguration(configurationRoot: string): ConfigurationResult {
+  const path = configurationPath(configurationRoot)
 
   let raw: string
   try {
@@ -162,7 +166,7 @@ function fieldProblems(record: Record<string, unknown>): string[] {
   check("destination", destinationProblem)
   check("derivedData", derivedDataProblem)
   check("timeoutSeconds", timeoutProblem)
-  // Machine-local, and relative resolves against the trusted root — so the
+  // Machine-local, and relative resolves against the configuration root — so the
   // only thing that can be said here is that it is a path-shaped string.
   check("runtime", (value) => nonEmptyStringProblem(value))
 

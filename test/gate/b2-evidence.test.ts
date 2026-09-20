@@ -49,7 +49,7 @@ function withHome<T>(work: (home: string) => T): T {
 /**
  * The key the tool would file this root under.
  *
- * Canonical, because the host resolves a trusted root before it stores
+ * Canonical, because the host resolves a containment root before it stores
  * anything and `storageFor` hashes what it is given. The workspace here is
  * under the system temp directory, which on macOS is reached through a
  * symbolic link — so a helper

@@ -1,5 +1,5 @@
 /**
- * The trusted root and the enablement marker (ADR 0002, #6).
+ * Project roots and the enablement marker (ADR 0002, #6).
  *
  * The root is the boundary every path guarantee rests on. If a tool argument
  * could move it, the rest of the safety story would be decorative — so it is
@@ -16,8 +16,8 @@ import {
   configurationPath,
   enablementMarkerExists,
   readProjectConfiguration,
-  resolveTrustedRoot,
-} from "../../src/adapter/trusted-root.ts"
+  resolveProjectRoots,
+} from "../../src/adapter/project-roots.ts"
 
 function project(configure?: (root: string) => void): { root: string; dispose(): void } {
   const root = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
@@ -44,21 +44,26 @@ function writeConfiguration(root: string, contents: string): void {
   writeFileSync(configurationPath(root), contents)
 }
 
-describe("the trusted root", () => {
+describe("the project roots", () => {
   test("prefers the worktree the host supplies", () => {
     withProject((root) => {
       const nested = join(root, "nested")
       mkdirSync(nested)
-      const outcome = resolveTrustedRoot({ worktree: root, directory: nested })
-      expect(outcome).toEqual({ status: "resolved", trustedRoot: realpathSync(root) })
+      const outcome = resolveProjectRoots({ worktree: root, directory: nested })
+      expect(outcome).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(root),
+        configurationRoot: realpathSync(root),
+      })
     })
   })
 
   test("falls back to the directory when there is no worktree", () => {
     withProject((root) => {
-      expect(resolveTrustedRoot({ directory: root })).toEqual({
+      expect(resolveProjectRoots({ directory: root })).toEqual({
         status: "resolved",
-        trustedRoot: realpathSync(root),
+        containmentRoot: realpathSync(root),
+        configurationRoot: realpathSync(root),
       })
     })
   })
@@ -69,9 +74,10 @@ describe("the trusted root", () => {
     // would have keyed artifact storage and discovery to the whole filesystem.
     withProject((root) => {
       for (const worktree of ["", "   ", "/"]) {
-        expect(resolveTrustedRoot({ worktree, directory: root })).toEqual({
+        expect(resolveProjectRoots({ worktree, directory: root })).toEqual({
           status: "resolved",
-          trustedRoot: realpathSync(root),
+          containmentRoot: realpathSync(root),
+          configurationRoot: realpathSync(root),
         })
       }
     })
@@ -84,15 +90,16 @@ describe("the trusted root", () => {
       const link = join(root, "link")
       symlinkSync(real, link)
 
-      expect(resolveTrustedRoot({ directory: link })).toEqual({
+      expect(resolveProjectRoots({ directory: link })).toEqual({
         status: "resolved",
-        trustedRoot: realpathSync(real),
+        containmentRoot: realpathSync(real),
+        configurationRoot: realpathSync(real),
       })
     })
   })
 
   test("fails hard when it cannot be resolved, rather than guessing", () => {
-    expect(resolveTrustedRoot({ directory: "/nonexistent/path" })).toMatchObject({
+    expect(resolveProjectRoots({ directory: "/nonexistent/path" })).toMatchObject({
       status: "failed",
     })
   })

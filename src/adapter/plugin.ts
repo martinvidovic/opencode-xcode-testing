@@ -32,25 +32,25 @@ import { inspectArguments, recoverArguments, testArguments, type ZodNamespace } 
 import { startupPortsFor } from "./startup-ports.ts"
 import { hostVersionDiagnostic, runStartup, HOST_VERSION_BUDGET_MS } from "./startup.ts"
 import { executeInspect, executeRecover, executeTest, type ToolDeps } from "./tools.ts"
-import { readProjectConfiguration, resolveTrustedRoot } from "./trusted-root.ts"
+import { readProjectConfiguration, resolveProjectRoots } from "./project-roots.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SUPERVISOR_ENTRYPOINT = join(HERE, "..", "runner", "supervisor-entry.ts")
 
 export const server: Plugin = async (input) => {
-  const root = resolveTrustedRoot({ worktree: input.worktree, directory: input.directory })
-  if (root.status !== "resolved") return {}
+  const roots = resolveProjectRoots({ worktree: input.worktree, directory: input.directory })
+  if (roots.status !== "resolved") return {}
 
-  const trustedRoot = root.trustedRoot
+  const { containmentRoot, configurationRoot } = roots
   const homeDir = homedir()
-  const storage = storageFor(homeDir, trustedRoot)
+  const storage = storageFor(homeDir, containmentRoot)
 
   let runtime: RuntimeResolution | undefined
-  const configuration = readProjectConfiguration(trustedRoot)
+  const configuration = readProjectConfiguration(configurationRoot)
 
   const outcome = await runStartup(
     startupPortsFor({
-      trustedRoot,
+      configurationRoot,
       homeDir,
       storage,
       configuration,
@@ -97,7 +97,7 @@ export const server: Plugin = async (input) => {
 
   const service = serviceFor({
     storage,
-    trustedRoot,
+    containmentRoot,
     homeDir,
     configuration,
     toolchain: resolveToolchain(),
@@ -221,7 +221,7 @@ function isRegularFile(path: string): boolean {
  */
 function serviceFor(input: {
   storage: Storage
-  trustedRoot: string
+  containmentRoot: string
   homeDir: string
   configuration: ConfigurationOutcome
   toolchain: ReturnType<typeof resolveToolchain>
@@ -241,7 +241,7 @@ function serviceFor(input: {
 
   return createTestToolService({
     storage: input.storage,
-    trustedRoot: input.trustedRoot,
+    containmentRoot: input.containmentRoot,
     homeDir: input.homeDir,
     configuration: input.configuration,
     toolchain: input.toolchain.identity,

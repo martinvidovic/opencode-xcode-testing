@@ -103,7 +103,7 @@ const BACKTRACE_LINE = /^\s*\d+\s+(\S+)\s+0x[0-9a-fA-F]+\s+(.+?)(?:\s+\+\s+\d+)?
  */
 const SOURCE_LINE = /^\s*at\s+(\S+?):(\d+)(?::(\d+))?\s*$/
 
-export function extractFrames(message: string, trustedRoot: string): ExtractedFrames {
+export function extractFrames(message: string, containmentRoot: string): ExtractedFrames {
   const frames: StackFrame[] = []
   let shaped = 0
 
@@ -122,7 +122,7 @@ export function extractFrames(message: string, trustedRoot: string): ExtractedFr
       const [, path, line1, column] = source as unknown as [string, string, string, string | undefined]
       frames.push({
         location: {
-          path: safeDisplayPath(path, trustedRoot),
+          path: safeDisplayPath(path, containmentRoot),
           line: Number.parseInt(line1, 10),
           ...(column === undefined ? {} : { column: Number.parseInt(column, 10) }),
         },

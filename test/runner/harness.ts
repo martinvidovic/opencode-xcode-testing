@@ -28,9 +28,9 @@ export type Sandbox = {
 }
 
 /** A private storage tree under a temp home, prepared and owner-only. */
-export function sandbox(trustedRoot = TRUSTED_ROOT): Sandbox {
+export function sandbox(containmentRoot = TRUSTED_ROOT): Sandbox {
   const homeDir = mkdtempSync(join(tmpdir(), "xcode-test-runner-"))
-  const storage = storageFor(homeDir, trustedRoot)
+  const storage = storageFor(homeDir, containmentRoot)
   prepareStorage(storage)
   return {
     homeDir,
@@ -44,9 +44,9 @@ export function sandbox(trustedRoot = TRUSTED_ROOT): Sandbox {
 /** Run `work` against a fresh sandbox, cleaning up even if it throws. */
 export async function withSandbox<T>(
   work: (box: Sandbox) => T | Promise<T>,
-  trustedRoot = TRUSTED_ROOT,
+  containmentRoot = TRUSTED_ROOT,
 ): Promise<T> {
-  const box = sandbox(trustedRoot)
+  const box = sandbox(containmentRoot)
   try {
     return await work(box)
   } finally {

@@ -118,7 +118,7 @@ const UNTRUNCATED: TruncationState = {
 export function focusedDiagnostic(
   index: NormalizedIndex,
   diagnostic: DiagnosticSummary,
-  trustedRoot: string,
+  containmentRoot: string,
   lazy: LazyDetail | undefined,
 ): Focused<FocusedDiagnostic> {
   const occurrence = occurrenceOf(index, diagnostic)
@@ -131,7 +131,7 @@ export function focusedDiagnostic(
   // fallback reads as `absent` — an empty stack that is complete, which for
   // collapsed text is the honest answer rather than a failure to try.
   const detail = index.detailMessages?.[diagnostic.id] ?? full
-  const extracted = extractFrames(detail, trustedRoot)
+  const extracted = extractFrames(detail, containmentRoot)
   const outcomes = extracted.frames.map(capFrame)
   const frames = capCollection(
     outcomes.flatMap((outcome) => (outcome.frame === undefined ? [] : [outcome.frame])),

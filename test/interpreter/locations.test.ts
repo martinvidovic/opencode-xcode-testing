@@ -19,6 +19,14 @@ describe("a displayed path", () => {
     expect(safeDisplayPath(`${ROOT}/Sources/App/Login.swift`, ROOT)).toBe("Sources/App/Login.swift")
   })
 
+  test("remains relative to containment when it is outside the configuration scope", () => {
+    const configurationRoot = `${ROOT}/Modules/App`
+    const source = `${ROOT}/Shared/Login.swift`
+
+    expect(safeDisplayPath(source, ROOT)).toBe("Shared/Login.swift")
+    expect(safeDisplayPath(source, configurationRoot)).toBe("Login.swift")
+  })
+
   test("is a display name alone when it is outside the repository", () => {
     // An absolute path outside the repository tells a model nothing it can act
     // on, and leaks the shape of the machine.

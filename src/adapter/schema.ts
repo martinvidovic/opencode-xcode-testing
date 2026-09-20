@@ -138,7 +138,7 @@ export function inspectArguments(z: ZodNamespace): ArgumentShape {
 
 /**
  * Deliberately empty. Recovery is idempotent and bounded and always scoped to
- * the trusted root, so there is nothing to parameterize — and inventing a
+ * the containment root, so there is nothing to parameterize — and inventing a
  * ceremonial argument for a non-domain reason would only invite a model to
  * supply something that cannot matter.
  */

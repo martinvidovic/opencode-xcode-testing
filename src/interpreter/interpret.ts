@@ -299,7 +299,7 @@ async function gather(
         setDefect(...mapDecode(decoded.defect, decoded.fieldPath, decoded.message))
       } else {
         const normalized = normalizeTestNodes(decoded.value.nodes, {
-          trustedRoot: request.facts.trustedRoot,
+          containmentRoot: request.facts.containmentRoot,
           // Only a single declared configuration or device can be attributed to
           // every occurrence; with more than one, context must come from the
           // nodes themselves or it is not known.
@@ -540,7 +540,7 @@ function publish(
     detailMessages: buildDetail,
   } = buildBuildErrors(
     gathered.buildIssues,
-    { runId, trustedRoot: request.facts.trustedRoot },
+    { runId, containmentRoot: request.facts.containmentRoot },
   )
 
   const normalizedScope = normalizeRequestedScope(request.requestedScope)

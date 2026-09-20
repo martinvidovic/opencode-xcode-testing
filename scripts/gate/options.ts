@@ -23,7 +23,7 @@ export type Options = {
   /**
    * A real project to run against instead of the generated fixture project.
    *
-   * Canonical, because every layer below is handed a trusted root and #26's
+   * Canonical, because every layer below is handed a containment root and #26's
    * containment rules are stated against canonical paths.
    */
   project?: string
@@ -97,7 +97,7 @@ function canonicalProject(value: string): string | undefined {
   const absolute = isAbsolute(value) ? value : resolve(process.cwd(), value)
   try {
     // `realpath`, not merely absolute: every containment rule beneath this is
-    // stated against a canonical path, and a trusted root reached through a
+    // stated against a canonical path, and a containment root reached through a
     // symlink would be compared against something it does not equal.
     const canonical = realpathSync(absolute)
     return lstatSync(canonical).isDirectory() ? canonical : undefined

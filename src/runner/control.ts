@@ -24,7 +24,7 @@
  */
 export type LaunchSpec = {
   homeDir: string
-  trustedRoot: string
+  containmentRoot: string
   runId: string
   command: string
   args: string[]
@@ -134,4 +134,3 @@ function parseMessage(line: string): ControlMessage | undefined {
   if (typeof type !== "string" || !MESSAGE_TYPES.has(type)) return undefined
   return parsed as ControlMessage
 }
-

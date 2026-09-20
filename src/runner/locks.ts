@@ -3,7 +3,7 @@
  *
  * These must be kernel-managed. A lock directory, a best-effort lock, or a
  * process-local mutex would each silently permit two Test Runs to hold the same
- * trusted root's execution slot, which is precisely the failure the
+ * containment root's execution slot, which is precisely the failure the
  * serialization guarantee exists to prevent — so this fails closed rather than
  * falling back to any of them.
  *

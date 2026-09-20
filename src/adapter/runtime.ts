@@ -41,8 +41,8 @@ export type RuntimeResolution =
     }
 
 export type RuntimeInput = {
-  trustedRoot: string
-  /** The optional `runtime` field. Machine-local; relative resolves against the root. */
+  configurationRoot: string
+  /** The optional `runtime` field. Machine-local; relative resolves against its configuration. */
   configured?: string
   /** `process.execPath` — expected to fall through, for the reason above. */
   hostExecutable: string
@@ -57,7 +57,7 @@ export async function resolveRuntime(input: RuntimeInput): Promise<RuntimeResolu
   if (input.configured !== undefined) {
     const path = isAbsolute(input.configured)
       ? input.configured
-      : resolve(input.trustedRoot, input.configured)
+      : resolve(input.configurationRoot, input.configured)
     probed.push(path)
 
     const result = await input.probe(path)

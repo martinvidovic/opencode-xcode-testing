@@ -3,7 +3,7 @@
  *
  * There is no daemon. Reconciliation runs at plugin startup, before queue
  * enrollment, and before retention cleanup — and it is the reason a crashed
- * OpenCode does not leave a trusted root permanently unusable.
+ * OpenCode does not leave a containment root permanently unusable.
  *
  * Two disciplines govern everything here.
  *
@@ -81,10 +81,10 @@ export type RecoveryReport = {
 }
 
 /**
- * Reconcile every unfinished run under this trusted root.
+ * Reconcile every unfinished run under this containment root.
  *
  * Explicit recovery is exposed through the Test Tool and is implicitly scoped
- * to the adapter-supplied trusted root: it accepts no PID, PGID, path, signal
+ * to the adapter-supplied containment root: it accepts no PID, PGID, path, signal
  * or force option, because every one of those would be a way to aim the tool at
  * something it does not own.
  */

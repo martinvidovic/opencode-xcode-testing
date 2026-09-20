@@ -69,7 +69,7 @@ export function inspectIndex(
   index: NormalizedIndex,
   request: InspectRunRequest,
   secret: Buffer,
-  trustedRoot: string,
+  containmentRoot: string,
   lazy: LazyOutcome = { status: "incomplete" },
 ): InspectionResponse<FacetPage> {
   const rejection = validateRequest(index, request)
@@ -82,7 +82,7 @@ export function inspectIndex(
   }
 
   if (request.diagnosticId !== undefined) {
-    return focusDiagnostic(index, request.diagnosticId, trustedRoot, lazy)
+    return focusDiagnostic(index, request.diagnosticId, containmentRoot, lazy)
   }
   if (request.testId !== undefined) return focusTest(index, request.testId, lazy)
 
@@ -392,7 +392,7 @@ export function facetCompleteness(
 function focusDiagnostic(
   index: NormalizedIndex,
   id: string,
-  trustedRoot: string,
+  containmentRoot: string,
   lazy: LazyOutcome,
 ): InspectionResponse<FacetPage> {
   const failure = index.testFailures.find((record) => record.id === id)
@@ -409,7 +409,7 @@ function focusDiagnostic(
   }
 
   const facet = failure !== undefined ? "failures" : "buildErrors"
-  const view = focusedDiagnostic(index, diagnostic, trustedRoot, lazy.detail)
+  const view = focusedDiagnostic(index, diagnostic, containmentRoot, lazy.detail)
   if (view.focused === undefined) {
     return omittedResponse(facet, view.truncation, view.blockedBy ?? [], lazy)
   }

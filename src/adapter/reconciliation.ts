@@ -2,7 +2,7 @@
  * The reconciliation pass as production runs it (ADR 0002, issue #42).
  *
  * Startup reconciliation is the only thing standing between a crashed OpenCode
- * and a trusted root that can never be used again, and it is unusually easy to
+ * and a containment root that can never be used again, and it is unusually easy to
  * break without noticing: it returns no value anyone reads, it is expected to
  * find nothing on a healthy machine, and a pass that examined nothing at all
  * looks exactly like a pass that found nothing wrong.

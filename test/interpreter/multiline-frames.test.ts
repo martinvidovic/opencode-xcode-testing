@@ -81,10 +81,10 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
       { symbol: "LoginTests.testRejectsBadPassword()", module: "AppTests" },
       { symbol: "XCTestCase.invokeTest()", module: "XCTestCore" },
       // Absolute in the payload, as XCTest emits it, and reduced here to a
-      // path inside the trusted root — the safe-location rule doing its job on
+      // path inside the containment root — the safe-location rule doing its job on
       // a frame rather than on a summary location.
       { location: { path: "Sources/App/Login.swift", line: 42, column: 9 } },
-      // Absolute and *outside* the trusted root. Reduced to a bare basename,
+      // Absolute and *outside* the containment root. Reduced to a bare basename,
       // because a frame must never tell a model where someone else's code
       // lives. This is the case the rule exists for.
       { location: { path: "Secret.swift", line: 7, column: 1 } },
@@ -224,7 +224,7 @@ describe("what the index keeps", () => {
 
     const { detailMessages } = buildBuildErrors(
       [{ targetName: "App", message: enormous }],
-      { runId: "run-1", trustedRoot: TRUSTED_ROOT },
+      { runId: "run-1", containmentRoot: TRUSTED_ROOT },
     )
 
     const kept = Object.values(detailMessages)[0]
@@ -247,7 +247,7 @@ describe("what the text says about its own frames", () => {
   function buildErrorFocus(message: string): ReturnType<typeof focusedDiagnostic> {
     const { diagnostics, detailMessages } = buildBuildErrors(
       [{ targetName: "App", message }],
-      { runId: "run-1", trustedRoot: TRUSTED_ROOT },
+      { runId: "run-1", containmentRoot: TRUSTED_ROOT },
     )
     const diagnostic = diagnostics[0]
     if (diagnostic === undefined) throw new Error("no build error was built")

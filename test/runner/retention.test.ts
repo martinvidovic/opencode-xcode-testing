@@ -264,7 +264,7 @@ describe("tombstones", () => {
     })
   })
 
-  test("are capped per trusted root, dropping the oldest beyond the cap", async () => {
+  test("are capped per containment root, dropping the oldest beyond the cap", async () => {
     await withSandbox((box) => {
       // Written directly: ten thousand fsynced writes would prove nothing extra.
       for (let index = 0; index <= RETENTION.maxTombstones; index += 1) {

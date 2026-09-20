@@ -3,7 +3,7 @@
  *
  * Each test here names a point at which the process can die, and asserts that
  * what is left on disk is recoverable. The property that matters is not that
- * nothing goes wrong — it is that a trusted root is never permanently wedged,
+ * nothing goes wrong — it is that a containment root is never permanently wedged,
  * and that a second Test Run is never admitted alongside one nobody can
  * account for.
  */

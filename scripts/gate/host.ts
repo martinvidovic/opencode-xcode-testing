@@ -104,7 +104,7 @@ export async function bootHost(input: {
     port,
     // Awaited, not fired and forgotten (issue #104). Signalling a host and
     // returning says only that the signal was sent: the child is still there,
-    // and the plugin inside it is still preparing storage for the trusted root
+    // and the plugin inside it is still preparing storage for the containment root
     // it resolved. That storage landed *after* the gate had swept, which is
     // how this suite left one directory behind per run — for a root the gate
     // had registered and cleaned a moment too early.
