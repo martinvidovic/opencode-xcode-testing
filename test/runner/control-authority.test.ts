@@ -44,7 +44,7 @@ type Conversation = {
 test("the supervised command runs from the containment root", async () => {
   const containmentRoot = realpathSync(mkdtempSync(join(tmpdir(), "xcode-test-containment-")))
   const launchDirectory = mkdtempSync(join(tmpdir(), "xcode-test-launch-"))
-  const box = sandbox(containmentRoot)
+  const box = sandbox(containmentRoot, join(containmentRoot, "module"))
   const runId = "d".repeat(32)
 
   try {

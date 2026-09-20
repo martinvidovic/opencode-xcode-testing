@@ -89,6 +89,19 @@ describe("the root roles", () => {
     })
   })
 
+  test("uses the containment configuration when no nearer configuration exists", () => {
+    withProject((root) => {
+      const nested = join(root, "nested", "leaf")
+      mkdirSync(nested, { recursive: true })
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      expect(resolveRootRoles({ worktree: root, directory: nested })).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(root),
+        configurationRoot: realpathSync(root),
+      })
+    })
+  })
+
   test("treats a root or empty worktree as absent, not as the filesystem root", () => {
     // A host that finds no git worktree reports "/" — observed in the headless
     // gate, where it silently disabled the plugin in every non-git project and

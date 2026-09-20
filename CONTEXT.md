@@ -61,7 +61,7 @@ What a supervisor actually observed about how a Test Run's direct child ended �
 _Avoid_: Exit info, exit result
 
 **Quarantine**:
-A hold on a Containment Root's Execution Slot, raised when a Test Run's lifecycle could not be confirmed and cleared only on identity-safe evidence that nothing attributable to it is still running. It refuses new Test Runs with a reason rather than making them wait.
+A hold on a Containment Root and Configuration Root pair's Execution Slot, raised when a Test Run's lifecycle could not be confirmed and cleared only on identity-safe evidence that nothing attributable to it is still running. It refuses new Test Runs with a reason rather than making them wait.
 _Avoid_: Lockout, freeze, block
 
 **Read Lease**:
@@ -77,7 +77,7 @@ The `DerivedData` tree the tool keeps for one Xcode container so the next build 
 _Avoid_: Build artifacts, intermediates, scratch
 
 **Stale Root**:
-A stored Containment Root nobody has opened for long enough that its storage is collected whole. The registry keeps a hash and a `lastSeenAtMs` and deliberately never a path, so age is the only signal there is — which is both the privacy guarantee and the entire basis on which this can be decided.
+A stored Containment Root and Configuration Root pair nobody has opened for long enough that its storage is collected whole. The registry keeps a hash and a `lastSeenAtMs` and deliberately never a path, so age is the only signal there is — which is both the privacy guarantee and the entire basis on which this can be decided.
 _Avoid_: Dead project, orphaned repo, abandoned root
 
 **Adapter Failure**:

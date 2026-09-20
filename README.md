@@ -271,7 +271,7 @@ you reach for them:
   `Sources/App/Login.swift:42`, relative to the containment root when the file is
   inside it, and reduced to the bare filename when it is not. Those are the
   point: a diagnostic nobody can locate is a diagnostic nobody can act on.
-- **One Test Run at a time per project.** Isolated DerivedData alone does not
+- **One Test Run at a time per containment/configuration storage scope.** Isolated DerivedData alone does not
   make concurrent simulator, device or package-cache use trustworthy, so runs
   are serialized across processes.
 - **Logs are never classified on.** Raw log text is version-dependent, possibly
