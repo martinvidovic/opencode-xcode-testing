@@ -58,6 +58,7 @@ test("the supervised command runs from the containment root", async () => {
         type: "hello",
         homeDir: box.homeDir,
         containmentRoot,
+        rootKey: box.storage.rootKey,
         runId,
         command: "/bin/pwd",
         args: [],
@@ -108,6 +109,7 @@ async function converse(talk: Conversation): Promise<{ record: RunRecord | undef
     const spec: LaunchSpec = {
       homeDir: box.homeDir,
       containmentRoot,
+      rootKey: box.storage.rootKey,
       runId,
       command: "/bin/sleep",
       args: [String(CHILD_SECONDS)],

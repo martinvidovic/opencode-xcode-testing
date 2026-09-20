@@ -43,14 +43,15 @@ export const server: Plugin = async (input) => {
 
   const { containmentRoot, configurationRoot } = roots
   const homeDir = homedir()
-  const storage = storageFor(homeDir, containmentRoot)
+  const storage = storageFor(homeDir, containmentRoot, configurationRoot)
 
   let runtime: RuntimeResolution | undefined
-  const configuration = readProjectConfiguration(configurationRoot)
+  const configuration =
+    configurationRoot === undefined ? { status: "absent" as const } : readProjectConfiguration(configurationRoot)
 
   const outcome = await runStartup(
     startupPortsFor({
-      configurationRoot,
+      ...(configurationRoot === undefined ? {} : { configurationRoot }),
       homeDir,
       storage,
       configuration,

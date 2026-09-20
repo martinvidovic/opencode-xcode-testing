@@ -13,7 +13,7 @@ The canonical directory supplied by the adapter that bounds repository scanning,
 _Avoid_: Trusted root
 
 **Configuration Root**:
-The canonical directory whose `.opencode/xcode-test.json` enables and configures the Test Tool, and against which configuration-relative values resolve. It is tracked independently from the Containment Root even when both identify the same directory.
+The nearest canonical ancestor from the launch directory through the Containment Root whose `.opencode/xcode-test.json` enables and configures the Test Tool. It is tracked independently from the Containment Root even when both identify the same directory; configuration-relative values such as `runtime` resolve against it, while `xcodeContainer.path` resolves against containment.
 _Avoid_: Config root
 
 **Test Run**:
@@ -53,7 +53,7 @@ The private pair of inherited pipe endpoints between the adapter and a superviso
 _Avoid_: Control socket, IPC link
 
 **Execution Slot**:
-The single permission to run `xcodebuild` under one Containment Root. V1 serializes Test Runs per root, so holding the slot is what makes a run the active one; releasing it is what lets the next be admitted.
+The single permission to run `xcodebuild` under one Containment Root and Configuration Root pair. V1 serializes Test Runs per storage scope, so holding the slot is what makes a run the active one; releasing it is what lets the next be admitted.
 _Avoid_: Lock, mutex, semaphore
 
 **Exit Evidence**:
@@ -65,7 +65,7 @@ A hold on a Containment Root's Execution Slot, raised when a Test Run's lifecycl
 _Avoid_: Lockout, freeze, block
 
 **Read Lease**:
-A short, expiring file published under a Containment Root's current storage scope while an inspection reads one Test Run's retained evidence, and removed when it finishes. It is what stops user-wide retention — which runs in whichever OpenCode instance reaches the hour first — from evicting evidence another instance is reading. It expires rather than being probed, so a crashed reader costs one pass and never pins evidence; anything unreadable among them counts as held.
+A short, expiring file published under a Containment Root and Configuration Root pair's current storage scope while an inspection reads one Test Run's retained evidence, and removed when it finishes. It is what stops user-wide retention — which runs in whichever OpenCode instance reaches the hour first — from evicting evidence another instance is reading. It expires rather than being probed, so a crashed reader costs one pass and never pins evidence; anything unreadable among them counts as held.
 _Avoid_: Read lock, pin, reservation
 
 **Run Record**:

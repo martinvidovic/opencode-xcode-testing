@@ -96,6 +96,12 @@ describe("the storage layout", () => {
     expect(rootKeyFor("/a")).toBe(rootKeyFor("/a"))
   })
 
+  test("separates module scopes while preserving root-level storage", () => {
+    expect(rootKeyFor("/repo", "/repo")).toBe(rootKeyFor("/repo"))
+    expect(rootKeyFor("/repo", "/repo/a")).not.toBe(rootKeyFor("/repo", "/repo/b"))
+    expect(rootKeyFor("/repo", "/repo/a")).toBe(rootKeyFor("/repo", "/repo/a"))
+  })
+
   test("lives outside the repository, under Application Support", () => {
     const storage = storageFor("/home/somebody", "/workspace/example")
     expect(storage.toolRoot).toBe("/home/somebody/Library/Application Support/opencode-xcode-test")

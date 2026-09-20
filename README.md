@@ -174,13 +174,21 @@ are all optional:
 
 The plugin tracks two root roles explicitly. The **containment root** is the
 canonical safety boundary used for discovery, container paths, execution, and
-diagnostics. The **configuration root** owns the configuration above and its
-relative settings. Root-level sessions currently use the same canonical
-directory for both roles; bounded module-level configuration discovery is a
-separate capability.
+diagnostics. The **configuration root** is the nearest directory with this
+configuration found from OpenCode's canonical launch directory through the
+containment root, inclusive. The search never reads above containment. A
+non-Git session safely uses its launch directory as both boundaries. If no
+configuration exists in that range, the plugin registers nothing and says
+nothing.
+
+Each containment/configuration pair has separate Test Run artifacts, Execution
+Slots, Read Leases, recovery, retention, and housekeeping state. A root-level
+configuration retains the existing storage identity.
 
 Container paths are containment-root-relative, and are rejected if they
-traverse out of containment or resolve outside it through a symlink.
+traverse out of containment or resolve outside it through a symlink. A module
+configuration can therefore name a container anywhere within its containment
+root, for example `"Shared/App.xcodeproj"`, rather than using `../` paths.
 
 ### `runtime` is machine-local
 

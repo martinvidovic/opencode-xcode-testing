@@ -1078,6 +1078,7 @@ function runSupervisor(
         type: "hello",
         homeDir: environment.homeDir,
         containmentRoot: environment.containmentRoot,
+        rootKey: environment.storage.rootKey,
         runId: input.runId,
         command: XCODEBUILD,
         args: input.args,

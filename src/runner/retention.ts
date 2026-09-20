@@ -33,11 +33,11 @@ import { readQueue } from "./queue.ts"
 import { readRunRecord } from "./state.ts"
 
 export const RETENTION = {
-  /** Completed runs retained per containment root. */
+  /** Completed runs retained per containment/configuration storage scope. */
   maxCompletedRuns: 20,
   /** Time from completion. Hard: age evicts regardless of every other rule. */
   maxAgeMs: 7 * 24 * 60 * 60 * 1000,
-  /** Soft byte target per containment root. */
+  /** Soft byte target per containment/configuration storage scope. */
   perRootByteTarget: 5 * 1024 ** 3,
   /** Soft byte target across every root's completed artifacts. */
   userWideByteTarget: 20 * 1024 ** 3,

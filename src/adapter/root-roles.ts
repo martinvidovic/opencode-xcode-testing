@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join, relative, sep } from "node:path"
 
 import { DERIVED_DATA_MODES, type ProjectConfiguration } from "../domain/request.ts"
 import { MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS } from "../domain/limits.ts"
@@ -25,7 +25,7 @@ export const CONFIG_FILENAME = "xcode-test.json"
 export type PluginContext = { worktree?: string; directory: string }
 
 export type RootRolesResolution =
-  | { status: "resolved"; containmentRoot: string; configurationRoot: string }
+  | { status: "resolved"; containmentRoot: string; configurationRoot?: string }
   | { status: "failed"; message: string }
 
 /**
@@ -33,16 +33,42 @@ export type RootRolesResolution =
  * we cannot resolve is a root we cannot make any promise about.
  */
 export function resolveRootRoles(context: PluginContext): RootRolesResolution {
-  const candidate = usableWorktree(context.worktree) ?? context.directory
   try {
-    const containmentRoot = canonicalizeContainmentRoot(candidate)
-    return { status: "resolved", containmentRoot, configurationRoot: containmentRoot }
+    const launchDirectory = canonicalizeContainmentRoot(context.directory)
+    const containmentRoot = canonicalizeContainmentRoot(usableWorktree(context.worktree) ?? context.directory)
+    if (!isWithin(launchDirectory, containmentRoot)) throw new Error("launch directory is outside containment")
+    const configurationRoot = discoverConfigurationRoot(launchDirectory, containmentRoot)
+    return {
+      status: "resolved",
+      containmentRoot,
+      ...(configurationRoot === undefined ? {} : { configurationRoot }),
+    }
   } catch {
     return {
       status: "failed",
       message: "the containment root could not be resolved to a real directory",
     }
   }
+}
+
+/** Searches only the canonical launch directory's ancestor chain, through containment. */
+export function discoverConfigurationRoot(
+  canonicalLaunchDirectory: string,
+  canonicalContainmentRoot: string,
+): string | undefined {
+  if (!isWithin(canonicalLaunchDirectory, canonicalContainmentRoot)) return undefined
+
+  let candidate = canonicalLaunchDirectory
+  while (true) {
+    if (enablementMarkerExists(candidate)) return candidate
+    if (candidate === canonicalContainmentRoot) return undefined
+    candidate = dirname(candidate)
+  }
+}
+
+function isWithin(path: string, root: string): boolean {
+  const outside = relative(root, path)
+  return outside.length === 0 || (outside !== ".." && !outside.startsWith(`..${sep}`))
 }
 
 /**

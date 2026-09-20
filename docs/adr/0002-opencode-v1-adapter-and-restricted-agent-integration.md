@@ -107,11 +107,16 @@ resolved, must be an existing real directory), and **never influenced by tool ar
 Canonicalization failure is a hard resolution error.
 
 The **configuration root** is tracked independently and owns configuration lookup and
-configuration-relative settings. For root-level sessions it is currently the same canonical
-directory as the containment root, so lookup remains exactly
-`<configuration-root>/.opencode/xcode-test.json` with no upward search and storage identity is
-unchanged. Nearest module configuration discovery and composite storage identity are separate,
-later decisions.
+configuration-relative settings. Starting at the canonical launch directory, the adapter searches
+its canonical ancestors through the containment root, inclusive, and selects the nearest directory
+whose `.opencode/xcode-test.json` exists. It never searches above containment; without a usable
+worktree, the launch directory is both boundaries. No marker in that range keeps startup silent.
+
+Storage identity is the containment/configuration pair, so Test Run artifacts, Execution Slots,
+Read Leases, recovery, retention, and housekeeping cannot cross module configurations. When both
+roots are the same, the historical containment-only key is retained exactly. The adapter carries
+the resulting opaque key to the supervisor, which reconstructs storage from the key rather than
+trying to rederive the identity.
 
 ### Rendering and the output budget
 

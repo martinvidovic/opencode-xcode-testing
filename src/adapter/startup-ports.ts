@@ -32,7 +32,7 @@ import type { StartupPorts } from "./startup.ts"
 import { enablementMarkerExists } from "./root-roles.ts"
 
 export type StartupWiring = {
-  configurationRoot: string
+  configurationRoot?: string
   homeDir: string
   storage: Storage
   configuration: ConfigurationOutcome
@@ -46,7 +46,8 @@ export type StartupWiring = {
 
 export function startupPortsFor(wiring: StartupWiring): StartupPorts {
   return {
-    markerExists: () => enablementMarkerExists(wiring.configurationRoot),
+    markerExists: () =>
+      wiring.configurationRoot !== undefined && enablementMarkerExists(wiring.configurationRoot),
     requiredFiles: wiring.requiredFiles,
     regularFileExists: wiring.regularFileExists,
     readHostVersion: wiring.readHostVersion,
@@ -69,7 +70,7 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
 
       const pathCandidate = await bunOnPath()
       const runtime = await resolveRuntime({
-        configurationRoot: wiring.configurationRoot,
+        configurationRoot: wiring.configurationRoot ?? wiring.storage.rootDir,
         ...(configured === undefined ? {} : { configured }),
         hostExecutable: process.execPath,
         ...(pathCandidate === undefined ? {} : { pathCandidate }),

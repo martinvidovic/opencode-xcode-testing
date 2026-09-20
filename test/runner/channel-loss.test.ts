@@ -60,6 +60,7 @@ describe("a supervisor whose adapter has gone", () => {
           type: "hello",
           homeDir: box.homeDir,
           containmentRoot,
+          rootKey: box.storage.rootKey,
           runId,
           command: "/bin/sleep",
           args: [String(CHILD_SECONDS)],

@@ -25,6 +25,8 @@
 export type LaunchSpec = {
   homeDir: string
   containmentRoot: string
+  /** Opaque storage-scope identity, derived by the adapter. */
+  rootKey: string
   runId: string
   command: string
   args: string[]

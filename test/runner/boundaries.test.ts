@@ -27,8 +27,10 @@ import { join } from "node:path"
 import {
   createRunDirectory,
   isRunId,
+  prepareStorage,
   runDirectory,
   sharedDerivedDataFor,
+  storageFor,
   UnknownRunError,
   type Storage,
 } from "../../src/runner/paths.ts"
@@ -439,5 +441,19 @@ describe("two containment roots", () => {
       }
       expect(homeDir.length).toBeGreaterThan(0)
     })
+  })
+})
+
+describe("two configuration roots in one containment root", () => {
+  test("share no Test Run storage, even for the same run identifier", async () => {
+    await withSandbox(({ homeDir, storage }) => {
+      const sibling = storageFor(homeDir, "/workspace/example", "/workspace/example/module-b")
+      prepareStorage(sibling)
+      createRunDirectory(storage, "run-same")
+      seedRun(storage, { runId: "run-same" })
+
+      expect(runDirectory(storage, "run-same")).not.toBe(runDirectory(sibling, "run-same"))
+      expect(readRunRecord(sibling, "run-same")).toBeUndefined()
+    }, "/workspace/example", "/workspace/example/module-a")
   })
 })

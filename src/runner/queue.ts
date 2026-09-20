@@ -1,7 +1,7 @@
 /**
  * Durable cross-process FIFO admission (#3).
  *
- * V1 serializes Test Runs per containment root regardless of DerivedData mode or
+ * V1 serializes Test Runs per containment/configuration storage scope regardless of DerivedData mode or
  * destination, because isolated DerivedData alone does not make concurrent
  * simulator, device, package-cache or runner-storage use trustworthy.
  *
@@ -151,7 +151,7 @@ export type AdmissionOptions = {
    * This ordering is the whole guarantee: an active slot naming a run with no
    * durable state is, by protocol invariant, a run that never started, and
    * recovery can release it. Were the slot to transfer first, a crash in the
-   * gap would wedge the containment root with nothing to reconcile against.
+    * gap would wedge the storage scope with nothing to reconcile against.
    */
   prepare?(runId: string): boolean
   /** Injectable so a collision is reproducible rather than astronomically rare. */

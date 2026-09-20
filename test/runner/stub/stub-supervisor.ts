@@ -31,13 +31,13 @@ import { readFileSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 
 import { decodeMessages, encodeMessage, MAX_FRAME_BYTES } from "../../../src/runner/control.ts"
-import { storageFor } from "../../../src/runner/paths.ts"
+import { storageForRootKey } from "../../../src/runner/paths.ts"
 import { advance, readRunRecord } from "../../../src/runner/state.ts"
 
 const control = createWriteStream("", { fd: 4 })
 const incoming = createReadStream("", { fd: 3 })
 
-type Spec = { homeDir: string; containmentRoot: string; runId: string }
+type Spec = { homeDir: string; containmentRoot: string; rootKey: string; runId: string }
 
 let buffer = ""
 incoming.on("data", (chunk) => {
@@ -104,7 +104,7 @@ async function serve(spec: Spec, mode: string): Promise<never> {
   const lingerMs = lingerOf(mode)
   if (lingerMs > 0) await sleep(lingerMs)
 
-  const storage = storageFor(spec.homeDir, spec.containmentRoot)
+  const storage = storageForRootKey(spec.homeDir, spec.rootKey)
   let record = readRunRecord(storage, spec.runId)
   if (record !== undefined) {
     for (const state of ["supervisorReady", "childRecorded", "launchAuthorized"] as const) {

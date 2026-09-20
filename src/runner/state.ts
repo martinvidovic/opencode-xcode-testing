@@ -141,7 +141,7 @@ export function readRunRecord(storage: Storage, runId: string): RunRecord | unde
     // handle that cannot address storage must read as "no record", not as a
     // thrown error escaping a function whose whole contract is to return one.
     const parsed: unknown = JSON.parse(readPrivateFile(metadataPath(storage, runId)))
-    return isRunRecord(parsed) ? parsed : undefined
+    return isRunRecord(parsed) && parsed.rootKey === storage.rootKey ? parsed : undefined
   } catch {
     return undefined
   }

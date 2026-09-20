@@ -20,7 +20,7 @@ import { monotonicNow } from "../domain/clock.ts"
 import { decodeMessages, encodeMessage, type LaunchSpec } from "./control.ts"
 import { spawnGatedChild } from "./gate.ts"
 import { systemProbe } from "./identity.ts"
-import { isRunId, RUN_ARTIFACTS, runDirectory, storageFor, type Storage } from "./paths.ts"
+import { isRootKey, isRunId, RUN_ARTIFACTS, runDirectory, storageForRootKey, type Storage } from "./paths.ts"
 import { readRunRecord, type RunRecord } from "./state.ts"
 import { superviseRun } from "./supervisor.ts"
 
@@ -197,6 +197,7 @@ function parseSpec(candidate: Partial<SupervisorLaunchSpec>): SupervisorLaunchSp
   if (
     typeof candidate.homeDir !== "string" ||
     typeof candidate.containmentRoot !== "string" ||
+    !isRootKey(candidate.rootKey) ||
     // Validated here rather than trusted: this is the supervisor's boundary,
     // and a spec that cannot address storage must become EXIT_PROTOCOL rather
     // than an exception thrown later from somewhere that derives a path.
@@ -216,7 +217,7 @@ export async function main(): Promise<number> {
     const spec = await channel.launchSpec()
     if (spec === undefined) return EXIT_PROTOCOL
 
-    const storage = storageFor(spec.homeDir, spec.containmentRoot)
+    const storage = storageForRootKey(spec.homeDir, spec.rootKey)
     const record = readRunRecord(storage, spec.runId)
     if (record === undefined) return EXIT_PROTOCOL
 

@@ -28,9 +28,12 @@ export type Sandbox = {
 }
 
 /** A private storage tree under a temp home, prepared and owner-only. */
-export function sandbox(containmentRoot = CONTAINMENT_ROOT): Sandbox {
+export function sandbox(
+  containmentRoot = CONTAINMENT_ROOT,
+  configurationRoot = containmentRoot,
+): Sandbox {
   const homeDir = mkdtempSync(join(tmpdir(), "xcode-test-runner-"))
-  const storage = storageFor(homeDir, containmentRoot)
+  const storage = storageFor(homeDir, containmentRoot, configurationRoot)
   prepareStorage(storage)
   return {
     homeDir,
@@ -45,8 +48,9 @@ export function sandbox(containmentRoot = CONTAINMENT_ROOT): Sandbox {
 export async function withSandbox<T>(
   work: (box: Sandbox) => T | Promise<T>,
   containmentRoot = CONTAINMENT_ROOT,
+  configurationRoot = containmentRoot,
 ): Promise<T> {
-  const box = sandbox(containmentRoot)
+  const box = sandbox(containmentRoot, configurationRoot)
   try {
     return await work(box)
   } finally {

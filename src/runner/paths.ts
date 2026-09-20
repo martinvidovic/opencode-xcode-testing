@@ -4,7 +4,7 @@
  * Everything the runner writes — Result Bundles, raw logs, isolated
  * DerivedData, metadata, locks, queue state, tombstones — lives outside the
  * repository, in a user-scoped root keyed by a hash of the canonical containment
- * root. Two consequences follow, and both are deliberate: a `git clean` can
+ * root and configuration root. Two consequences follow, and both are deliberate: a `git clean` can
  * never destroy an in-flight run's evidence, and no public contract ever needs
  * to name a path.
  *
@@ -50,7 +50,7 @@ export type Storage = {
   registryDir: string
   registryFile: string
   registryLock: string
-  /** Everything scoped to one containment root in the current storage contract. */
+  /** Everything scoped to one containment/configuration pair. */
   rootDir: string
   rootLock: string
   runsDir: string
@@ -59,7 +59,7 @@ export type Storage = {
   tombstonesDir: string
   /** Where inspections publish their read leases, one file each. */
   leasesDir: string
-  /** The opaque key this containment root is stored under. */
+  /** The opaque key this containment/configuration scope is stored under. */
   rootKey: string
 }
 
@@ -67,11 +67,16 @@ export type Storage = {
  * A hash, not the path itself: the storage layout must not spell out where
  * someone's repositories live, and a fixed-length key keeps path lengths bounded.
  */
-export function rootKeyFor(canonicalContainmentRoot: string): string {
+export function rootKeyFor(
+  canonicalContainmentRoot: string,
+  canonicalConfigurationRoot = canonicalContainmentRoot,
+): string {
   // Keep the historical namespace: root-level sessions must retain their state.
-  return createHash("sha256")
-    .update(`trusted-root ${canonicalContainmentRoot}`, "utf8")
-    .digest("hex")
+  const identity =
+    canonicalContainmentRoot === canonicalConfigurationRoot
+      ? `trusted-root ${canonicalContainmentRoot}`
+      : `storage-scope ${JSON.stringify([canonicalContainmentRoot, canonicalConfigurationRoot])}`
+  return createHash("sha256").update(identity, "utf8").digest("hex")
 }
 
 /**
@@ -87,8 +92,12 @@ export function isRootKey(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
 }
 
-export function storageFor(homeDir: string, canonicalContainmentRoot: string): Storage {
-  return storageForRootKey(homeDir, rootKeyFor(canonicalContainmentRoot))
+export function storageFor(
+  homeDir: string,
+  canonicalContainmentRoot: string,
+  canonicalConfigurationRoot = canonicalContainmentRoot,
+): Storage {
+  return storageForRootKey(homeDir, rootKeyFor(canonicalContainmentRoot, canonicalConfigurationRoot))
 }
 
 /**

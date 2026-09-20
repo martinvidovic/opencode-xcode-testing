@@ -45,12 +45,25 @@ function writeConfiguration(root: string, contents: string): void {
 }
 
 describe("the root roles", () => {
-  test("prefers the worktree the host supplies", () => {
+  test("uses the nearest configuration from launch directory through containment", () => {
     withProject((root) => {
-      const nested = join(root, "nested")
-      mkdirSync(nested)
+      const nested = join(root, "nested", "leaf")
+      mkdirSync(nested, { recursive: true })
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      writeConfiguration(join(root, "nested"), '{ "schemaVersion": 1 }')
       const outcome = resolveRootRoles({ worktree: root, directory: nested })
       expect(outcome).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(root),
+        configurationRoot: realpathSync(join(root, "nested")),
+      })
+    })
+  })
+
+  test("falls back to the directory when there is no worktree", () => {
+    withProject((root) => {
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      expect(resolveRootRoles({ directory: root })).toEqual({
         status: "resolved",
         containmentRoot: realpathSync(root),
         configurationRoot: realpathSync(root),
@@ -58,13 +71,21 @@ describe("the root roles", () => {
     })
   })
 
-  test("falls back to the directory when there is no worktree", () => {
+  test("selects the nearest present configuration even when it is malformed", () => {
     withProject((root) => {
-      expect(resolveRootRoles({ directory: root })).toEqual({
+      const nested = join(root, "nested", "leaf")
+      mkdirSync(nested, { recursive: true })
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      writeConfiguration(join(root, "nested"), "not json")
+
+      const roles = resolveRootRoles({ worktree: root, directory: nested })
+      expect(roles).toEqual({
         status: "resolved",
         containmentRoot: realpathSync(root),
-        configurationRoot: realpathSync(root),
+        configurationRoot: realpathSync(join(root, "nested")),
       })
+      if (roles.status !== "resolved" || roles.configurationRoot === undefined) return
+      expect(readProjectConfiguration(roles.configurationRoot)).toMatchObject({ status: "invalid" })
     })
   })
 
@@ -77,9 +98,21 @@ describe("the root roles", () => {
         expect(resolveRootRoles({ worktree, directory: root })).toEqual({
           status: "resolved",
           containmentRoot: realpathSync(root),
-          configurationRoot: realpathSync(root),
         })
       }
+    })
+  })
+
+  test("uses the launch directory as the bounded non-Git fallback", () => {
+    withProject((root) => {
+      const nested = join(root, "nested")
+      mkdirSync(nested)
+      writeConfiguration(nested, '{ "schemaVersion": 1 }')
+      expect(resolveRootRoles({ worktree: "/", directory: nested })).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(nested),
+        configurationRoot: realpathSync(nested),
+      })
     })
   })
 
@@ -93,7 +126,6 @@ describe("the root roles", () => {
       expect(resolveRootRoles({ directory: link })).toEqual({
         status: "resolved",
         containmentRoot: realpathSync(real),
-        configurationRoot: realpathSync(real),
       })
     })
   })
@@ -114,14 +146,16 @@ describe("the enablement marker", () => {
     })
   })
 
-  test("is looked up at exactly one path, with no upward search", () => {
-    // An upward search would let a file two directories up decide what a
-    // project tests.
+  test("does not search above containment", () => {
     withProject((root) => {
-      const nested = join(root, "nested")
-      mkdirSync(nested)
+      const containment = join(root, "containment")
+      const nested = join(containment, "nested")
+      mkdirSync(nested, { recursive: true })
       writeConfiguration(root, '{ "schemaVersion": 1 }')
-      expect(enablementMarkerExists(nested)).toBe(false)
+      expect(resolveRootRoles({ worktree: containment, directory: nested })).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(containment),
+      })
     })
   })
 })
