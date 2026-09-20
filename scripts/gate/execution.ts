@@ -80,7 +80,7 @@ function teeStderr(sink: (text: string) => void): () => void {
 export type ExecutionGateOptions = ExecutionContext & {
   keepEvidence(sources: readonly EvidenceSource[], correlations: readonly B2Correlation[]): void
   /**
-   * Where to register the project roots this suite makes the host create.
+   * Where to register the project directories this suite makes the host create.
    *
    * Swept by the caller, once, at the end of the run. A suite that cleaned up
    * after itself raced the host it had just closed — storage kept appearing

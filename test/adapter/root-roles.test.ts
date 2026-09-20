@@ -1,5 +1,5 @@
 /**
- * Project roots and the enablement marker (ADR 0002, #6).
+ * The Containment Root, Configuration Root, and enablement marker (ADR 0002, #6).
  *
  * The root is the boundary every path guarantee rests on. If a tool argument
  * could move it, the rest of the safety story would be decorative — so it is
@@ -16,8 +16,8 @@ import {
   configurationPath,
   enablementMarkerExists,
   readProjectConfiguration,
-  resolveProjectRoots,
-} from "../../src/adapter/project-roots.ts"
+  resolveRootRoles,
+} from "../../src/adapter/root-roles.ts"
 
 function project(configure?: (root: string) => void): { root: string; dispose(): void } {
   const root = mkdtempSync(join(tmpdir(), "xcode-test-root-"))
@@ -44,12 +44,12 @@ function writeConfiguration(root: string, contents: string): void {
   writeFileSync(configurationPath(root), contents)
 }
 
-describe("the project roots", () => {
+describe("the root roles", () => {
   test("prefers the worktree the host supplies", () => {
     withProject((root) => {
       const nested = join(root, "nested")
       mkdirSync(nested)
-      const outcome = resolveProjectRoots({ worktree: root, directory: nested })
+      const outcome = resolveRootRoles({ worktree: root, directory: nested })
       expect(outcome).toEqual({
         status: "resolved",
         containmentRoot: realpathSync(root),
@@ -60,7 +60,7 @@ describe("the project roots", () => {
 
   test("falls back to the directory when there is no worktree", () => {
     withProject((root) => {
-      expect(resolveProjectRoots({ directory: root })).toEqual({
+      expect(resolveRootRoles({ directory: root })).toEqual({
         status: "resolved",
         containmentRoot: realpathSync(root),
         configurationRoot: realpathSync(root),
@@ -74,7 +74,7 @@ describe("the project roots", () => {
     // would have keyed artifact storage and discovery to the whole filesystem.
     withProject((root) => {
       for (const worktree of ["", "   ", "/"]) {
-        expect(resolveProjectRoots({ worktree, directory: root })).toEqual({
+        expect(resolveRootRoles({ worktree, directory: root })).toEqual({
           status: "resolved",
           containmentRoot: realpathSync(root),
           configurationRoot: realpathSync(root),
@@ -90,7 +90,7 @@ describe("the project roots", () => {
       const link = join(root, "link")
       symlinkSync(real, link)
 
-      expect(resolveProjectRoots({ directory: link })).toEqual({
+      expect(resolveRootRoles({ directory: link })).toEqual({
         status: "resolved",
         containmentRoot: realpathSync(real),
         configurationRoot: realpathSync(real),
@@ -99,7 +99,7 @@ describe("the project roots", () => {
   })
 
   test("fails hard when it cannot be resolved, rather than guessing", () => {
-    expect(resolveProjectRoots({ directory: "/nonexistent/path" })).toMatchObject({
+    expect(resolveRootRoles({ directory: "/nonexistent/path" })).toMatchObject({
       status: "failed",
     })
   })

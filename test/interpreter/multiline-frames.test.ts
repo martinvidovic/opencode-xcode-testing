@@ -29,7 +29,7 @@ import type { DiagnosticSummary } from "../../src/domain/inspection.ts"
 import { buildBuildErrors } from "../../src/interpreter/diagnostics.ts"
 import { focusedDiagnostic } from "../../src/interpreter/focus.ts"
 import { isNormalizedIndex, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
-import { FAILED_EXIT, TRUSTED_ROOT, interpretFixture, present, syntheticIndex } from "./harness.ts"
+import { CONTAINMENT_ROOT, FAILED_EXIT, interpretFixture, present, syntheticIndex } from "./harness.ts"
 
 /**
  * Interpret the fixture and read it back the way an inspection does.
@@ -75,7 +75,7 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
   })
 
   test("returns the failure's frames", () => {
-    const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, TRUSTED_ROOT, undefined)
+    const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, CONTAINMENT_ROOT, undefined)
 
     expect(present(focused).stackFrames).toEqual([
       { symbol: "LoginTests.testRejectsBadPassword()", module: "AppTests" },
@@ -98,7 +98,7 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
     const focused = focusedDiagnostic(
       MULTILINE,
       BUILD_ERROR as DiagnosticSummary,
-      TRUSTED_ROOT,
+      CONTAINMENT_ROOT,
       undefined,
     )
 
@@ -114,7 +114,7 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
   test("shows a message with its whitespace still collapsed", () => {
     // The summary's contract is unchanged. What is kept for frames is private
     // and never displayed, so nothing a caller reads gained a newline.
-    const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, TRUSTED_ROOT, undefined)
+    const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, CONTAINMENT_ROOT, undefined)
 
     expect((FAILURE as DiagnosticSummary).message).not.toContain("\n")
     expect(present(focused).message).not.toContain("\n")
@@ -123,7 +123,7 @@ describe("a multiline diagnostic, from payload to Focused Detail", () => {
   test("exposes no raw address, and no path it could not place", () => {
     // The guarantees frames already had, now that there are frames to have
     // them. An address is what #7 forbids exposing.
-    const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, TRUSTED_ROOT, undefined)
+    const focused = focusedDiagnostic(MULTILINE, FAILURE as DiagnosticSummary, CONTAINMENT_ROOT, undefined)
 
     expect(JSON.stringify(present(focused).stackFrames)).not.toContain("0x")
     for (const frame of present(focused).stackFrames) {
@@ -143,7 +143,7 @@ describe("a single-line failure", () => {
     const diagnostic = index.testFailures[0]
     if (diagnostic === undefined) throw new Error("the fixture produced no test failure")
 
-    const focused = focusedDiagnostic(index, diagnostic, TRUSTED_ROOT, undefined)
+    const focused = focusedDiagnostic(index, diagnostic, CONTAINMENT_ROOT, undefined)
 
     expect(present(focused).stackFrames).toEqual([])
     expect(focused.truncation.collectionTruncated).toBe(false)
@@ -189,7 +189,7 @@ describe("a trace larger than a response can carry", () => {
     const focused = focusedDiagnostic(
       indexWith(FOCUSED_STACK_FRAME_CAP * 4, 20),
       DIAGNOSTIC,
-      TRUSTED_ROOT,
+      CONTAINMENT_ROOT,
       undefined,
     )
 
@@ -201,7 +201,7 @@ describe("a trace larger than a response can carry", () => {
     const focused = focusedDiagnostic(
       indexWith(FOCUSED_STACK_FRAME_CAP, STACK_FRAME_TEXT_CHAR_CAP + 200),
       DIAGNOSTIC,
-      TRUSTED_ROOT,
+      CONTAINMENT_ROOT,
       undefined,
     )
 
@@ -224,7 +224,7 @@ describe("what the index keeps", () => {
 
     const { detailMessages } = buildBuildErrors(
       [{ targetName: "App", message: enormous }],
-      { runId: "run-1", containmentRoot: TRUSTED_ROOT },
+      { runId: "run-1", containmentRoot: CONTAINMENT_ROOT },
     )
 
     const kept = Object.values(detailMessages)[0]
@@ -247,13 +247,13 @@ describe("what the text says about its own frames", () => {
   function buildErrorFocus(message: string): ReturnType<typeof focusedDiagnostic> {
     const { diagnostics, detailMessages } = buildBuildErrors(
       [{ targetName: "App", message }],
-      { runId: "run-1", containmentRoot: TRUSTED_ROOT },
+      { runId: "run-1", containmentRoot: CONTAINMENT_ROOT },
     )
     const diagnostic = diagnostics[0]
     if (diagnostic === undefined) throw new Error("no build error was built")
 
     const index = syntheticIndex({ buildErrors: [diagnostic], detailMessages })
-    return focusedDiagnostic(index, diagnostic, TRUSTED_ROOT, undefined)
+    return focusedDiagnostic(index, diagnostic, CONTAINMENT_ROOT, undefined)
   }
 
   /** A diagnostic of this file's own, since the one above is scoped elsewhere. */
@@ -311,7 +311,7 @@ describe("what the text says about its own frames", () => {
       const asFailure = focusedDiagnostic(
         syntheticIndex({ testFailures: [SUBJECT], detailMessages: { [SUBJECT.id]: message } }),
         SUBJECT,
-        TRUSTED_ROOT,
+        CONTAINMENT_ROOT,
         undefined,
       )
 
@@ -353,7 +353,7 @@ describe("what the text says about its own frames", () => {
     const focused = focusedDiagnostic(
       syntheticIndex({ testFailures: [SUBJECT], detailMessages: {} }),
       SUBJECT,
-      TRUSTED_ROOT,
+      CONTAINMENT_ROOT,
       undefined,
     )
 
@@ -368,7 +368,7 @@ describe("what the text says about its own frames", () => {
     const diagnostic = index.testFailures[0]
     if (diagnostic === undefined) throw new Error("the fixture produced no test failure")
 
-    const focused = focusedDiagnostic(index, diagnostic, TRUSTED_ROOT, undefined)
+    const focused = focusedDiagnostic(index, diagnostic, CONTAINMENT_ROOT, undefined)
     expect(focused.truncation.fieldTruncated).toBe(false)
     expect(focused.truncation.responseTruncated).toBe(false)
     expect(Buffer.byteLength(JSON.stringify(focused.focused), "utf8")).toBeLessThanOrEqual(

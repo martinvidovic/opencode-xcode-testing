@@ -180,12 +180,12 @@ export const RESOLVED: ResolvedTestRun = {
   timeoutSeconds: { value: 900, provenance: "default" },
 }
 
-export const TRUSTED_ROOT = "/workspace"
+export const CONTAINMENT_ROOT = "/workspace"
 
 export function factsFor(fixture: Fixture, overrides: Partial<ExecutionFacts> = {}): ExecutionFacts {
   return {
     runId: "run-0000",
-    containmentRoot: TRUSTED_ROOT,
+    containmentRoot: CONTAINMENT_ROOT,
     resultBundlePresent: true,
     bundleDigestVerified: "yes",
     toolchain: identityFor(fixture),

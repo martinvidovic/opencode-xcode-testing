@@ -12,7 +12,7 @@ import type { NormalizedIndex } from "../../src/interpreter/index-model.ts"
 import { inspectIndex } from "../../src/interpreter/paging.ts"
 import {
   FAILED_EXIT,
-  TRUSTED_ROOT,
+  CONTAINMENT_ROOT,
   interpretFixture,
   recordsOf,
 } from "./harness.ts"
@@ -29,7 +29,7 @@ function inspect(index: NormalizedIndex, request: Partial<InspectRunRequest>) {
     index,
     { runId: index.runId, facet: "failures", ...request } as InspectRunRequest,
     SECRET,
-    TRUSTED_ROOT,
+    CONTAINMENT_ROOT,
   )
 }
 
@@ -270,7 +270,7 @@ describe("an inspection for another run", () => {
   test("is notFound, not an empty page", async () => {
     const index = await manyFailures()
     expect(
-      inspectIndex(index, { runId: "run-9999", facet: "failures" }, SECRET, TRUSTED_ROOT),
+      inspectIndex(index, { runId: "run-9999", facet: "failures" }, SECRET, CONTAINMENT_ROOT),
     ).toEqual({ status: "notFound", subject: "run" })
   })
 })

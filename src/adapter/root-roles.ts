@@ -1,5 +1,5 @@
 /**
- * Project roots and project configuration (ADR 0002, #6).
+ * The Containment Root, Configuration Root, and project configuration (ADR 0002, #6).
  *
  * The containment root is `context.worktree` when the host supplies one, else
  * `context.directory`, resolved exactly once and **never influenced by a tool
@@ -24,7 +24,7 @@ export const CONFIG_FILENAME = "xcode-test.json"
 
 export type PluginContext = { worktree?: string; directory: string }
 
-export type ProjectRootsResolution =
+export type RootRolesResolution =
   | { status: "resolved"; containmentRoot: string; configurationRoot: string }
   | { status: "failed"; message: string }
 
@@ -32,7 +32,7 @@ export type ProjectRootsResolution =
  * Canonicalization failure is a hard resolution error, not a fallback: a root
  * we cannot resolve is a root we cannot make any promise about.
  */
-export function resolveProjectRoots(context: PluginContext): ProjectRootsResolution {
+export function resolveRootRoles(context: PluginContext): RootRolesResolution {
   const candidate = usableWorktree(context.worktree) ?? context.directory
   try {
     const containmentRoot = canonicalizeContainmentRoot(candidate)

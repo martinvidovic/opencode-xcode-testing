@@ -20,7 +20,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { inspectIndex, UNREADABLE_BY_THIS_TOOLCHAIN } from "../../src/interpreter/paging.ts"
-import { FAILED_EXIT, interpretFixture, TRUSTED_ROOT } from "./harness.ts"
+import { CONTAINMENT_ROOT, FAILED_EXIT, interpretFixture } from "./harness.ts"
 
 const SECRET = Buffer.alloc(32, 7)
 
@@ -30,7 +30,7 @@ function facetStatus(index: Parameters<typeof inspectIndex>[0]): string {
     index,
     { runId: index.runId, facet: "failures" },
     SECRET,
-    TRUSTED_ROOT,
+    CONTAINMENT_ROOT,
   ).status
 }
 
@@ -116,7 +116,7 @@ describe("what a facet says about itself", () => {
       degraded.index,
       { runId: degraded.index.runId, facet: "failures" },
       SECRET,
-      TRUSTED_ROOT,
+      CONTAINMENT_ROOT,
     )
 
     expect(response.status).toBe("incomplete")
@@ -136,7 +136,7 @@ describe("what a facet says about itself", () => {
       index,
       { runId: index.runId, facet: "failures", diagnosticId: index.testFailures[0]?.id ?? "" },
       SECRET,
-      TRUSTED_ROOT,
+      CONTAINMENT_ROOT,
       { status: "unsupported" },
     )
 

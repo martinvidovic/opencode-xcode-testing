@@ -29,7 +29,7 @@ import { bunOnPath, probeRuntimeCandidate } from "./probe.ts"
 import { reconcileRootBounded } from "./reconciliation.ts"
 import { cachedRuntime, rememberRuntime, resolveRuntime, type RuntimeResolution } from "./runtime.ts"
 import type { StartupPorts } from "./startup.ts"
-import { enablementMarkerExists } from "./project-roots.ts"
+import { enablementMarkerExists } from "./root-roles.ts"
 
 export type StartupWiring = {
   configurationRoot: string

@@ -32,13 +32,13 @@ import { inspectArguments, recoverArguments, testArguments, type ZodNamespace } 
 import { startupPortsFor } from "./startup-ports.ts"
 import { hostVersionDiagnostic, runStartup, HOST_VERSION_BUDGET_MS } from "./startup.ts"
 import { executeInspect, executeRecover, executeTest, type ToolDeps } from "./tools.ts"
-import { readProjectConfiguration, resolveProjectRoots } from "./project-roots.ts"
+import { readProjectConfiguration, resolveRootRoles } from "./root-roles.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SUPERVISOR_ENTRYPOINT = join(HERE, "..", "runner", "supervisor-entry.ts")
 
 export const server: Plugin = async (input) => {
-  const roots = resolveProjectRoots({ worktree: input.worktree, directory: input.directory })
+  const roots = resolveRootRoles({ worktree: input.worktree, directory: input.directory })
   if (roots.status !== "resolved") return {}
 
   const { containmentRoot, configurationRoot } = roots

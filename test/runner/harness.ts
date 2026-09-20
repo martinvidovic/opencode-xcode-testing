@@ -19,7 +19,7 @@ import { prepareStorage, storageFor, type Storage } from "../../src/runner/paths
 import type { RunRecord } from "../../src/runner/state.ts"
 import { writeRunRecord } from "../../src/runner/state.ts"
 
-export const TRUSTED_ROOT = "/workspace/example"
+export const CONTAINMENT_ROOT = "/workspace/example"
 
 export type Sandbox = {
   homeDir: string
@@ -28,7 +28,7 @@ export type Sandbox = {
 }
 
 /** A private storage tree under a temp home, prepared and owner-only. */
-export function sandbox(containmentRoot = TRUSTED_ROOT): Sandbox {
+export function sandbox(containmentRoot = CONTAINMENT_ROOT): Sandbox {
   const homeDir = mkdtempSync(join(tmpdir(), "xcode-test-runner-"))
   const storage = storageFor(homeDir, containmentRoot)
   prepareStorage(storage)
@@ -44,7 +44,7 @@ export function sandbox(containmentRoot = TRUSTED_ROOT): Sandbox {
 /** Run `work` against a fresh sandbox, cleaning up even if it throws. */
 export async function withSandbox<T>(
   work: (box: Sandbox) => T | Promise<T>,
-  containmentRoot = TRUSTED_ROOT,
+  containmentRoot = CONTAINMENT_ROOT,
 ): Promise<T> {
   const box = sandbox(containmentRoot)
   try {

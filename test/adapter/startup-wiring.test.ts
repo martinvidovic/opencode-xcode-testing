@@ -18,7 +18,7 @@ import { renderTestToolResult } from "../../src/adapter/output.ts"
 import { FAILED_EXIT, interpretFixture } from "../interpreter/harness.ts"
 import { unavailableService } from "../../src/adapter/service.ts"
 import type { ResultProvenance } from "../../src/domain/result.ts"
-import { readProjectConfiguration } from "../../src/adapter/project-roots.ts"
+import { readProjectConfiguration } from "../../src/adapter/root-roles.ts"
 import { resolveTestRun } from "../../src/runner/resolution.ts"
 import { prepareStorage, storageFor, storageForRootKey, type Storage } from "../../src/runner/paths.ts"
 
