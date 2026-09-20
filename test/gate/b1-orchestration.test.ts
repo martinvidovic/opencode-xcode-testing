@@ -11,7 +11,9 @@ import { runB1Suite, type B1Gates } from "../../scripts/gate/b1.ts"
 import { DrivenRoots } from "../../scripts/gate/driven-roots.ts"
 import type { ScenarioResult } from "../../scripts/gate/report.ts"
 
-async function run(gates: (record: (scenario: ScenarioResult) => void) => B1Gates): Promise<ScenarioResult[]> {
+async function runB1WithGates(
+  gates: (record: (scenario: ScenarioResult) => void) => B1Gates,
+): Promise<ScenarioResult[]> {
   const scenarios: ScenarioResult[] = []
   const record = (scenario: ScenarioResult) => scenarios.push(scenario)
   await runB1Suite(record, new DrivenRoots(), gates(record))
@@ -21,7 +23,7 @@ async function run(gates: (record: (scenario: ScenarioResult) => void) => B1Gate
 describe("a B1 run with a reported registration failure", () => {
   test("runs the independent installation check afterwards", async () => {
     const calls: string[] = []
-    const scenarios = await run((record) => ({
+    const scenarios = await runB1WithGates((record) => ({
       async registration() {
         calls.push("registration")
         record({
@@ -53,7 +55,7 @@ describe("a B1 run with a reported registration failure", () => {
 describe("a B1 run whose registration gate ends unexpectedly", () => {
   test("still runs the independent installation check", async () => {
     const calls: string[] = []
-    const scenarios = await run((record) => ({
+    const scenarios = await runB1WithGates((record) => ({
       async registration() {
         calls.push("registration")
         throw new Error("unexpected registration failure")
