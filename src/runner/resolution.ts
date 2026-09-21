@@ -8,7 +8,7 @@
  * experience than one rejection listing all five.
  *
  * **The containment root is never influenced by an argument.** Container paths are
- * validated as repository-relative, traversal and symlink escape are rejected,
+ * validated as Containment-Root-relative, traversal and symlink escape are rejected,
  * and the runner is handed a canonical absolute path it derived itself.
  */
 
@@ -228,13 +228,13 @@ export function validateContainerPath(
   if (!validateString(container.path, field, errors)) return undefined
 
   if (isAbsolute(container.path)) {
-    push(errors, field, "notRelative", "a container path must be repository-relative")
+    push(errors, field, "notRelative", "a container path must be Containment-Root-relative")
     return undefined
   }
 
   const normalized = normalize(container.path)
   if (normalized.startsWith("..")) {
-    push(errors, field, "traversal", "a container path may not leave the repository")
+    push(errors, field, "traversal", "a container path may not leave containment")
     return undefined
   }
 
@@ -254,7 +254,7 @@ export function validateContainerPath(
 
   const escape = relative(realpathSync(containmentRoot), canonical)
   if (escape.startsWith("..") || isAbsolute(escape)) {
-    push(errors, field, "symlinkEscape", "a container path may not resolve outside the repository")
+    push(errors, field, "symlinkEscape", "a container path may not resolve outside containment")
     return undefined
   }
 

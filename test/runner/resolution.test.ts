@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import type { ProjectConfiguration, TestRunRequest } from "../../src/domain/request.ts"
+import { configurationPath, readProjectConfiguration } from "../../src/adapter/root-roles.ts"
 import { resolveTestRun, type ResolutionEnvironment } from "../../src/runner/resolution.ts"
 
 function repository(build: (root: string) => void = () => {}): { root: string; dispose(): void } {
@@ -165,6 +166,61 @@ describe("a resolvable request", () => {
     expect(outcome.containerAbsolutePath).not.toContain("link")
     expect(outcome.containerAbsolutePath).toContain("nested")
   })
+
+  test("resolves a module configuration's project from the containment root", () => {
+    const repo = repository((containmentRoot) => {
+      const configurationRoot = join(containmentRoot, "Modules", "App")
+      mkdirSync(join(configurationRoot, ".opencode"), { recursive: true })
+      writeFileSync(
+        configurationPath(configurationRoot),
+        '{ "schemaVersion": 1, "xcodeContainer": { "kind": "project", "path": "Shared/App.xcodeproj" }, "scheme": "App" }',
+      )
+      mkdirSync(join(containmentRoot, "Shared", "App.xcodeproj"), { recursive: true })
+    })
+    const configuration = readProjectConfiguration(join(repo.root, "Modules", "App"))
+    const outcome = resolveTestRun(
+      {
+        requestedScope: { kind: "all" },
+        destination: { kind: "named", platform: "iOS Simulator", name: "iPhone 17" },
+      },
+      { containmentRoot: repo.root, configuration },
+    )
+    const root = repo.root
+    repo.dispose()
+    if (outcome.status !== "resolved") throw new Error("expected a resolved run")
+
+    expect(outcome.resolved.xcodeContainer).toEqual({
+      value: { kind: "project", path: "Shared/App.xcodeproj" },
+      provenance: "configuration",
+    })
+    expect(outcome.containerAbsolutePath).toBe(join(root, "Shared", "App.xcodeproj"))
+  })
+
+  test("resolves a module configuration's workspace from the containment root", () => {
+    const repo = repository((containmentRoot) => {
+      const configurationRoot = join(containmentRoot, "Modules", "App")
+      mkdirSync(join(configurationRoot, ".opencode"), { recursive: true })
+      writeFileSync(
+        configurationPath(configurationRoot),
+        '{ "schemaVersion": 1, "xcodeContainer": { "kind": "workspace", "path": "Xcode/App.xcworkspace" }, "scheme": "App" }',
+      )
+      mkdirSync(join(containmentRoot, "Xcode", "App.xcworkspace"), { recursive: true })
+    })
+    const configuration = readProjectConfiguration(join(repo.root, "Modules", "App"))
+    const outcome = resolveTestRun(
+      {
+        requestedScope: { kind: "all" },
+        destination: { kind: "named", platform: "iOS Simulator", name: "iPhone 17" },
+      },
+      { containmentRoot: repo.root, configuration },
+    )
+    const root = repo.root
+    repo.dispose()
+    if (outcome.status !== "resolved") throw new Error("expected a resolved run")
+
+    expect(outcome.resolved.xcodeContainer.value.path).toBe("Xcode/App.xcworkspace")
+    expect(outcome.containerAbsolutePath).toBe(join(root, "Xcode", "App.xcworkspace"))
+  })
 })
 
 describe("the destination", () => {
@@ -290,6 +346,42 @@ describe("the container path", () => {
       const errors = errorsOf(
         { xcodeContainer: { kind: "project", path: "Linked.xcodeproj" } },
         {
+          build: (root: string) => {
+            symlinkSync(join(outside, "Elsewhere.xcodeproj"), join(root, "Linked.xcodeproj"))
+          },
+        },
+      )
+      expect(errors).toContainEqual({ field: "xcodeContainer.path", code: "symlinkEscape" })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("applies absolute and traversal refusals to configured containers", () => {
+    const absolute = errorsOf(
+      {},
+      { configuration: { schemaVersion: 1, xcodeContainer: { kind: "project", path: "/App.xcodeproj" } } },
+    )
+    const traversal = errorsOf(
+      {},
+      { configuration: { schemaVersion: 1, xcodeContainer: { kind: "project", path: "../App.xcodeproj" } } },
+    )
+
+    expect(absolute).toContainEqual({ field: "xcodeContainer.path", code: "notRelative" })
+    expect(traversal).toContainEqual({ field: "xcodeContainer.path", code: "traversal" })
+  })
+
+  test("rejects a configured container that resolves outside containment through a symlink", () => {
+    const outside = mkdtempSync(join(tmpdir(), "xcode-test-outside-"))
+    mkdirSync(join(outside, "Elsewhere.xcodeproj"), { recursive: true })
+    try {
+      const errors = errorsOf(
+        {},
+        {
+          configuration: {
+            schemaVersion: 1,
+            xcodeContainer: { kind: "project", path: "Linked.xcodeproj" },
+          },
           build: (root: string) => {
             symlinkSync(join(outside, "Elsewhere.xcodeproj"), join(root, "Linked.xcodeproj"))
           },
