@@ -46,6 +46,27 @@ function writeConfiguration(root: string, contents: string): void {
 }
 
 describe("the root roles", () => {
+  test("accepts explicit test language and region", () => {
+    withProject((root) => {
+      writeConfiguration(root, JSON.stringify({ schemaVersion: 1, testLanguage: "en", testRegion: "US" }))
+      expect(readProjectConfiguration(root)).toEqual({
+        status: "loaded",
+        configuration: { schemaVersion: 1, testLanguage: "en", testRegion: "US" },
+      })
+    })
+  })
+
+  test("rejects invalid locale settings rather than ignoring them", () => {
+    for (const field of ["testLanguage", "testRegion"]) {
+      for (const value of ["", "   ", 42, null]) {
+        withProject((root) => {
+          writeConfiguration(root, JSON.stringify({ schemaVersion: 1, [field]: value }))
+          expect(readProjectConfiguration(root)).toMatchObject({ status: "invalid" })
+        })
+      }
+    }
+  })
+
   test("uses the nearest configuration from launch directory through containment", () => {
     withProject((root) => {
       const nested = join(root, "nested", "leaf")

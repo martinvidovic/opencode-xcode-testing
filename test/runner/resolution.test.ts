@@ -62,6 +62,16 @@ function errorsOf(request: Partial<TestRunRequest>, options = {}): Array<{ field
 }
 
 describe("a resolvable request", () => {
+  test("preserves configured test locale and its provenance", () => {
+    const { outcome } = resolve({}, {
+      configuration: { schemaVersion: 1, testLanguage: "en", testRegion: "US" },
+    })
+    expect(outcome.status).toBe("resolved")
+    if (outcome.status !== "resolved") return
+    expect(outcome.resolved.testLanguage).toEqual({ value: "en", provenance: "configuration" })
+    expect(outcome.resolved.testRegion).toEqual({ value: "US", provenance: "configuration" })
+  })
+
   test("uses the containment root for container and scheme discovery", () => {
     const repo = repository()
     const seen: string[] = []

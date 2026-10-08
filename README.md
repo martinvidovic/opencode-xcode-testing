@@ -202,6 +202,8 @@ are all optional:
 | `destination` | **Required.** There is no safe default: guessing one runs your tests somewhere you did not ask for. |
 | `derivedData` | `shared`. Use `isolated` for a per-run directory. |
 | `timeoutSeconds` | `900`. Range is 1 to 7200. |
+| `testLanguage` | Scheme default. Set e.g. `"en"` to pass `-testLanguage en`. |
+| `testRegion` | Scheme default. Set e.g. `"US"` to pass `-testRegion US`. |
 
 The plugin tracks two root roles explicitly. The **containment root** is the
 canonical safety boundary used for discovery, container paths, execution, and

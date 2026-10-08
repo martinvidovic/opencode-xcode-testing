@@ -130,6 +130,8 @@ const KNOWN_FIELDS = new Set([
   "derivedData",
   "timeoutSeconds",
   "runtime",
+  "testLanguage",
+  "testRegion",
 ])
 
 /**
@@ -212,6 +214,10 @@ function fieldProblems(record: Record<string, unknown>): string[] {
   check("destination", destinationProblem)
   check("derivedData", derivedDataProblem)
   check("timeoutSeconds", timeoutProblem)
+  const localeProblem = (value: unknown) =>
+    typeof value === "string" && value.trim().length > 0 ? undefined : "must be a non-blank string"
+  check("testLanguage", localeProblem)
+  check("testRegion", localeProblem)
   // Machine-local, and relative resolves against the configuration root — so the
   // only thing that can be said here is that it is a path-shaped string.
   check("runtime", (value) => nonEmptyStringProblem(value))

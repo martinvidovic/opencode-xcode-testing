@@ -44,6 +44,9 @@ export type ProjectConfiguration = {
   timeoutSeconds?: number
   /** Machine-local per ADR 0002. A relative value resolves against the configuration root. */
   runtime?: string
+  /** Explicit Xcode test locale; omitted values preserve scheme defaults. */
+  testLanguage?: string
+  testRegion?: string
 }
 
 /** Where a resolved setting came from. Retained so a result can explain itself. */
@@ -69,6 +72,8 @@ export type ResolvedTestRun = {
   destination: Resolved<Destination>
   derivedData: Resolved<{ mode: DerivedDataMode }>
   timeoutSeconds: Resolved<number>
+  testLanguage?: Resolved<string>
+  testRegion?: Resolved<string>
 }
 
 /** The timeout a Test Run gets when neither request nor configuration says. */

@@ -38,6 +38,22 @@ function resolved(overrides: Partial<ResolvedTestRun> = {}): ResolvedTestRun {
 }
 
 describe("the invocation", () => {
+  test("passes configured language and region as separate fixed arguments", () => {
+    const args = buildArguments(resolved({
+      testLanguage: { value: "en", provenance: "configuration" },
+      testRegion: { value: "US", provenance: "configuration" },
+    }), { kind: "all" }, PATHS)
+    expect(args.slice(-4)).toEqual(["-testLanguage", "en", "-testRegion", "US"])
+  })
+
+  test("can configure language without overriding the scheme region", () => {
+    const args = buildArguments(resolved({
+      testLanguage: { value: "en", provenance: "configuration" },
+    }), { kind: "all" }, PATHS)
+    expect(args.slice(-2)).toEqual(["-testLanguage", "en"])
+    expect(args).not.toContain("-testRegion")
+  })
+
   test("always spawns the fixed binary with the fixed action", () => {
     expect(XCODEBUILD).toBe("/usr/bin/xcodebuild")
     expect(buildArguments(resolved(), { kind: "all" }, PATHS)[0]).toBe("test")

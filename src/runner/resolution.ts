@@ -114,6 +114,12 @@ export function resolveTestRun(
           ? { value: { mode: "shared" }, provenance: "default" }
           : { value: { mode: derivedDataMode }, provenance: "configuration" },
       timeoutSeconds,
+      ...(configuration?.testLanguage === undefined ? {} : {
+        testLanguage: { value: configuration.testLanguage, provenance: "configuration" as const },
+      }),
+      ...(configuration?.testRegion === undefined ? {} : {
+        testRegion: { value: configuration.testRegion, provenance: "configuration" as const },
+      }),
     },
   }
 }

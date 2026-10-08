@@ -42,6 +42,8 @@ export function buildArguments(
     paths.resultBundlePath,
     "-derivedDataPath",
     paths.derivedDataPath,
+    ...(resolved.testLanguage === undefined ? [] : ["-testLanguage", resolved.testLanguage.value]),
+    ...(resolved.testRegion === undefined ? [] : ["-testRegion", resolved.testRegion.value]),
     ...onlyTestingArguments(scope),
   ]
 }
