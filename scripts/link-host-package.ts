@@ -19,9 +19,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 
-import { observedHostVersion } from "./gate/host.ts"
 import { defaultConfigDirectory, HOST_SCOPE } from "./gate/host-tree.ts"
-import { readProvenance } from "./gate/provenance.ts"
 
 export { defaultConfigDirectory, HOST_SCOPE } from "./gate/host-tree.ts"
 
@@ -93,18 +91,5 @@ if (import.meta.main) {
   } else {
     process.stdout.write(`${outcome.status === "linked" ? "linked" : "already linked"}: ${outcome.link}\n`)
 
-    // What was linked, not merely that something was (issue #81). This is the
-    // documented way people set this up, so it is the first moment anyone
-    // could be told the tree is stale or disagrees with itself — and being
-    // told here is worth more than being told by a gate an hour later.
-    //
-    // Never fatal. Linking succeeded, and refusing to exit zero over a
-    // package tree the user has not been asked to fix yet would make the
-    // documented setup step look broken.
-    const { packages, problems, caveats } = readProvenance(observedHostVersion(), configDirectory)
-    process.stdout.write(
-      `linked versions: plugin ${packages.plugin.version ?? "unknown"}, sdk ${packages.sdk.version ?? "unknown"}\n`,
-    )
-    for (const note of [...problems, ...caveats]) process.stderr.write(`link-host-package: ${note}\n`)
   }
 }

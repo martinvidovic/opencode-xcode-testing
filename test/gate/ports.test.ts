@@ -9,14 +9,14 @@
  * `ports.ts` holds the reasoning, including why the two kinds of server are
  * fixed two different ways. What is here is what can be shown in this layer:
  * a server this repository starts, proved to come up with every one of the
- * old numbers held against it. The spawned-host path reproduces an occupied
- * port through a controlled launcher; its dynamic-port handling stays covered
- * below at the pure helper seam.
+ * old numbers held against it, and the helper that reads a spawned host's
+ * port from its own line. The spawned host's ownership check is in
+ * `host.test.ts`.
  */
 
 import { describe, expect, test } from "bun:test"
 
-import { reportedPort, GATE_PORT_RANGE, gatePort } from "../../scripts/gate/ports.ts"
+import { reportedPort } from "../../scripts/gate/ports.ts"
 import { startStubProvider, STUB_MODEL_ID } from "../../scripts/gate/provider.ts"
 
 /** The numbers the gate used to hard-code, before this. */
@@ -95,39 +95,15 @@ describe("the stub provider", () => {
   })
 })
 
-describe("a port chosen for a spawned host", () => {
-  test("stays below the range the kernel hands out on its own", () => {
-    // A number at or above 49152 can be one macOS is about to assign to
-    // somebody else's outbound connection, which is the same collision
-    // arriving from the other direction — and the reason the stub provider's
-    // kernel-assigned port can never be one of these.
-    for (let attempt = 0; attempt < 500; attempt += 1) {
-      const port = gatePort()
-      expect(port).toBeGreaterThanOrEqual(GATE_PORT_RANGE.first)
-      expect(port).toBeLessThanOrEqual(GATE_PORT_RANGE.last)
-    }
-  })
-
-  test("varies across gate runs", () => {
-    // Not "never one of the old four" — that would be a coincidence test that
-    // fails one run in twelve. The property is that nothing is written down,
-    // and a number that is drawn makes two gate runs less likely to share one.
-    const drawn = new Set(Array.from({ length: 50 }, () => gatePort()))
-
-    expect(drawn.size).toBeGreaterThan(1)
-  })
-})
-
 describe("what a host says it bound", () => {
   test("is read from its own line, not from what it was asked for", () => {
     expect(reportedPort("opencode server listening on http://127.0.0.1:52046")).toBe(52_046)
   })
 
-  test("is the answer even when it differs from the request", () => {
-    // `opencode serve` ignores `--port=0` and falls back to its own default,
-    // so the request and the answer are genuinely two facts. A gate that used
-    // the request would address a server that is not there.
-    expect(reportedPort("opencode server listening on http://127.0.0.1:4096")).toBe(4_096)
+  test("is the answer, since the request was `--port 0`", () => {
+    // V2 honours `--port 0` (issue #140): the request names no port at all,
+    // so the line the host prints is the only place the number exists.
+    expect(reportedPort("server listening on http://127.0.0.1:63645")).toBe(63_645)
   })
 
   test("is absent rather than guessed when the line says nothing usable", () => {

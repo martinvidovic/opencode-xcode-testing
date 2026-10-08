@@ -15,44 +15,15 @@
  * host's answer as a defect in the tool.
  *
  * There is no probe here, for the reason probes do not work: a port that is
- * free when it is checked is not free when it is bound. Two mechanisms instead,
- * each for what it covers.
+ * free when it is checked is not free when it is bound. Every server asks the
+ * kernel instead — `port: 0` — and is then believed about what it bound.
  *
- * - A server this repository starts asks the kernel for a port — `port: 0`,
- *   and then whatever came back. That is collision-free by construction, not
- *   by luck.
- * - A server this repository only *spawns* — `opencode serve`, which treats
- *   `--port=0` as its default `4096` — is given a port chosen fresh for the
- *   invocation. Random selection reduces collisions; it cannot prevent them.
- *   The host is then believed about which port it actually bound rather than
- *   assumed.
+ * - A server this repository starts reads its port back from the kernel.
+ * - A V2 host this repository spawns honours `--port 0` (issue #140) and
+ *   prints the port it bound. The gate reads that line from the child it
+ *   started, and then checks that the server answering there reports that
+ *   child's pid — so a stale listener cannot be mistaken for the host.
  */
-
-import { randomInt } from "node:crypto"
-
-/**
- * The range gate-spawned hosts are placed in.
- *
- * Above the registered range and below the ephemeral one macOS hands out
- * (49152–65535), so a number chosen here cannot be one the kernel is about to
- * assign to somebody else's outbound connection.
- */
-export const GATE_PORT_RANGE = { first: 40_000, last: 49_000 } as const
-
-/**
- * A port for one host this gate run is about to start.
- *
- * Random rather than derived from anything, because the two things being
- * avoided are a leftover of an earlier gate run and a sibling one running
- * now. A fixed number collides with both by definition; a number drawn per
- * call makes either collision less likely, not impossible.
- *
- * Nothing excludes the stub provider's port: that one is assigned by the
- * kernel from the ephemeral range, which begins above this one ends.
- */
-export function gatePort(): number {
-  return randomInt(GATE_PORT_RANGE.first, GATE_PORT_RANGE.last + 1)
-}
 
 /**
  * The port a host's own "listening on" line names, if it names one.
@@ -60,8 +31,7 @@ export function gatePort(): number {
  * Read from the answer rather than from the question. The two are normally
  * the same and the asking is not what makes them so — this is the number
  * every later call has to use, and taking it from the request would be
- * believing the question. The host-managed SDK reads its own hosts the same
- * way, which is why they need nothing further here.
+ * believing the question.
  */
 export function reportedPort(output: string): number | undefined {
   const match = /listening on\s+https?:\/\/[^\s:]+:(\d{1,5})/.exec(output)

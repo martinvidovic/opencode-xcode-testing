@@ -90,22 +90,20 @@ export type RunReport = {
   /** The host version the adapter observed, per ADR 0002. */
   hostVersion: string
   /**
-   * The linked OpenCode packages this run actually compiled and ran against
-   * (issue #81).
+   * The OpenCode packages this run actually compiled and ran against (issues
+   * #81, #142).
    *
-   * Separate from `hostVersion`, because they are separate facts and the
-   * report used to carry only the least informative of them. The adapter is
-   * written against `@opencode-ai/plugin` and the gates drive a host through
-   * `@opencode-ai/sdk`, both resolved from a tree the host manages on its own
-   * schedule — so "tested against OpenCode 1.18.29" could be true of the host
-   * and false of everything the code was linked to.
+   * Separate from `hostVersion`, because they are separate facts. The adapter
+   * is written against `@opencode/plugin` and the gates drive a host through
+   * `@opencode/client`, both pinned exactly in this checkout — so the report
+   * says which versions were there, beside the host they ran against.
    *
-   * Versions and ranges only. Nothing here names a path.
+   * Versions only. Nothing here names a path.
    */
   packages?: {
     plugin?: string
-    sdk?: string
-    /** What the host's own config manifest asks for, when it asks. */
+    client?: string
+    /** What the checkout pins `@opencode/plugin` to. */
     requested?: string
     /** Skew that is supported and worth saying anyway. */
     caveats?: string[]
@@ -269,10 +267,10 @@ export function renderReport(report: RunReport, path: string): string {
 
   const caveats = report.packages?.caveats ?? []
   if (caveats.length > 0) {
-    // Never gating, always printed. A supported-but-stale package tree is the
-    // ordinary state of a host-managed install, and a run that was green
-    // against a package set three minors behind the host should say so where
-    // a reader sees it rather than only in JSON nobody opens.
+    // Never gating, always printed. A host other than the one the packages
+    // were validated against is a supported state, and a run that was green
+    // against it should say so where a reader sees it rather than only in
+    // JSON nobody opens.
     lines.push("", `package skew   ${caveats.join("; ")}`)
   }
 
@@ -328,7 +326,7 @@ export function renderReport(report: RunReport, path: string): string {
 
 
 /**
- * The linked package versions, beside the host's own.
+ * The checkout's package versions, beside the host's own.
  *
  * Printed on every run, green or not. A number a reader has to go and look up
  * is a number nobody looks up, and the whole point of recording these is that
@@ -337,7 +335,7 @@ export function renderReport(report: RunReport, path: string): string {
 function renderPackages(packages: RunReport["packages"]): string {
   if (packages === undefined) return "not established"
   const plugin = packages.plugin ?? "unknown"
-  const sdk = packages.sdk ?? "unknown"
-  const requested = packages.requested === undefined ? "" : ` (host asks for ${packages.requested})`
-  return `plugin ${plugin}, sdk ${sdk}${requested}`
+  const client = packages.client ?? "unknown"
+  const requested = packages.requested === undefined ? "" : ` (checkout pins ${packages.requested})`
+  return `plugin ${plugin}, client ${client}${requested}`
 }

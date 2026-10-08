@@ -10,6 +10,7 @@
     "typecheck": "bun node_modules/typescript/lib/tsc.js --noEmit"
   },
   "devDependencies": {
+    "@opencode/client": "2.0.25",
     "@opencode/plugin": "2.0.25",
     "@types/bun": "1.4.2",
     "typescript": "5.9.3"

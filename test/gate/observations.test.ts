@@ -373,6 +373,9 @@ describe("scenarios a failed gate never reached", () => {
       "b1 parameter schemas",
       "b1 enablement marker gates registration",
       "b1 restricted agents",
+      "b1 independent denial",
+      "b1 location isolation",
+      "b1 plugin reload",
       "b1 documented installation path",
     ])
   })
@@ -458,6 +461,9 @@ describe("a registration suite interrupted between its checks", () => {
       "b1 parameter schemas",
       "b1 enablement marker gates registration",
       "b1 restricted agents",
+      "b1 independent denial",
+      "b1 location isolation",
+      "b1 plugin reload",
       "b1 documented installation path",
     ])
 

@@ -91,11 +91,10 @@ export class B2Evidence {
   /**
    * Whatever the host itself wrote while this suite drove it.
    *
-   * The host runs in this process — `createOpencode` does not fork one — so
-   * "host subprocess diagnostics" is this process's own error stream for the
-   * window the host was alive, tee'd rather than swallowed. It is where a
-   * plugin that failed to load, or a route that threw behind a caught
-   * promise, says so; none of that reaches a scenario result.
+   * The host is a child process, and this is everything it wrote to stdout
+   * and stderr while this suite drove it. It is where a plugin that failed
+   * to load, or a route that threw behind a caught promise, says so; none of
+   * that reaches a scenario result.
    */
   hostOutput(text: string): void {
     this.#hostOutput.push(text)

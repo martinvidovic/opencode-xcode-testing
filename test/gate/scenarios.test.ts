@@ -273,6 +273,9 @@ describe("a gate that keeps going after reporting a bootstrap failure", () => {
 
     expect(registryDisagreements(observed)).toEqual([
       "`b1 restricted agents` is a standing b1 check and was not reported",
+      "`b1 independent denial` is a standing b1 check and was not reported",
+      "`b1 location isolation` is a standing b1 check and was not reported",
+      "`b1 plugin reload` is a standing b1 check and was not reported",
     ])
   })
 })

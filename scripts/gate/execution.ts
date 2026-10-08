@@ -1,17 +1,18 @@
 /**
  * (b2) Execution — through a real model turn, against real Xcode.
  *
- * ADR 0002's route, and it works: tool execution in the host requires a model
- * turn, so the gate supplies a **local OpenAI-compatible stub provider** that
- * emits scripted tool calls. Deterministic, credential-free, no network — and
- * unlike layer (a) or the Layer 4 harness, this is the host calling our
- * `execute` for real, rendering a real Result Bundle under the real budget.
+ * ADR 0002's route, ported to V2 (issue #142): tool execution in the host
+ * requires a model turn, so the gate supplies a **local OpenAI-compatible stub
+ * provider** that emits scripted tool calls. Deterministic, credential-free,
+ * no network — and unlike layer (a) or the Layer 4 harness, this is an
+ * isolated V2 host calling our `execute` for real, under the shipped
+ * restricted agent, rendering a real Result Bundle under the real budget.
  *
  * A real `testFailed` run is required here specifically because nothing else in
  * the validation stack ever renders realistic diagnostics from a real bundle.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -22,50 +23,19 @@ import { B2Evidence, worthKeeping, type B2Correlation } from "./b2-evidence.ts"
 import type { DrivenRoots } from "./driven-roots.ts"
 import type { EvidenceSource } from "./forensics.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
-import {
-  startStubProvider,
-  stubProviderConfig,
-  STUB_MODEL_ID,
-  STUB_PROVIDER_ID,
-  type StubProvider,
-} from "./provider.ts"
-import {
-  loadSdk,
-  observedHostVersion,
-  PLUGIN_NOT_LINKED,
-  provenanceProblem,
-  type OpencodeClient,
-} from "./host.ts"
+import { startStubProvider, type StubProvider } from "./provider.ts"
+import { baseHostConfig, bootHost, loadClient, observedHostVersion, provenanceProblem, type BootedHost, type HostClient } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
-import { gatePort } from "./ports.ts"
 import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
+import { scriptedTurn } from "./turn.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
-const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
+const TEMPLATES = join(REPO, "examples", "agent")
 
-/**
- * Copy this process's error stream to `sink` until the returned call undoes it.
- *
- * Copy, not redirect: the point is to keep the evidence *and* keep whatever
- * was going to be printed, because a gate that quietly stopped showing its own
- * errors in order to file them would be a poor trade.
- */
-function teeStderr(sink: (text: string) => void): () => void {
-  const original = process.stderr.write.bind(process.stderr)
-  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
-    try {
-      sink(typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"))
-    } catch {
-      // A diagnostic that cannot be filed is still a diagnostic to print.
-    }
-    return (original as (...args: unknown[]) => boolean)(chunk, ...rest)
-  }) as typeof process.stderr.write
-  return () => {
-    process.stderr.write = original
-  }
-}
+/** Every call runs under the shipped restricted agent: no shell, no files. */
+export const EXECUTING_AGENT = "xcode-test-runner"
 
 /**
  * B2's own context: the shared one, plus the evidence port only this suite has.
@@ -104,28 +74,18 @@ export async function runExecutionGate(
     return
   }
 
-  // The same loader b1 uses, and for the same reason (issue #80): an
-  // unguarded dynamic import here would take the whole execution suite down
-  // from inside another package's top-level code.
-  const loaded = await loadSdk()
+  // The same loader b1 uses, and for the same reason (issue #80): a missing
+  // or broken client fails this gate with the command that fixes it rather
+  // than taking the whole run down at module load.
+  const loaded = await loadClient()
   if (loaded.status !== "loaded") {
     record(failure(SCENARIO["b2 execution"], loaded.detail))
     return
   }
-  if (!existsSync(join(REPO, "node_modules", "@opencode-ai", "plugin"))) {
-    record(failure(SCENARIO["b2 execution"], PLUGIN_NOT_LINKED))
-    return
-  }
-
-  const { createOpencode } = loaded.sdk
 
   const workspace = mkdtempSync(join(tmpdir(), "xcode-test-b2-"))
-  const previousCwd = process.cwd()
   let stub: StubProvider | undefined
-  // Undone in the outer `finally`, not the inner one. Installed before the
-  // host is created, so a host that fails to come up would otherwise leave
-  // this process's error stream tee'd for the rest of the gate.
-  let restoreStderr: () => void = () => {}
+  let host: BootedHost | undefined
 
   // Collected as the suite runs, because none of it can be recovered
   // afterwards: the projects are deleted, the host is gone, and the responses
@@ -140,57 +100,39 @@ export async function runExecutionGate(
     // Registered as each one is prepared, not after both. A throw in the
     // second would otherwise leave the first project's storage registered
     // nowhere — never kept, never cleaned, and accumulating exactly the way
-    // this suite is here to stop.
+    // this suite is here to stop (#98).
     const passing = evidence.root(prepareProject(join(workspace, "passing"), "passing", options))
     const broken = evidence.root(prepareProject(join(workspace, "build-failed"), "buildFailed", options))
 
     stub = startStubProvider()
-    process.chdir(passing)
-
-    // The host runs in this process, so its own complaints go to this
-    // process's error stream and nowhere a scenario result can see them. Tee'd
-    // rather than swallowed: a plugin that failed to load says so here and
-    // only here (#98).
-    restoreStderr = teeStderr((text) => evidence.hostOutput(text))
-
-    const { client, server } = await createOpencode({
-      // Chosen for this gate run rather than fixed (issue #125). Two gate
-      // runs overlapping used to pick the same two numbers. An occupied port
-      // makes the new `opencode serve` fail startup; the hazard is a client
-      // still aimed at that old fixed endpoint reaching the leftover listener
-      // and turning its answer into a scenario failure about something else.
-      //
-      // The SDK reads the URL the host prints and builds its client from it,
-      // so what is passed here is the request and what it talks to is the
-      // answer.
-      port: gatePort(),
+    host = await bootHost({
+      workspace,
       config: {
-        plugin: [PLUGIN],
-        provider: stubProviderConfig(stub.baseURL),
-        // Deliberately below the documented defaults (issue #82). The whole
-        // claim is that the adapter stays under *the host's* limits rather
-        // than under numbers it likes; a gate run against a host with nothing
-        // configured proves only that it stays under the defaults, which it
-        // would do by accident. These are the numbers everything below is
-        // measured against.
+        ...baseHostConfig(stub.baseURL),
+        // The checkout as a plugin directory, carrying the limits below as an
+        // option: the V2 plugin cannot read the host's effective `tool_output`
+        // (issue #140), so a user who lowers it tells the plugin too.
+        plugins: [{ package: REPO, options: { tool_output: CONFIGURED_LIMITS } }],
+        // Deliberately below the host's defaults (issue #82). The whole claim
+        // is that the adapter stays under *the host's* limits rather than
+        // under numbers it likes.
         tool_output: CONFIGURED_LIMITS,
       },
+      cwd: passing,
+      connect: loaded.connect,
     })
 
-    try {
-      await scenarios(client, stub, { passing, broken }, watched, evidence)
-    } finally {
-      server.close()
-    }
+    await scenarios(host.client, stub, { passing, broken }, watched, evidence)
   } catch (error) {
-    // Beside what already ran, not instead of it. Every scenario this suite
-    // finished is already in the report, so a failure here adds a reason
-    // rather than replacing eleven results with one.
+    // Beside what already ran, not instead of it.
     watched(failure(SCENARIO["b2 execution"], `the stub-provider route could not be driven: ${safeFailure(error)}`))
   } finally {
-    restoreStderr()
+    // The host is a child process now, so its own complaints — a plugin that
+    // failed to load says so here and only here (#98) — are read off it
+    // rather than tee'd from this process.
+    if (host !== undefined) evidence.hostOutput(host.output())
+    await host?.stop()
     stub?.stop()
-    process.chdir(previousCwd)
 
     // Kept before anything is removed, and correlated before it is kept. The
     // order is the whole of AC5: the report names an evidence key, and the
@@ -226,7 +168,7 @@ export async function runExecutionGate(
 const CONFIGURED_LIMITS = { max_lines: 300, max_bytes: 4_096 } as const
 
 async function scenarios(
-  client: OpencodeClient,
+  client: HostClient,
   stub: StubProvider,
   roots: { passing: string; broken: string },
   record: ScenarioSink,
@@ -247,10 +189,11 @@ async function scenarios(
    * output, and one response staying under a limit says nothing about the
    * other nine — the failure mode is a facet nobody thought to measure.
    */
-  const responses: Array<{ what: string; text: string }> = []
+  const responses: Array<{ what: string; text: string; truncated: boolean }> = []
   const invoked = async (what: string, directory: string, call: { tool: string; args: unknown }) => {
-    const text = await invoke(client, stub, directory, call)
-    responses.push({ what, text })
+    const { answer } = await scriptedTurn(client, stub, { directory, agent: EXECUTING_AGENT, call })
+    const text = answer?.text ?? ""
+    responses.push({ what, text, truncated: answer?.truncated === true })
     evidence.observe(what, directory, text)
     return text
   }
@@ -355,11 +298,21 @@ async function scenarios(
  * fit" is worth little without how close the closest came.
  */
 function withinConfiguredLimits(
-  responses: ReadonlyArray<{ what: string; text: string }>,
+  responses: ReadonlyArray<{ what: string; text: string; truncated: boolean }>,
   budget: { maxLines: number; maxBytes: number },
 ): ScenarioResult {
   if (responses.length === 0) {
     return failure(SCENARIO["b2 configured host limits"], "no tool response was produced to measure")
+  }
+
+  // The host's own flag first: on V2 a truncated tool part says so, which is
+  // the direct evidence rather than an inference from sizes (issue #140).
+  const truncated = responses.filter((response) => response.truncated)
+  if (truncated.length > 0) {
+    return failure(
+      SCENARIO["b2 configured host limits"],
+      `the host truncated ${truncated.length} response(s): ${truncated.map((response) => response.what).join("; ")}`,
+    )
   }
 
   const over = responses.filter(
@@ -435,41 +388,6 @@ function inspectionResult(rendered: string, runId: string): ScenarioResult {
   return success(SCENARIO["b2 inspection without rerun"], `${firstLine(rendered)} — ${records[0]}`)
 }
 
-/** Script one call, drive one turn, and return the rendered tool output. */
-async function invoke(
-  client: OpencodeClient,
-  stub: StubProvider,
-  directory: string,
-  call: { tool: string; args: unknown },
-): Promise<string> {
-  const session = await client.session.create({
-    query: { directory },
-    body: { title: `gate ${call.tool}` },
-  })
-  const id = session.data?.id
-  if (id === undefined) throw new Error("the host created no session")
-
-  stub.script(call)
-  await client.session.prompt({
-    path: { id },
-    query: { directory },
-    body: {
-      model: { providerID: STUB_PROVIDER_ID, modelID: STUB_MODEL_ID },
-      parts: [{ type: "text", text: `run ${call.tool}` }],
-    },
-  })
-
-  const messages = await client.session.messages({ path: { id }, query: { directory } })
-  for (const message of messages.data ?? []) {
-    for (const part of message.parts ?? []) {
-      if (part.type === "tool" && part.tool === call.tool) {
-        return part.state?.output ?? part.state?.error ?? ""
-      }
-    }
-  }
-  return ""
-}
-
 // --- fixtures and results -------------------------------------------------
 
 function prepareProject(
@@ -478,7 +396,11 @@ function prepareProject(
   options: ExecutionContext,
 ): string {
   const tree = generate({ out: path, variant })
-  mkdirSync(join(tree.root, ".opencode"), { recursive: true })
+  mkdirSync(join(tree.root, ".opencode", "agents"), { recursive: true })
+  // The shipped template, as shipped: every call below runs under it.
+  for (const entry of readdirSync(TEMPLATES).filter((name) => name.endsWith(".md"))) {
+    copyFileSync(join(TEMPLATES, entry), join(tree.root, ".opencode", "agents", entry))
+  }
   writeFileSync(
     join(tree.root, ".opencode", "xcode-test.json"),
     `${JSON.stringify(

@@ -1,110 +1,125 @@
 /**
- * The registration checks, when the host stops answering (issue #58).
+ * The B1 registration checks, against a host that is not there (issue #142).
  *
- * This suite ordinarily needs a real OpenCode process, which is why it belongs
- * to Layer 4 and not to `bun test`. But the property that matters here needs
- * only a client: `tool.list` is a second round trip to a host that is still
- * booting, it sits between the first check and the last two, and the question
- * is what has already been published when it does not come back.
- *
- * Collected and returned, the answer was nothing — the first check, already
- * decided and already true, went down with the round trip that followed it.
- * A machine that registered its tools correctly reported that it had not been
- * asked.
+ * On V2 the registration checks read what a model is offered, through the
+ * stub provider. So the stand-in host here does what a real one does when
+ * prompted: it sends the stub a model request carrying the tools it would
+ * offer. Everything downstream — the stub's record, the checks, the order in
+ * which they are published — is the production code.
  */
 
 import { describe, expect, test } from "bun:test"
 
-import { TOOL_IDS } from "../../src/adapter/descriptions.ts"
-import { registrationScenarios } from "../../scripts/gate/registration.ts"
+import { descriptionFor, TOOL_IDS } from "../../src/adapter/descriptions.ts"
+import { inspectInputSchema, recoverInputSchema, testInputSchema } from "../../src/adapter/schema.ts"
+import type { HostClient } from "../../scripts/gate/host.ts"
 import { newObservations, scenarioSink } from "../../scripts/gate/observations.ts"
+import { startStubProvider, type StubProvider } from "../../scripts/gate/provider.ts"
+import { effectiveEffect, registrationScenarios } from "../../scripts/gate/registration.ts"
 
-/**
- * A host that answers the first two calls and then stops.
- *
- * `tool.list` rejects, which is what a host still coming up actually does —
- * and the one place in this function where an already-decided result could be
- * lost.
- */
-function clientThatStopsAnswering(): unknown {
+type Tool = { name: string; description: string; parameters: unknown }
+
+const SHIPPED: Tool[] = [
+  { name: "xcode_test", description: descriptionFor("xcode_test"), parameters: testInputSchema },
+  { name: "xcode_test_inspect", description: descriptionFor("xcode_test_inspect"), parameters: inspectInputSchema },
+  { name: "xcode_test_recover", description: descriptionFor("xcode_test_recover"), parameters: recoverInputSchema },
+]
+
+/** A host that, when prompted, offers `tools` to the model at `stub`. */
+function hostOffering(stub: StubProvider, tools: Tool[]): HostClient {
   return {
-    session: { create: async () => ({ data: { id: "session-1" } }) },
-    tool: {
-      ids: async () => ({ data: [...TOOL_IDS] }),
-      list: async () => {
-        throw new Error("the host did not answer")
+    session: {
+      create: async () => ({ id: "session-1" }),
+      prompt: async () => {
+        await fetch(`${stub.baseURL}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            stream: true,
+            messages: [{ role: "user", content: "go" }],
+            tools: tools.map((tool) => ({ type: "function", function: tool })),
+          }),
+        }).then((response) => response.text())
       },
+      wait: async () => undefined,
+      context: async () => [],
     },
+  } as unknown as HostClient
+}
+
+async function scenariosFor(tools: Tool[]) {
+  const stub = startStubProvider()
+  try {
+    const observed = newObservations("2026-10-08T00:00:00.000Z")
+    await registrationScenarios(hostOffering(stub, tools), stub, "/project", scenarioSink(observed))
+    return observed.scenarios.map((scenario) => [scenario.name, scenario.status])
+  } finally {
+    stub.stop()
   }
 }
 
-/** A host that answers everything, with tools that match their sidecars. */
-function clientThatAnswers(): unknown {
-  return {
-    session: { create: async () => ({ data: { id: "session-1" } }) },
-    tool: {
-      ids: async () => ({ data: [...TOOL_IDS] }),
-      list: async () => ({ data: [] }),
-    },
-  }
-}
-
-describe("a registration run interrupted between its checks", () => {
-  test("has already published the check it decided before the interruption", async () => {
-    const observed = newObservations("2026-09-14T01:00:00.000Z")
-    const record = scenarioSink(observed)
-
-    await expect(
-      registrationScenarios(clientThatStopsAnswering() as never, "/project", record),
-    ).rejects.toThrow()
-
-    // The result is in the report, not in a list that was never returned.
-    expect(observed.scenarios.map((scenario) => scenario.name)).toEqual([
-      "b1 tool ids register",
+describe("the registration checks", () => {
+  test("pass when the model is offered the family as shipped", async () => {
+    expect(await scenariosFor([...SHIPPED, { name: "read", description: "Read", parameters: {} }])).toEqual([
+      ["b1 tool ids register", "passed"],
+      ["b1 tool descriptions", "passed"],
+      ["b1 parameter schemas", "passed"],
     ])
-    expect(observed.scenarios[0]?.status).toBe("passed")
   })
 
-  test("publishes the tool-id check before it asks the host anything else", async () => {
-    // Ordering, stated directly. The check is decided from `tool.ids`, and
-    // nothing between deciding it and recording it may be able to fail.
-    const seen: string[] = []
-
-    const client = {
-      session: { create: async () => ({ data: { id: "session-1" } }) },
-      tool: {
-        ids: async () => ({ data: [...TOOL_IDS] }),
-        list: async () => {
-          seen.push("tool.list")
-          throw new Error("the host did not answer")
-        },
-      },
-    }
-
-    await expect(
-      registrationScenarios(client as never, "/project", (scenario) => {
-        seen.push(scenario.name)
-      }),
-    ).rejects.toThrow()
-
-    expect(seen).toEqual(["b1 tool ids register", "tool.list"])
+  test("fail, and still publish every check, when nothing is offered", async () => {
+    expect(await scenariosFor([])).toEqual([
+      ["b1 tool ids register", "failed"],
+      ["b1 tool descriptions", "failed"],
+      ["b1 parameter schemas", "failed"],
+    ])
   })
 
-  test("publishes every check when the host answers throughout", async () => {
-    // The other direction, so the tests above cannot pass by publishing one
-    // thing and giving up.
-    const observed = newObservations("2026-09-14T01:00:00.000Z")
+  test("catch a description that is not the shipped sidecar", async () => {
+    const drifted = SHIPPED.map((tool) => (tool.name === "xcode_test" ? { ...tool, description: "Runs tests." } : tool))
+    expect(await scenariosFor(drifted)).toContainEqual(["b1 tool descriptions", "failed"])
+  })
 
-    await registrationScenarios(
-      clientThatAnswers() as never,
-      "/project",
-      scenarioSink(observed),
+  test("catch a schema that made an optional argument required", async () => {
+    const required = SHIPPED.map((tool) =>
+      tool.name === "xcode_test" ? { ...tool, parameters: { ...testInputSchema, required: ["scope", "destination"] } } : tool,
     )
+    expect(await scenariosFor(required)).toContainEqual(["b1 parameter schemas", "failed"])
+  })
 
-    expect(observed.scenarios.map((scenario) => scenario.name)).toEqual([
-      "b1 tool ids register",
-      "b1 tool descriptions",
-      "b1 parameter schemas",
-    ])
+  test("name every missing tool", async () => {
+    const stub = startStubProvider()
+    try {
+      const observed = newObservations("2026-10-08T00:00:00.000Z")
+      await registrationScenarios(hostOffering(stub, SHIPPED.slice(0, 1)), stub, "/project", scenarioSink(observed))
+      const detail = observed.scenarios[0]?.detail ?? ""
+      for (const id of TOOL_IDS.slice(1)) expect(detail).toContain(id)
+    } finally {
+      stub.stop()
+    }
+  })
+})
+
+describe("an effective permission, as V2 decides it", () => {
+  const RESTRICTED = [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "read", resource: "*.env", effect: "ask" },
+    { action: "*", resource: "*", effect: "deny" },
+    { action: "xcode_test", resource: "*", effect: "allow" },
+  ]
+
+  test("is the last matching rule", () => {
+    expect(effectiveEffect(RESTRICTED, "xcode_test")).toBe("allow")
+    expect(effectiveEffect(RESTRICTED, "shell")).toBe("deny")
+  })
+
+  test("ignores rules about narrower resources", () => {
+    expect(effectiveEffect(RESTRICTED, "read")).toBe("deny")
+  })
+
+  test("matches wildcard actions as whole values", () => {
+    const rules = [{ action: "xcode_*", resource: "*", effect: "deny" }]
+    expect(effectiveEffect(rules, "xcode_test_recover")).toBe("deny")
+    expect(effectiveEffect(rules, "my_xcode_test")).toBeUndefined()
   })
 })
