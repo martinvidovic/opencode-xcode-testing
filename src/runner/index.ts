@@ -2,7 +2,7 @@
  * The Xcode runner: admission, supervision, artifacts, retention and recovery.
  *
  * Host-agnostic by construction — it imports the domain and `node:*` and never
- * `@opencode-ai/plugin` in any form, so ADR 0001's runner test layer needs no
+ * `@opencode/plugin` in any form, so ADR 0001's runner test layer needs no
  * host to drive it. The supervisor entrypoint lives here too, and imports only
  * `domain` and `runner` code, because it must outlive the adapter call that
  * started it.

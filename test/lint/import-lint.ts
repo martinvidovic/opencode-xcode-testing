@@ -30,7 +30,7 @@ export const LAYER_IMPORTS: Record<Layer, readonly Layer[]> = {
 }
 
 /** The only non-`node:` package shipped code may import, and the only layer that may. */
-export const HOST_PACKAGE = "@opencode-ai/plugin"
+export const HOST_PACKAGE = "@opencode/plugin"
 export const HOST_PACKAGE_LAYER: Layer = "adapter"
 
 export type ImportViolation = {

@@ -186,9 +186,9 @@ describe("runtime and host provenance", () => {
   test("reaches the model at all", async () => {
     // Recording the versions and then never rendering them is the same as not
     // recording them: the summary is not something anyone else reads.
-    const text = await renderWithRuntime({ runtimeVersion: "1.4.0", hostVersion: "1.18.29" })
+    const text = await renderWithRuntime({ runtimeVersion: "1.4.0", hostVersion: "2.0.25" })
     expect(text).toContain("runtime 1.4.0")
-    expect(text).toContain("host 1.18.29")
+    expect(text).toContain("host 2.0.25")
   })
 
   test("is versions only, never a path", async () => {

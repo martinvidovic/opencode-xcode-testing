@@ -3,7 +3,7 @@
  *
  * This module is the one place the runner, the interpreter and the adapter all
  * depend on, and it depends on none of them. It never imports
- * `@opencode-ai/plugin` — not even type-only — so the domain stays
+ * `@opencode/plugin` — not even type-only — so the domain stays
  * host-agnostic in source, not merely at runtime. Both properties are enforced
  * by the import lint in `test/lint/`.
  */

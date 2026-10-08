@@ -17,6 +17,7 @@ import {
   enablementMarkerExists,
   readProjectConfiguration,
   resolveRootRoles,
+  rootContextFromLocation,
 } from "../../src/adapter/root-roles.ts"
 
 function project(configure?: (root: string) => void): { root: string; dispose(): void } {
@@ -239,6 +240,59 @@ describe("the project configuration", () => {
     withProject((root) => {
       writeConfiguration(root, "[1, 2, 3]")
       expect(readProjectConfiguration(root)).toMatchObject({ status: "invalid" })
+    })
+  })
+})
+
+describe("the V2 Location mapping (issue #140)", () => {
+  test("takes the working-copy root as the worktree and the Location as the launch directory", () => {
+    expect(
+      rootContextFromLocation({
+        directory: "/p/sub/deeper",
+        project: { directory: "/p", canonical: "/p" },
+      }),
+    ).toEqual({ worktree: "/p", directory: "/p/sub/deeper" })
+  })
+
+  test("contains a linked worktree to itself, never to the main checkout it was made from", () => {
+    // `canonical` points at the main checkout. Taking it would let a session
+    // in one worktree reach — and key storage to — another working copy.
+    withProject((root) => {
+      const main = join(root, "main")
+      const worktree = join(root, "wt")
+      mkdirSync(join(worktree, "sub"), { recursive: true })
+      mkdirSync(main)
+      writeConfiguration(worktree, '{ "schemaVersion": 1 }')
+
+      const context = rootContextFromLocation({
+        directory: join(worktree, "sub"),
+        project: { directory: worktree, canonical: main },
+      })
+      expect(resolveRootRoles(context)).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(worktree),
+        configurationRoot: realpathSync(worktree),
+      })
+    })
+  })
+
+  test("keeps a non-Git Location as its own boundary", () => {
+    withProject((root) => {
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      const context = rootContextFromLocation({ directory: root, project: { directory: root, canonical: root } })
+      expect(resolveRootRoles(context)).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(root),
+        configurationRoot: realpathSync(root),
+      })
+    })
+  })
+
+  test("never accepts the filesystem root as containment, even if a host reported it", () => {
+    withProject((root) => {
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      const context = rootContextFromLocation({ directory: root, project: { directory: "/", canonical: "/" } })
+      expect(resolveRootRoles(context)).toMatchObject({ containmentRoot: realpathSync(root) })
     })
   })
 })

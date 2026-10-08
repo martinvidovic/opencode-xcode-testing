@@ -19,6 +19,12 @@
  * the run regardless, so the model can inspect the terminal summary afterwards.
  * Holding the wait open through the full interpretation budget to render
  * evidence that inspection can deliver later would be a worse trade.
+ *
+ * On the V2 host the model never sees what is returned after an abort: the
+ * host records the call as interrupted at once and discards the late result
+ * (issue #140). The wait is kept anyway, because it is what bounds how long
+ * cancellation takes to reach the supervisor — and the run id the model needs
+ * afterwards has already been published through `progress`.
  */
 
 import type {
@@ -93,12 +99,13 @@ export type TestToolService = {
 
 /** The slice of the host's tool context the adapter actually uses. */
 export type ToolContext = {
-  abort?: { readonly aborted: boolean; addEventListener?(type: "abort", handler: () => void): void }
+  /** The V2 host's `context.signal`, aborted when the session is interrupted. */
+  signal?: { readonly aborted: boolean; addEventListener?(type: "abort", handler: () => void): void }
   /**
-   * Human- and TUI-facing only. No fact may exist only here; `runId` is the one
-   * deliberate mirror.
+   * The V2 host's `context.progress`. Human- and TUI-facing only. No fact may
+   * exist only here; `runId` is the one deliberate mirror.
    */
-  metadata?(update: { title?: string; metadata?: Record<string, unknown> }): void
+  progress?(update: Record<string, unknown>): Promise<void> | void
 }
 
 export type ToolDeps = {
@@ -307,19 +314,16 @@ async function runTest(
   const budget = await budgetFor(deps)
   const startedAt = boundary.startedAt
 
-  const publish = (state: ProtocolState, runId?: string) => {
-    context.metadata?.({
-      metadata: {
-        state,
-        elapsedMs: deps.now() - startedAt,
-        ...(runId === undefined ? {} : { runId }),
-      },
+  const publish = (state: ProtocolState, runId?: string) =>
+    report(context, {
+      state,
+      elapsedMs: deps.now() - startedAt,
+      ...(runId === undefined ? {} : { runId }),
     })
-  }
 
   const cancellation: RunCancellation = {
     get aborted() {
-      return context.abort?.aborted === true
+      return context.signal?.aborted === true
     },
     whenAborted: whenAborted(context, deps).then(() => undefined),
   }
@@ -701,6 +705,23 @@ export async function executeRecover(
   ).text
 }
 
+// --- progress -------------------------------------------------------------
+
+/**
+ * Report progress, and never let the report cost the call its result.
+ *
+ * Progress is human-facing, and the host's channel for it is somebody else's
+ * code: a rejection or a throw from it is not a reason for a Test Run's
+ * summary to go missing.
+ */
+function report(context: ToolContext, update: Record<string, unknown>): void {
+  try {
+    void Promise.resolve(context.progress?.(update)).catch(() => {})
+  } catch {
+    // A synchronous throw from the host's channel: same rule.
+  }
+}
+
 // --- waiting --------------------------------------------------------------
 
 type Settled<T> = { status: "settled"; value: T } | { status: "aborted" } | { status: "pending" }
@@ -710,7 +731,7 @@ async function raceAbort<T>(
   context: ToolContext,
   deps: ToolDeps,
 ): Promise<Settled<T>> {
-  if (context.abort?.aborted === true) return { status: "aborted" }
+  if (context.signal?.aborted === true) return { status: "aborted" }
 
   const aborted = whenAborted(context, deps)
   const outcome = await Promise.race([work.then((value) => ({ value })), aborted])
@@ -730,8 +751,11 @@ async function waitFor<T>(
 const EXPIRED = Symbol("expired")
 
 function whenAborted(context: ToolContext, deps: ToolDeps): Promise<{ aborted: true }> {
-  const signal = context.abort
+  const signal = context.signal
   if (signal === undefined) return new Promise(() => {})
+  // An abort event is dispatched once and never replayed, so a signal that
+  // aborted before this listener existed has to be read, not awaited.
+  if (signal.aborted) return Promise.resolve({ aborted: true })
 
   if (typeof signal.addEventListener === "function") {
     return new Promise((resolve) => {

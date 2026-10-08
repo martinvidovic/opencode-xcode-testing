@@ -116,8 +116,8 @@ describe("running metadata", () => {
   test("reports durable protocol states and never an inferred phase", async () => {
     const seen: Array<Record<string, unknown>> = []
     const context: ToolContext = {
-      metadata: (update) => {
-        if (update.metadata !== undefined) seen.push(update.metadata)
+      progress: (update) => {
+        seen.push(update)
       },
     }
 
@@ -136,10 +136,32 @@ describe("running metadata", () => {
     const { summary } = await interpretFixture("passed")
     await executeTest(
       ARGS,
-      { metadata: (update) => update.metadata !== undefined && seen.push(update.metadata) },
+      { progress: (update) => void seen.push(update) },
       deps(settledService(summary)),
     )
     expect(seen.some((entry) => entry["runId"] === ADMITTED.runId)).toBe(true)
+  })
+
+  test("survives a host whose progress channel fails", async () => {
+    // Progress is human-facing. A rejected or throwing report must never cost
+    // the model its result.
+    const { summary } = await interpretFixture("passed")
+    const rejecting = await executeTest(
+      ARGS,
+      { progress: () => Promise.reject(new Error("closed")) },
+      deps(settledService(summary)),
+    )
+    const throwing = await executeTest(
+      ARGS,
+      {
+        progress: () => {
+          throw new Error("closed")
+        },
+      },
+      deps(settledService(summary)),
+    )
+    expect(rejecting).toContain("passed")
+    expect(throwing).toContain("passed")
   })
 
   test("carries elapsed time, which is durable rather than inferred", async () => {
@@ -147,7 +169,7 @@ describe("running metadata", () => {
     const { summary } = await interpretFixture("passed")
     await executeTest(
       ARGS,
-      { metadata: (update) => update.metadata !== undefined && seen.push(update.metadata) },
+      { progress: (update) => void seen.push(update) },
       deps(settledService(summary)),
     )
     for (const entry of seen) expect(typeof entry["elapsedMs"]).toBe("number")
@@ -168,7 +190,7 @@ describe("cancellation", () => {
     const result = new Promise<TestToolResult>((resolve) => {
       settle = resolve
     })
-    const context: ToolContext = { abort: { aborted: true } }
+    const context: ToolContext = { signal: { aborted: true } }
 
     const output = executeTest(
       ARGS,
@@ -183,7 +205,7 @@ describe("cancellation", () => {
   test("returns `cancelled` with unknown evidence and the run id when it does not", async () => {
     const output = await executeTest(
       ARGS,
-      { abort: { aborted: true } },
+      { signal: { aborted: true } },
       deps({}, { abortWaitMs: 30 }),
     )
 
@@ -196,7 +218,7 @@ describe("cancellation", () => {
   test("never abandons the run: the run id is there to inspect afterwards", async () => {
     const output = await executeTest(
       ARGS,
-      { abort: { aborted: true } },
+      { signal: { aborted: true } },
       deps({}, { abortWaitMs: 30 }),
     )
     expect(output).toMatch(new RegExp(`run\\s+${ADMITTED.runId}`))
@@ -205,7 +227,7 @@ describe("cancellation", () => {
   test("reports a queued cancellation with no run id, since there is nothing to inspect", async () => {
     const output = await executeTest(
       ARGS,
-      { abort: { aborted: true } },
+      { signal: { aborted: true } },
       deps(
         { start: () => ({ admitted: Promise.reject(new Error("never admitted")), result: new Promise(() => {}) }) },
         { abortWaitMs: 30 },
@@ -244,7 +266,7 @@ describe("inspection", () => {
     // throw away work that is already done.
     const output = await executeInspect(
       { runId: "0f8a2c", facet: "failures" },
-      { abort: { aborted: true } },
+      { signal: { aborted: true } },
       deps({
         inspect: async () => ({
           status: "available",

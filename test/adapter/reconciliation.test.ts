@@ -103,7 +103,7 @@ describe("the deadline startup hands to reconciliation", () => {
       requiredFiles: () => [],
       regularFileExists: () => true,
       probeRuntime: async () => ({ status: "resolved" }),
-      readHostVersion: async () => "1.18.30",
+      readHostVersion: async () => "2.0.25",
       reconcileRoot: async (deadlineMs: number) => {
         handed = deadlineMs
       },

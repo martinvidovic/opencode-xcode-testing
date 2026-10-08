@@ -38,7 +38,7 @@ function ports(overrides: Partial<StartupPorts> = {}, trace: Trace = []): Startu
     },
     readHostVersion: async () => {
       trace.push("version")
-      return "1.18.30"
+      return "2.0.25"
     },
     reconcileRoot: async () => {
       trace.push("reconcile")
@@ -123,8 +123,8 @@ describe("a marked root", () => {
   })
 
   test("records the host version it observed", async () => {
-    const outcome = await runStartup(ports({ readHostVersion: async () => "1.18.29" }))
-    expect(outcome).toMatchObject({ status: "ready", hostVersion: "1.18.29", hostVersionTested: true })
+    const outcome = await runStartup(ports({ readHostVersion: async () => "2.0.25" }))
+    expect(outcome).toMatchObject({ status: "ready", hostVersion: "2.0.25", hostVersionTested: true })
   })
 
   test("degrades an unreachable version read to `unknown` without blocking", async () => {
@@ -149,7 +149,7 @@ describe("a marked root", () => {
     expect(outcome.status).toBe("ready")
     if (outcome.status !== "ready") return
     expect(outcome.incomplete).toContain("reconciliation")
-    expect(outcome.hostVersion).toBe("1.18.30")
+    expect(outcome.hostVersion).toBe("2.0.25")
   }, 10_000)
 
   test("still reports ready when everything bounded fails, since all of it is retried", async () => {
@@ -174,20 +174,24 @@ describe("a marked root", () => {
 
 describe("the host-version policy", () => {
   test("enumerates the tested set explicitly", () => {
-    expect([...TESTED_HOST_VERSIONS]).toEqual(["1.18.29", "1.18.30"])
-    expect(isTestedHostVersion("1.18.29")).toBe(true)
-    expect(isTestedHostVersion("1.18.31")).toBe(false)
+    // Exactly the release #140 verified, and nothing that merely shares its
+    // major: V2-only support is a claim about one host, not about every 2.x.
+    expect([...TESTED_HOST_VERSIONS]).toEqual(["2.0.25"])
+    expect(isTestedHostVersion("2.0.25")).toBe(true)
+    expect(isTestedHostVersion("2.0.26")).toBe(false)
+    expect(isTestedHostVersion("1.18.30")).toBe(false)
   })
 
   test("warns on skew and never refuses to load", () => {
-    const diagnostic = hostVersionDiagnostic("1.19.0")
-    expect(diagnostic).toContain("1.19.0")
+    const diagnostic = hostVersionDiagnostic("2.1.0")
+    expect(diagnostic).toContain("2.1.0")
+    expect(diagnostic).toContain("2.0.25")
     expect(diagnostic).toContain("Loading normally")
   })
 
   test("says nothing for a tested version or an unknown one", () => {
-    expect(hostVersionDiagnostic("1.18.30")).toBeUndefined()
-    // An unreachable health endpoint is not evidence of skew.
+    expect(hostVersionDiagnostic("2.0.25")).toBeUndefined()
+    // A version nobody could read is not evidence of skew.
     expect(hostVersionDiagnostic("unknown")).toBeUndefined()
   })
 })

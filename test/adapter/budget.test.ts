@@ -22,7 +22,7 @@ import {
   UNREADABLE_MAX_LINES,
   byteLength,
   lineCount,
-  readOutputLimits,
+  outputLimitsFromOptions,
   resolveBudget,
   serialize,
   truncateToBytes,
@@ -31,34 +31,38 @@ import { block, PRIORITY } from "../../src/adapter/document.ts"
 import { renderTestToolResult } from "../../src/adapter/output.ts"
 import { FAILED_EXIT, interpretFixture } from "../interpreter/harness.ts"
 
-describe("reading the host's limits", () => {
-  const clientReturning = (data: unknown) => ({ config: { get: async () => data as never } })
+describe("reading the limits from plugin options", () => {
+  // The V2 plugin context has no route to the host's effective `tool_output`
+  // (issue #140), so a user who lowers it says so to the plugin as well, in the
+  // same shape: `{ "package": "…", "options": { "tool_output": { … } } }`.
 
-  test("takes the effective limits the host reports", async () => {
-    const limits = await readOutputLimits(
-      clientReturning({ data: { tool_output: { max_lines: 100, max_bytes: 4_096 } } }),
-    )
-    expect(limits).toEqual({ status: "configured", maxLines: 100, maxBytes: 4_096 })
+  test("takes the limits the user declared", () => {
+    expect(outputLimitsFromOptions({ tool_output: { max_lines: 100, max_bytes: 4_096 } })).toEqual({
+      status: "configured",
+      maxLines: 100,
+      maxBytes: 4_096,
+    })
   })
 
-  test("tells a host with nothing configured from one that could not be asked", async () => {
-    // These were the same answer, and they are not the same situation (issue
-    // #82). A host with no `tool_output` block will apply the documented
-    // defaults, so assuming them is exactly right. A host that could not be
-    // asked has told us nothing — including whether its owner configured
-    // something *lower* than the defaults this adapter would then help itself
-    // to, which is how the one invariant gets broken.
-    expect(await readOutputLimits(clientReturning({ data: {} }))).toEqual({ status: "absent" })
-
-    const throwing = { config: { get: () => Promise.reject(new Error("no config route")) } }
-    expect((await readOutputLimits(throwing)).status).toBe("unreadable")
-    expect((await readOutputLimits(clientReturning({}))).status).toBe("unreadable")
+  test("takes one declared limit and leaves the other at the host default", () => {
+    expect(outputLimitsFromOptions({ tool_output: { max_lines: 100 } })).toEqual({
+      status: "configured",
+      maxLines: 100,
+    })
   })
 
-  test("says a block it cannot read is unreadable, rather than absent", async () => {
-    // A `tool_output` that is there and unusable is not a host with nothing
-    // configured. Reading it as one would substitute the defaults for a
-    // configuration that exists and says something else.
+  test("reads no declaration as the host's verified defaults", () => {
+    // Not a guess: 2,000 lines and 51,200 bytes are what 2.0.25 applies to
+    // plugin tools when nothing is configured, measured rather than inherited
+    // from V1 (issue #140).
+    expect(outputLimitsFromOptions({})).toEqual({ status: "absent" })
+    expect(outputLimitsFromOptions({ unrelated: true })).toEqual({ status: "absent" })
+  })
+
+  test("says a declaration it cannot read is unreadable, rather than absent", () => {
+    // A `tool_output` that is there and unusable is not a user who declared
+    // nothing. Reading it as one would substitute the defaults for a limit
+    // that exists and says something else.
     const cases = [
       { tool_output: "loud" },
       { tool_output: { max_lines: "many" } },
@@ -66,23 +70,13 @@ describe("reading the host's limits", () => {
       { tool_output: { max_lines: Number.NaN } },
     ]
 
-    for (const config of cases) {
-      expect((await readOutputLimits(clientReturning({ data: config }))).status).toBe("unreadable")
-    }
+    for (const options of cases) expect(outputLimitsFromOptions(options).status).toBe("unreadable")
   })
 
-  test("says nothing about the machine when it says why", async () => {
-    // The detail reaches a startup diagnostic, and a config route's error
-    // routinely quotes a path under the user's home.
-    const throwing = {
-      config: {
-        get: () => Promise.reject(new Error("ENOENT: open '/Users/someone/.config/opencode'")),
-      },
-    }
-    const limits = await readOutputLimits(throwing)
-
-    expect(limits.status).toBe("unreadable")
-    expect(limits.status === "unreadable" ? limits.detail : "").not.toContain("/Users")
+  test("budgets an unreadable declaration to the conservative floor", () => {
+    expect(resolveBudget(outputLimitsFromOptions({ tool_output: "loud" }))).toEqual(
+      resolveBudget({ status: "unreadable", detail: "" }),
+    )
   })
 })
 
