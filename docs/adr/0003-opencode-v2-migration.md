@@ -26,8 +26,9 @@ interpreter and domain still import nothing from OpenCode.
 
 ### Support policy
 
-**V2 only.** There is no V1/V2 dual-export window. A temporary one was possible — V2 documents a
-default export that serves both — and was declined by the maintainer: it doubles the adapter and
+**V2 only.** There is no V1/V2 dual-export window. A temporary one was possible — V2's plugin
+migration guide documents one default export carrying both `server()` and `setup()` — and was
+declined by the maintainer: it doubles the adapter and
 gate surface for a host the project no longer needs to run on.
 
 **Validated against exactly one release:** OpenCode `2.0.25`, with `@opencode/plugin` `2.0.25` and
@@ -127,8 +128,12 @@ supervisor; on V1 that window silently lost the cancellation.
 V2 records an interrupted call as aborted **immediately and discards the executor's late
 result**. The 30-second abort wait is kept, because it bounds how long cancellation takes to reach
 the supervisor, and the supervisor still owns terminal publication; the `runId` the model needs
-afterwards has already been published through `progress`. Throw semantics are unchanged: domain
-outcomes are ordinary results.
+afterwards has already been published through `progress`.
+
+*Supersedes ADR 0002 "Throw semantics" where it describes V1's `output-error` part.* On V2 a thrown
+error becomes the tool part's `error`, and the model sees its message. The rule is unchanged:
+domain outcomes are ordinary results, and only adapter defects throw, with no paths in the
+message.
 
 ### Host version
 

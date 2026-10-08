@@ -23,13 +23,18 @@ import { TESTED_HOST_VERSIONS } from "../src/adapter/startup.ts"
 
 export type InstallationReport = { ready: boolean; lines: string[] }
 
+/** What fixes a checkout whose packages disagree with what it pins. */
+const FIX = "Run `bun install` in the checkout; if the host is the mismatch, install a validated OpenCode."
+
 export function installationReport(hostVersion: string, repoRoot?: string): InstallationReport {
   const lines: string[] = []
   let ready = true
 
   if (hostVersion === "unknown") {
     ready = false
-    lines.push("host       no usable `opencode` on PATH. Install OpenCode 2.0.25 and try again.")
+    lines.push(
+      `host       no usable \`opencode\` on PATH. Install OpenCode ${TESTED_HOST_VERSIONS.join(" or ")} and try again.`,
+    )
   } else {
     lines.push(`host       OpenCode ${hostVersion}`)
   }
@@ -45,14 +50,10 @@ export function installationReport(hostVersion: string, repoRoot?: string): Inst
     lines.push(`packages   plugin ${packages.plugin.version ?? "unknown"}, client ${packages.client.version ?? "unknown"}`)
   }
   if (problems.length > 0) ready = false
-  for (const problem of problems) lines.push(`problem    ${problem}`)
-  for (const caveat of caveats) {
-    if (hostVersion !== "unknown") lines.push(`caveat     ${caveat}`)
-  }
-
-  if (hostVersion !== "unknown" && !(TESTED_HOST_VERSIONS as readonly string[]).includes(hostVersion) && caveats.length === 0) {
-    lines.push(`caveat     the Test Tool is validated against OpenCode ${TESTED_HOST_VERSIONS.join(", ")}; ${hostVersion} loads normally and is untested.`)
-  }
+  for (const problem of problems) lines.push(`problem    ${problem} ${FIX}`)
+  // An unreadable host already said so above, with its fix; provenance's
+  // caveat about it would only repeat that.
+  if (hostVersion !== "unknown") for (const caveat of caveats) lines.push(`caveat     ${caveat}`)
 
   lines.push(ready ? "ready" : "not ready")
   return { ready, lines }

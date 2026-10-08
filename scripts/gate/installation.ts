@@ -13,8 +13,9 @@
  * runtime (issue #140), so loading needs nothing installed — and a copy
  * without the packages is the only way to show it rather than assume it.
  *
- * - The `plugins` entry naming the checkout directory, which resolves to its
- *   root `server.ts`.
+ * - The global `plugins` entry naming the checkout directory, which resolves
+ *   to its root `server.ts`.
+ * - The same entry in the project's own `.opencode/opencode.json`.
  * - The plugin's entry file symlinked into the config directory's plural
  *   `plugins/`.
  *
@@ -42,14 +43,27 @@ const REPO = join(import.meta.dir, "..", "..")
 
 type Form = {
   name: string
-  /** Prepare the host's config directory, and return its config file. */
-  install(checkout: string, configDirectory: string, stubBaseURL: string): Record<string, unknown>
+  /** Prepare the install, and return the host's global config. */
+  install(checkout: string, configDirectory: string, stubBaseURL: string, project: string): Record<string, unknown>
+  /** Undo anything the install wrote into the shared project. */
+  uninstall?(project: string): void
 }
 
 const FORMS: readonly Form[] = [
   {
     name: "a `plugins` entry naming the checkout",
     install: (checkout, _configDirectory, stubBaseURL) => ({ ...baseHostConfig(stubBaseURL), plugins: [checkout] }),
+  },
+  {
+    name: "a per-project `plugins` entry",
+    install: (checkout, _configDirectory, stubBaseURL, project) => {
+      writeFileSync(
+        join(project, ".opencode", "opencode.json"),
+        `${JSON.stringify({ plugins: [checkout] }, null, 2)}\n`,
+      )
+      return baseHostConfig(stubBaseURL)
+    },
+    uninstall: (project) => rmSync(join(project, ".opencode", "opencode.json"), { force: true }),
   },
   {
     name: "the entry file symlinked into `plugins/`",
@@ -89,13 +103,14 @@ export async function runInstallationGate(record: ScenarioSink, roots: DrivenRoo
     for (const [index, form] of FORMS.entries()) {
       const hostWorkspace = join(workspace, `host-${index}`)
       mkdirSync(hostWorkspace)
-      const config = form.install(checkout, hostConfigDirectory(hostWorkspace), stub.baseURL)
+      const config = form.install(checkout, hostConfigDirectory(hostWorkspace), stub.baseURL, project)
       const host = await bootHost({ workspace: hostWorkspace, config, cwd: project, connect: loaded.connect })
       try {
         const missing = await missingFrom(host.client, stub, project)
         if (missing.length > 0) failures.push(`${form.name} offered no ${missing.join(", ")}`)
       } finally {
         await host.stop()
+        form.uninstall?.(project)
       }
     }
 
@@ -141,8 +156,10 @@ function cleanCheckout(destination: string): string {
     mkdirSync(dirname(target), { recursive: true })
     try {
       copyFileSync(join(REPO, file), target)
-    } catch {
-      // A tracked file deleted in the working tree is not part of it.
+    } catch (error) {
+      // A tracked file deleted in the working tree is not part of it. Any
+      // other failure would leave a partial copy that could pass for clean.
+      if ((error as { code?: unknown }).code !== "ENOENT") throw error
     }
   }
   return destination
