@@ -168,9 +168,34 @@ function extendAncestry(node: RawTestNode, ancestry: Ancestry): Ancestry {
     return isIdentifier(node.name) ? { bundle: node.name, sawBundleNode: true } : { sawBundleNode: true }
   }
   if (node.nodeType === "Test Suite") {
-    return isIdentifier(node.name) ? { ...ancestry, suite: node.name } : ancestry
+    const suite = suiteIdentifier(node) ?? node.name
+    return isIdentifier(suite) ? { ...ancestry, suite } : ancestry
   }
   return ancestry
+}
+
+/**
+ * The suite's own Xcode identifier, when it carries one (issue #148).
+ *
+ * A suite's `name` is display text. For an XCTest class it happens to be the
+ * class name; for a Swift Testing `@Suite("Login flow tests")` it is the
+ * string in the attribute, and the node has no `nodeIdentifier` — only a
+ * `nodeIdentifierURL` naming the type. Cross-checking a test's identifier
+ * against that display text marked every test in such a suite as an identity
+ * Xcode's evidence disagreed about, and one mixed bundle reported
+ * `scopeUnverifiable` over 247 passing tests.
+ *
+ * The identifier is preferred, and the name is the fallback only when there
+ * is none. The check this feeds is unchanged: a suite identifier that names a
+ * different suite from its tests' identifiers is still a contradiction.
+ */
+function suiteIdentifier(node: RawTestNode): string | undefined {
+  const source = node.nodeIdentifier ?? node.nodeIdentifierURL
+  if (source === undefined) return undefined
+  const parts = stripIdentifierScheme(source)
+    .split("/")
+    .filter((part) => part.length > 0)
+  return parts[parts.length - 1]
 }
 
 function collectOccurrence(

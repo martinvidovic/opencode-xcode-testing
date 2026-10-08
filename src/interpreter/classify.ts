@@ -51,6 +51,11 @@ export type ClassificationInput = {
   scopeVerdict: ScopeVerdict
   /** `false` only when trustworthy evidence proves testing never began. */
   testingReached: boolean | "unknown"
+  /**
+   * Why identities could not be matched, when they could not (issue #148).
+   * Counts only: a test's name or identifier is never part of a message.
+   */
+  identityEvidence?: { incomplete: number; unidentifiable: number }
   /** The highest-priority defect found while gathering evidence, if any. */
   defect?: EvidenceDefect
   /** Set when the caller cancelled while interpretation was already running. */
@@ -64,6 +69,30 @@ export type Classification =
   | { outcome: "infrastructureFailed"; reason: InfrastructureReason; message: string }
   | { outcome: "cancelled"; interruptionPhase: InterruptionPhase }
   | { outcome: "timedOut"; deadlineCrossedPhase: DeadlineCrossedPhase }
+
+/**
+ * The scope verdict's explanation, naming what kind of identity evidence was
+ * missing and how much (issue #148).
+ *
+ * `scopeUnverifiable` stays the conservative answer; what changes is that it
+ * says which evidence it lacked, so a reader can tell an unusual result shape
+ * from a test that ran without a name. Counts only — never a test's name,
+ * identifier or path.
+ */
+function unverifiableMessage(evidence: ClassificationInput["identityEvidence"]): string {
+  const base = "the Requested Scope could not be verified against the observed tests"
+  const reasons: string[] = []
+  const tests = (count: number) => `${count} observed ${count === 1 ? "test" : "tests"}`
+  if (evidence !== undefined && evidence.incomplete > 0) {
+    reasons.push(
+      `${tests(evidence.incomplete)} carry Xcode identifiers that are missing or disagree with their bundle or suite`,
+    )
+  }
+  if (evidence !== undefined && evidence.unidentifiable > 0) {
+    reasons.push(`${tests(evidence.unidentifiable)} could not be named at all`)
+  }
+  return reasons.length === 0 ? base : `${base}: ${reasons.join("; ")}`
+}
 
 export function classify(input: ClassificationInput): Classification {
   // 1 & 2 — the event that initiated termination already fixed the outcome.
@@ -108,10 +137,7 @@ export function classify(input: ClassificationInput): Classification {
       )
     }
     if (input.scopeVerdict === "unverifiable") {
-      return infrastructure(
-        "scopeUnverifiable",
-        "the Requested Scope could not be verified against the observed tests",
-      )
+      return infrastructure("scopeUnverifiable", unverifiableMessage(input.identityEvidence))
     }
   }
 
