@@ -294,7 +294,7 @@ The project has **zero runtime dependencies** — shipped code may import only
 `src/adapter`, and that is enforced by a lint rather than by convention.
 
 ```
-src/domain/       shared typed results and the CONTEXT.md vocabulary
+src/domain/       shared typed results and the GLOSSARY.md vocabulary
 src/runner/       Xcode runner, supervisor, admission, retention, recovery
 src/interpreter/  xcresult interpretation
 src/adapter/      plugin entrypoint, tool definitions, renderer
@@ -411,7 +411,7 @@ gating scenario.
 
 ## Design record
 
-The vocabulary is in [`CONTEXT.md`](CONTEXT.md); the decisions are in
+The vocabulary is in [`GLOSSARY.md`](GLOSSARY.md); the decisions are in
 [`docs/adr/`](docs/adr). Start with
 [ADR 0002](docs/adr/0002-opencode-v1-adapter-and-restricted-agent-integration.md)
 if you want to know why installation works the way it does.

@@ -1,5 +1,5 @@
 /**
- * The shared domain vocabulary of the Test Tool, named per `CONTEXT.md`.
+ * The shared domain vocabulary of the Test Tool, named per `GLOSSARY.md`.
  *
  * This module is the one place the runner, the interpreter and the adapter all
  * depend on, and it depends on none of them. It never imports

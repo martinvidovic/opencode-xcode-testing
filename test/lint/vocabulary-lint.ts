@@ -1,7 +1,7 @@
 /**
- * The vocabulary lint (CONTEXT.md, issue #63).
+ * The vocabulary lint (GLOSSARY.md, issue #63).
  *
- * `CONTEXT.md` fixes a term for each concept and lists, for each, the words it
+ * `GLOSSARY.md` fixes a term for each concept and lists, for each, the words it
  * is *not*. Those `_Avoid_` lines are not style preferences. They exist
  * because this tool's whole claim is that a reader can tell what it did and
  * did not establish, and two names for one thing make a reader wonder whether
@@ -14,7 +14,7 @@
  * not need a host, and a convention only reviewers enforce is one that
  * eventually fails.
  *
- * Deliberately narrow. It reads the avoided terms out of `CONTEXT.md` rather
+ * Deliberately narrow. It reads the avoided terms out of `GLOSSARY.md` rather
  * than carrying its own list — a second copy of the glossary is the mistake it
  * exists to catch — and it checks only the terms a glossary entry actually
  * names, so it can never object to a word nobody has ruled on.

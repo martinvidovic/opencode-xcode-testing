@@ -1,7 +1,7 @@
 /**
  * The shipped tree uses the glossary's words (issue #63).
  *
- * `CONTEXT.md` names each concept once and lists what it is *not*. That is not
+ * `GLOSSARY.md` names each concept once and lists what it is *not*. That is not
  * a style preference: this tool's claim is that a reader can tell what it did
  * and did not establish, and two names for one thing make a reader wonder
  * whether they are two things — the exact doubt the glossary removes.
@@ -18,7 +18,7 @@ import { join } from "node:path"
 import { avoidedTerms, lintVocabulary } from "./vocabulary-lint.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
-const CONTEXT = join(REPO, "CONTEXT.md")
+const CONTEXT = join(REPO, "GLOSSARY.md")
 
 describe("the repository", () => {
   test("uses the glossary's terms throughout", () => {
@@ -39,7 +39,7 @@ describe("the repository", () => {
 describe("the lint itself", () => {
   test("takes its rulings from the glossary rather than repeating them", () => {
     // A second copy of the glossary is precisely the mistake this exists to
-    // catch, so the rulings are read from `CONTEXT.md` at run time.
+    // catch, so the rulings are read from `GLOSSARY.md` at run time.
     const rulings = avoidedTerms(CONTEXT)
 
     expect(rulings.get("detail page")).toBe("Focused Detail")

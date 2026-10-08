@@ -332,7 +332,7 @@ and may use `bun:*` APIs; the zero-dependency lint applies to shipped code only.
 ### Repository structure
 
 ```
-src/domain/       shared typed results and the CONTEXT.md vocabulary; imports none of the below
+src/domain/       shared typed results and the GLOSSARY.md vocabulary; imports none of the below
 src/runner/       Xcode runner + supervisor entrypoint
 src/interpreter/  xcresult interpretation
 src/adapter/      plugin.ts entrypoint, tool definitions, renderer
