@@ -593,6 +593,10 @@ function publish(
     ...(counts === undefined ? {} : { counts }),
     scopeVerdict: attestation.verdict,
     testingReached: gathered.testingReached,
+    identityEvidence: {
+      incomplete: gathered.occurrences.filter((occurrence) => !occurrence.identityComplete).length,
+      unidentifiable: gathered.unidentifiable,
+    },
     ...(gathered.defect === undefined ? {} : { defect: gathered.defect }),
     cancelledDuringInterpretation: gathered.cancelledDuringInterpretation,
     ...(request.interruptionPhase === undefined

@@ -455,3 +455,169 @@ describe("a run whose evidence includes a test that cannot be named", () => {
     expect(interpreted.summary.tests.counts?.total).toBe(1)
   })
 })
+
+describe("a bundle mixing XCTest and Swift Testing (issue #148)", () => {
+  // The shape a real mixed run produced, anonymized. A Swift Testing suite
+  // declared `@Suite("Login flow tests")` reaches the Result Bundle with that
+  // display text as its node `name` and **no** `nodeIdentifier` — only a
+  // `nodeIdentifierURL` naming its type. Its test cases carry display names
+  // too, and selectable identifiers that keep their parentheses, including a
+  // parameterized test's argument labels. The XCTest suite beside it is named
+  // by its class, and its URLs drop the parentheses.
+  const MIXED = [
+    {
+      nodeType: "Unit test bundle",
+      name: "AppTests",
+      children: [
+        {
+          nodeType: "Test Suite",
+          name: "LoginTests",
+          nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginTests",
+          children: [
+            {
+              nodeType: "Test Case",
+              name: "testSignsIn()",
+              nodeIdentifier: "LoginTests/testSignsIn()",
+              nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginTests/testSignsIn",
+              result: "Passed",
+              children: [],
+            },
+          ],
+        },
+        {
+          nodeType: "Test Suite",
+          name: "Login flow tests",
+          nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginFlowTests",
+          children: [
+            {
+              nodeType: "Test Case",
+              name: "Signs in each supported account kind",
+              nodeIdentifier: "LoginFlowTests/signsIn(kind:)",
+              nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginFlowTests/signsIn(kind:)",
+              result: "Passed",
+              children: [],
+            },
+            {
+              nodeType: "Test Case",
+              name: "Rejects an expired session",
+              nodeIdentifier: "LoginFlowTests/rejectsExpiredSession()",
+              nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginFlowTests/rejectsExpiredSession()",
+              result: "Passed",
+              children: [],
+            },
+          ],
+        },
+      ],
+    },
+  ]
+
+  test("identifies every test completely, by the suite's identifier rather than its display name", () => {
+    const { occurrences } = normalizeTestNodes(MIXED, { containmentRoot: "/repo" })
+
+    expect(occurrences.map((occurrence) => [occurrence.identity.canonical, occurrence.identityComplete])).toEqual([
+      ["AppTests/LoginTests/testSignsIn()", true],
+      ["AppTests/LoginFlowTests/signsIn(kind:)", true],
+      ["AppTests/LoginFlowTests/rejectsExpiredSession()", true],
+    ])
+  })
+
+  test("verifies a bundle-scoped selection over both frameworks", () => {
+    const { occurrences } = normalizeTestNodes(MIXED, { containmentRoot: "/repo" })
+    const attestation = attestScope({ kind: "selected", tests: [{ bundle: "AppTests" }] }, occurrences, {
+      testingReached: true,
+    })
+
+    expect(attestation.verdict).toBe("matched")
+    expect(attestation.attestations[0]).toMatchObject({ verdict: "matched", matchedTestCount: 3 })
+  })
+
+  test("verifies a suite selection naming the Swift Testing type, not its display name", () => {
+    const { occurrences } = normalizeTestNodes(MIXED, { containmentRoot: "/repo" })
+    const attestation = attestScope(
+      { kind: "selected", tests: [{ bundle: "AppTests", suite: "LoginFlowTests" }] },
+      occurrences,
+      { testingReached: true },
+    )
+
+    expect(attestation.attestations[0]).toMatchObject({ verdict: "matched", matchedTestCount: 2 })
+  })
+
+  test("still fails closed when the suite's own identifier disagrees with its tests'", () => {
+    // Evidence that contradicts itself is not one identity, whichever
+    // framework produced it.
+    const contradicted = structuredClone(MIXED)
+    const suite = contradicted[0]?.children[1] as { nodeIdentifierURL: string }
+    suite.nodeIdentifierURL = "test://com.apple.xcode/App/AppTests/SomethingElseTests"
+
+    const { occurrences } = normalizeTestNodes(contradicted, { containmentRoot: "/repo" })
+    const swiftTesting = occurrences.filter((occurrence) => occurrence.identity.suite === "LoginFlowTests")
+
+    expect(swiftTesting.map((occurrence) => occurrence.identityComplete)).toEqual([false, false])
+    const attestation = attestScope({ kind: "selected", tests: [{ bundle: "AppTests" }] }, occurrences, {
+      testingReached: true,
+    })
+    expect(attestation.verdict).toBe("unverifiable")
+  })
+
+  test("still cross-checks a suite with no identifier against its name", () => {
+    // Without an identifier the name is the only ancestry there is, and a
+    // name that disagrees with the test's identifier is still a contradiction.
+    const unnamed = structuredClone(MIXED)
+    delete (unnamed[0]?.children[1] as { nodeIdentifierURL?: string }).nodeIdentifierURL
+
+    const { occurrences } = normalizeTestNodes(unnamed, { containmentRoot: "/repo" })
+    const swiftTesting = occurrences.filter((occurrence) => occurrence.identity.suite === "LoginFlowTests")
+
+    expect(swiftTesting.map((occurrence) => occurrence.identityComplete)).toEqual([false, false])
+  })
+
+  test("still fails closed when a suite's own two identifiers disagree", () => {
+    const split = structuredClone(MIXED)
+    const suite = split[0]?.children[1] as { nodeIdentifier?: string }
+    suite.nodeIdentifier = "OtherFlowTests"
+
+    const { occurrences } = normalizeTestNodes(split, { containmentRoot: "/repo" })
+    const swiftTesting = occurrences.filter((occurrence) => occurrence.identity.suite === "LoginFlowTests")
+    expect(swiftTesting.map((occurrence) => occurrence.identityComplete)).toEqual([false, false])
+  })
+
+  test("cross-checks a test in a nested Swift Testing suite against the innermost suite", () => {
+    const { occurrences } = normalizeTestNodes(
+      [
+        {
+          nodeType: "Unit test bundle",
+          name: "AppTests",
+          children: [
+            {
+              nodeType: "Test Suite",
+              name: "Login",
+              nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginSuite",
+              children: [
+                {
+                  nodeType: "Test Suite",
+                  name: "Expired sessions",
+                  nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginSuite/ExpiredSessions",
+                  children: [
+                    {
+                      nodeType: "Test Case",
+                      name: "Rejects an expired session",
+                      nodeIdentifier: "LoginSuite/ExpiredSessions/rejects()",
+                      nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginSuite/ExpiredSessions/rejects()",
+                      result: "Passed",
+                      children: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      { containmentRoot: "/repo" },
+    )
+
+    // Completeness only: how a nested suite's canonical identity is spelled
+    // predates this fix and is not what it is about.
+    expect(occurrences.map((occurrence) => occurrence.identityComplete)).toEqual([true])
+  })
+})

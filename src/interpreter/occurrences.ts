@@ -153,6 +153,8 @@ type Ancestry = {
    * second is plan and launch infrastructure and never counted.
    */
   sawBundleNode?: true
+  /** A suite above this point carried identifiers that disagreed. */
+  suiteConflict?: true
 }
 
 function extendAncestry(node: RawTestNode, ancestry: Ancestry): Ancestry {
@@ -168,9 +170,43 @@ function extendAncestry(node: RawTestNode, ancestry: Ancestry): Ancestry {
     return isIdentifier(node.name) ? { bundle: node.name, sawBundleNode: true } : { sawBundleNode: true }
   }
   if (node.nodeType === "Test Suite") {
-    return isIdentifier(node.name) ? { ...ancestry, suite: node.name } : ancestry
+    const own = suiteIdentifier(node)
+    // Two identifiers for one suite that disagree are not one suite. Every
+    // test beneath it inherits the contradiction rather than a guess.
+    if (own === CONFLICTING) return { ...withoutSuite(ancestry), suiteConflict: true }
+    const suite = own ?? node.name
+    return isIdentifier(suite) ? { ...ancestry, suite } : ancestry
   }
   return ancestry
+}
+
+function withoutSuite({ suite: _suite, ...rest }: Ancestry): Ancestry {
+  return rest
+}
+
+const CONFLICTING = Symbol("conflicting suite identifiers")
+
+/**
+ * The suite's own Xcode identifier, when it carries one (issue #148).
+ *
+ * A suite's `name` is display text. For an XCTest class it happens to be the
+ * class name; for a Swift Testing `@Suite("Login flow tests")` it is the
+ * string in the attribute, and the node has no `nodeIdentifier` — only a
+ * `nodeIdentifierURL` naming the type. Cross-checking a test's identifier
+ * against that display text marked every test in such a suite as an identity
+ * Xcode's evidence disagreed about, so a mixed XCTest and Swift Testing
+ * bundle could never verify its scope.
+ *
+ * The identifier is preferred, and the name is the fallback only when there
+ * is none. The check this feeds is unchanged: a suite identifier that names a
+ * different suite from its tests' identifiers is still a contradiction, and
+ * so is a suite whose own two identifiers disagree.
+ */
+function suiteIdentifier(node: RawTestNode): string | typeof CONFLICTING | undefined {
+  const selectable = node.nodeIdentifier === undefined ? undefined : parseIdentifier(node.nodeIdentifier)?.test
+  const reference = node.nodeIdentifierURL === undefined ? undefined : parseIdentifier(node.nodeIdentifierURL)?.test
+  if (selectable !== undefined && reference !== undefined && selectable !== reference) return CONFLICTING
+  return selectable ?? reference
 }
 
 function collectOccurrence(
@@ -323,6 +359,7 @@ function deriveIdentity(
   const complete =
     (selectable !== undefined || reference !== undefined) &&
     identifiersAgree &&
+    ancestry.suiteConflict !== true &&
     (ancestry.suite === undefined || parsedSuite === undefined || ancestry.suite === parsedSuite)
 
   // Empty is absent. A component that came through as `""` is one Xcode did

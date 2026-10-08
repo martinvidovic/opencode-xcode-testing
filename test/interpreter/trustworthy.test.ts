@@ -195,3 +195,34 @@ describe("contradictory identifiers", () => {
     })
   })
 })
+
+describe("an unverifiable scope's explanation (issue #148)", () => {
+  // `scopeUnverifiable` is the honest answer when identity evidence is missing
+  // or contradicts itself, and it is only actionable if it says which. A bare
+  // "could not be verified" sent a reader comparing a 247-test run against
+  // plain `xcodebuild` to find what the tool already knew.
+  test("counts the tests whose identifiers contradict their ancestry", async () => {
+    const { summary } = await interpretFixture("conflicting-identity", {
+      scope: { kind: "selected", tests: [{ bundle: "AppTests" }] },
+    })
+    expect(summary).toMatchObject({ outcome: "infrastructureFailed", reason: "scopeUnverifiable" })
+    const message = (summary as { message: string }).message
+    expect(message).toContain("1 observed test")
+    expect(message).toMatch(/missing or disagree/)
+  })
+
+  test("counts the tests with no identifier at all", async () => {
+    const { summary } = await interpretFixture("unverifiable-identity")
+    const message = (summary as { message: string }).message
+    expect(message).toMatch(/\d+ observed tests? /)
+  })
+
+  test("names no test, path or identifier, only counts", async () => {
+    const { summary } = await interpretFixture("conflicting-identity", {
+      scope: { kind: "selected", tests: [{ bundle: "AppTests" }] },
+    })
+    const message = (summary as { message: string }).message
+    expect(message).not.toMatch(/\//)
+    expect(message).not.toContain("LoginTests")
+  })
+})
