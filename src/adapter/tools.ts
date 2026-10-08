@@ -718,7 +718,7 @@ function report(context: ToolContext, update: Record<string, unknown>): void {
   try {
     void Promise.resolve(context.progress?.(update)).catch(() => {})
   } catch {
-    return
+    // A synchronous throw from the host's channel: same rule.
   }
 }
 

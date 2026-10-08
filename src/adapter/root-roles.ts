@@ -1,9 +1,9 @@
 /**
  * The Containment Root, Configuration Root, and project configuration (ADR 0002, #6).
  *
- * The containment root is the working-copy root when the host supplies a usable
- * one, else the launch directory, resolved exactly once and **never influenced by a tool
- * argument**. That is the boundary the whole safety story rests on: if a model
+ * The containment root is the working-copy root when the host supplies a
+ * usable one, else the launch directory, resolved exactly once and **never
+ * influenced by a tool argument**. That is the boundary the whole safety story rests on: if a model
  * could move the root, every path guarantee beneath it would be decorative.
  *
  * The configuration root is tracked separately so configuration-relative

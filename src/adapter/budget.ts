@@ -63,25 +63,18 @@ export type HostLimits =
  * Options are read once per plugin instance, and that is no longer a "read
  * once per session" assumption: the host rebuilds every plugin instance when
  * a watched configuration file changes, so the options cannot go stale.
+ *
+ * Narrowed rather than asserted: options are whatever JSON the user wrote. A
+ * block that is absent and a block whose numbers are unusable are different
+ * answers. The first is a user who declared nothing, where the host's defaults
+ * are exactly right. The second is a declaration this adapter could not read,
+ * which is not a reason to assume anything about it.
  */
 export function outputLimitsFromOptions(options: Readonly<Record<string, unknown>>): HostLimits {
-  return outputLimitsIn(options)
-}
-
-/**
- * `tool_output` out of an options object, narrowed rather than asserted:
- * options are whatever JSON the user wrote.
- *
- * A block that is absent and a block whose numbers are unusable are different
- * answers. The first is a host with nothing configured, where the documented
- * defaults are exactly right. The second is a host that said something this
- * adapter could not read, which is not a reason to assume anything about it.
- */
-function outputLimitsIn(config: object): HostLimits {
-  const limits = (config as { tool_output?: unknown }).tool_output
+  const limits = options["tool_output"]
   if (limits === undefined) return { status: "absent" }
   if (typeof limits !== "object" || limits === null) {
-    return { status: "unreadable", detail: "the host's `tool_output` is not an object" }
+    return { status: "unreadable", detail: "`tool_output` is not an object" }
   }
 
   const { max_lines: maxLines, max_bytes: maxBytes } = limits as Record<string, unknown>
@@ -97,10 +90,10 @@ function outputLimitsIn(config: object): HostLimits {
   // already been shown to be malformed — while quietly assuming the documented
   // default for the half that was not.
   if (maxLines !== undefined && !usable(maxLines)) {
-    return { status: "unreadable", detail: "the host's `tool_output.max_lines` is not a count" }
+    return { status: "unreadable", detail: "`tool_output.max_lines` is not a count" }
   }
   if (maxBytes !== undefined && !usable(maxBytes)) {
-    return { status: "unreadable", detail: "the host's `tool_output.max_bytes` is not a count" }
+    return { status: "unreadable", detail: "`tool_output.max_bytes` is not a count" }
   }
   if (maxLines === undefined && maxBytes === undefined) return { status: "absent" }
 

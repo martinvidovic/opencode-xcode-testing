@@ -26,7 +26,10 @@
 
 export const STARTUP_DEADLINE_MS = 10_000
 export const RUNTIME_PROBE_BUDGET_MS = 2_000
-/** Bounds the version read, which on V2 is a field read and never waits. */
+/**
+ * Bounds the version read. On V2 that read is `ctx.app.version` and returns at
+ * once; the bound stays because the port is still a promise.
+ */
 export const HOST_VERSION_BUDGET_MS = 2_000
 export const RECONCILIATION_BUDGET_MS = 5_000
 export const HOUSEKEEPING_BUDGET_MS = 5_000
