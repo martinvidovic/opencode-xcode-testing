@@ -570,4 +570,54 @@ describe("a bundle mixing XCTest and Swift Testing (issue #148)", () => {
 
     expect(swiftTesting.map((occurrence) => occurrence.identityComplete)).toEqual([false, false])
   })
+
+  test("still fails closed when a suite's own two identifiers disagree", () => {
+    const split = structuredClone(MIXED)
+    const suite = split[0]?.children[1] as { nodeIdentifier?: string }
+    suite.nodeIdentifier = "OtherFlowTests"
+
+    const { occurrences } = normalizeTestNodes(split, { containmentRoot: "/repo" })
+    const swiftTesting = occurrences.filter((occurrence) => occurrence.identity.suite === "LoginFlowTests")
+    expect(swiftTesting.map((occurrence) => occurrence.identityComplete)).toEqual([false, false])
+  })
+
+  test("cross-checks a test in a nested Swift Testing suite against the innermost suite", () => {
+    const { occurrences } = normalizeTestNodes(
+      [
+        {
+          nodeType: "Unit test bundle",
+          name: "AppTests",
+          children: [
+            {
+              nodeType: "Test Suite",
+              name: "Login",
+              nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginSuite",
+              children: [
+                {
+                  nodeType: "Test Suite",
+                  name: "Expired sessions",
+                  nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginSuite/ExpiredSessions",
+                  children: [
+                    {
+                      nodeType: "Test Case",
+                      name: "Rejects an expired session",
+                      nodeIdentifier: "LoginSuite/ExpiredSessions/rejects()",
+                      nodeIdentifierURL: "test://com.apple.xcode/App/AppTests/LoginSuite/ExpiredSessions/rejects()",
+                      result: "Passed",
+                      children: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      { containmentRoot: "/repo" },
+    )
+
+    // Completeness only: how a nested suite's canonical identity is spelled
+    // predates this fix and is not what it is about.
+    expect(occurrences.map((occurrence) => occurrence.identityComplete)).toEqual([true])
+  })
 })

@@ -85,7 +85,7 @@ function unverifiableMessage(evidence: ClassificationInput["identityEvidence"]):
   const tests = (count: number) => `${count} observed ${count === 1 ? "test" : "tests"}`
   if (evidence !== undefined && evidence.incomplete > 0) {
     reasons.push(
-      `${tests(evidence.incomplete)} carry Xcode identifiers that are missing or disagree with their bundle or suite`,
+      `${tests(evidence.incomplete)} carry Xcode identifiers that are missing or disagree with their suite`,
     )
   }
   if (evidence !== undefined && evidence.unidentifiable > 0) {
