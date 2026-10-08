@@ -3,7 +3,7 @@
  * Test Run actually did.
  *
  * It is host-agnostic by construction — it imports the domain and `node:*` and
- * nothing else, never `@opencode-ai/plugin` — and reaches the outside world
+ * nothing else, never `@opencode/plugin` — and reaches the outside world
  * only through the ports in `ports.ts`, which is what lets every classification
  * branch be driven from committed synthetic payloads.
  */

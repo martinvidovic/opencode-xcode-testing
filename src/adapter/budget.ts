@@ -8,15 +8,14 @@
  * is an adapter invariant, and tripping our own last-resort truncation is a
  * defect the tests cover.
  *
- * The host does not materialize `tool_output` defaults: an unset block arrives
- * as `undefined`, so the adapter applies the documented defaults itself, and
- * then keeps a safety margin under whatever the effective limit turns out to be.
+ * The plugin cannot read the host's effective `tool_output` (issue #140), so it
+ * applies the host's verified defaults unless the user declares lower limits
+ * in the plugin's options, and keeps a safety margin under whichever applies.
  */
 
 import { SEPARATOR, type Document } from "./document.ts"
-import { safeFailure } from "./sanitize.ts"
 
-/** The documented host defaults, applied because the host does not. */
+/** The V2 host's defaults, verified against 2.0.25 (issue #140). */
 export const HOST_DEFAULT_MAX_LINES = 2_000
 export const HOST_DEFAULT_MAX_BYTES = 51_200
 
@@ -29,7 +28,7 @@ export const SAFETY_MARGIN_LINES = 50
 export const SAFETY_MARGIN_BYTES = 2_048
 
 /**
- * What the host said about `tool_output`, and whether it said anything.
+ * What is known about the `tool_output` limits, and whether anything is.
  *
  * Three answers, not two (issue #82). "The host has no limits configured" and
  * "the host could not be asked" were the same value, and they are not the same
@@ -46,42 +45,32 @@ export const SAFETY_MARGIN_BYTES = 2_048
  */
 export type HostLimits =
   | { status: "configured"; maxLines?: number; maxBytes?: number }
-  /** The host answered, and has no `tool_output` block. */
+  /** Nothing was declared: the host's defaults apply. */
   | { status: "absent" }
-  /** The host could not be asked, or did not answer usefully. */
+  /** Limits were declared, and could not be read. */
   | { status: "unreadable"; detail: string }
 
 /**
- * Ask the host for its effective `tool_output` limits.
+ * The output limits the user declared to the plugin.
  *
- * Never throws: a configuration route that is unavailable is an answer about
- * the host, not a reason for the plugin to fail to load.
+ * The V2 plugin context has no route to the host's effective `tool_output`
+ * (issue #140): there is no config domain on it, and the client route returns
+ * raw per-file documents rather than an effective merge. So a user who lowers
+ * `tool_output` declares the same limits in the plugin's options, in the same
+ * shape — and a user who declares nothing gets the host's verified defaults,
+ * which is exactly what the host applies when nothing is configured.
+ *
+ * Options are read once per plugin instance, and that is no longer a "read
+ * once per session" assumption: the host rebuilds every plugin instance when
+ * a watched configuration file changes, so the options cannot go stale.
  */
-export async function readOutputLimits(client: {
-  config: { get(): Promise<{ data?: unknown }> }
-}): Promise<HostLimits> {
-  let payload: unknown
-  try {
-    payload = (await client.config.get()).data
-  } catch (error) {
-    return { status: "unreadable", detail: safeFailure(error) }
-  }
-
-  if (typeof payload !== "object" || payload === null) {
-    return { status: "unreadable", detail: "the host's configuration route returned no object" }
-  }
-  return outputLimitsIn(payload)
+export function outputLimitsFromOptions(options: Readonly<Record<string, unknown>>): HostLimits {
+  return outputLimitsIn(options)
 }
 
 /**
- * `tool_output` out of a host configuration payload.
- *
- * Narrowed rather than asserted, because the declared shape and the real one
- * do not agree. The `Config` the linked `@opencode-ai/plugin` client returns
- * has **no `tool_output` at all**; the SDK's own v2 types do declare it. So a
- * signature naming the field was describing a payload the installed types say
- * cannot contain it, and only Bun's willingness to strip the claim kept it
- * from being an error (issue #74).
+ * `tool_output` out of an options object, narrowed rather than asserted:
+ * options are whatever JSON the user wrote.
  *
  * A block that is absent and a block whose numbers are unusable are different
  * answers. The first is a host with nothing configured, where the documented
@@ -124,15 +113,7 @@ function outputLimitsIn(config: object): HostLimits {
 
 export type Budget = { maxLines: number; maxBytes: number }
 
-/**
- * Resolve the effective budget once per session — the host's configuration is
- * not hot-reloaded, so re-reading it per call could only invent the
- * possibility of two calls in one session disagreeing.
- *
- * Once, but not at startup: the plugin factory runs inside the host's own
- * bootstrap, and asking the host for its configuration from there deadlocks it.
- * ADR 0002 records the amendment and why it is unavoidable.
- */
+/** The budget that keeps a response clear of the given limits. */
 export function resolveBudget(limits: HostLimits): Budget {
   const ceiling = ceilingFor(limits)
 
@@ -177,14 +158,14 @@ function ceilingFor(limits: HostLimits): { lines: number; bytes: number } {
 }
 
 /**
- * What to assume when the host could not be asked.
+ * What to assume when declared limits could not be read.
  *
  * A tenth of the documented defaults, and the number is a policy rather than a
  * measurement: it covers every lowering anyone is likely to configure by hand,
  * and it cannot cover all of them. **No fallback can** — a user may set
- * `max_lines: 10`, and an adapter that cannot read the configuration cannot
- * know. ADR 0002 records that the no-host-truncation guarantee is unconditional
- * only while the limits are readable, and conditional on this floor otherwise.
+ * `max_lines: 10`, and an adapter that cannot read the declaration cannot
+ * know. The no-host-truncation guarantee holds only while the declared limits
+ * match the host's, and is conditional on this floor otherwise.
  *
  * Which is why an unreadable read is also *announced*. A conservative guess
  * nobody is told about is still a guess; one that is printed is a fact the
@@ -193,7 +174,7 @@ function ceilingFor(limits: HostLimits): { lines: number; bytes: number } {
 export const UNREADABLE_MAX_LINES = 200
 export const UNREADABLE_MAX_BYTES = 5_120
 
-/** The budget for a host that has told us nothing, and could be asked. */
+/** The budget under the host's defaults, with nothing declared. */
 export const DEFAULT_BUDGET: Budget = resolveBudget({ status: "absent" })
 
 export type SerializeResult = {

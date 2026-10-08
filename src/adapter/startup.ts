@@ -1,7 +1,8 @@
 /**
  * The plugin-startup sequence (ADR 0002).
  *
- * The factory is awaited before every other host service, so nothing here may
+ * The V2 host runs `setup` once per Location, in the background, and holds
+ * that Location's prompts until it finishes (issue #140) — so nothing here may
  * block indefinitely. The shape follows from that:
  *
  * - **Gates first, sequentially.** The enablement marker and the structural
@@ -25,12 +26,13 @@
 
 export const STARTUP_DEADLINE_MS = 10_000
 export const RUNTIME_PROBE_BUDGET_MS = 2_000
+/** Bounds the version read, which on V2 is a field read and never waits. */
 export const HOST_VERSION_BUDGET_MS = 2_000
 export const RECONCILIATION_BUDGET_MS = 5_000
 export const HOUSEKEEPING_BUDGET_MS = 5_000
 
 /** Enumerated explicitly. Adding one is a deliberate, recorded act. */
-export const TESTED_HOST_VERSIONS = ["1.18.29", "1.18.30"] as const
+export const TESTED_HOST_VERSIONS = ["2.0.25"] as const
 
 export type StartupPorts = {
   /** `<trusted-root>/.opencode/xcode-test.json` exists. */
@@ -44,7 +46,7 @@ export type StartupPorts = {
    */
   regularFileExists(path: string): boolean
   probeRuntime(): Promise<unknown>
-  /** Bounded read of `/global/health`; failure degrades to `unknown`. */
+  /** The host's `ctx.app.version`; a failure still degrades to `unknown`. */
   readHostVersion(): Promise<string>
   /**
    * Reconcile this root, giving up at `deadlineMs`.

@@ -88,13 +88,18 @@ describe("the repository type contract", () => {
 
   test("keeps its type tooling out of what ships", () => {
     // The zero-runtime-dependency rule is about the plugin, which is loaded
-    // from source and resolves its imports from its own location. A compiler
-    // that only ever runs on a developer's machine is not part of that, and
-    // saying so is what lets this repository have one at all.
+    // from source. A compiler that only ever runs on a developer's machine is
+    // not part of that, and saying so is what lets this repository have one at
+    // all. `@opencode/plugin` is here for its types: at runtime the V2 host
+    // resolves it to its own instance (issue #140).
     const { devDependencies } = manifest()
     const all = manifest() as { dependencies?: Record<string, string> }
 
     expect(all.dependencies).toBeUndefined()
-    expect(Object.keys(devDependencies ?? {}).sort()).toEqual(["@types/bun", "typescript"])
+    expect(Object.keys(devDependencies ?? {}).sort()).toEqual(["@opencode/plugin", "@types/bun", "typescript"])
+  })
+
+  test("pins the host package to the exact release it was verified against", () => {
+    expect(manifest().devDependencies?.["@opencode/plugin"]).toBe("2.0.25")
   })
 })

@@ -1,8 +1,8 @@
 /**
  * The Containment Root, Configuration Root, and project configuration (ADR 0002, #6).
  *
- * The containment root is `context.worktree` when the host supplies one, else
- * `context.directory`, resolved exactly once and **never influenced by a tool
+ * The containment root is the working-copy root when the host supplies a usable
+ * one, else the launch directory, resolved exactly once and **never influenced by a tool
  * argument**. That is the boundary the whole safety story rests on: if a model
  * could move the root, every path guarantee beneath it would be decorative.
  *
@@ -23,6 +23,26 @@ export const CONFIG_DIRECTORY = ".opencode"
 export const CONFIG_FILENAME = "xcode-test.json"
 
 export type PluginContext = { worktree?: string; directory: string }
+
+/** The slice of the V2 host's `ctx.location` the root roles are derived from. */
+export type HostLocation = {
+  directory: string
+  project: { directory: string; canonical?: string }
+}
+
+/**
+ * The V2 Location, mapped onto the two host handles the root roles were
+ * defined against (issue #140).
+ *
+ * `location.directory` is where the session launched. `project.directory` is
+ * the working-copy root — and for a linked worktree that is **the worktree
+ * itself**. `project.canonical` is deliberately not read: for a worktree it
+ * names the main checkout, a different working copy, and containing a session
+ * to it would let one worktree reach and share storage with another.
+ */
+export function rootContextFromLocation(location: HostLocation): PluginContext {
+  return { worktree: location.project.directory, directory: location.directory }
+}
 
 export type RootRolesResolution =
   | { status: "resolved"; containmentRoot: string; configurationRoot?: string }

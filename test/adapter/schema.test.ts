@@ -1,164 +1,140 @@
 /**
- * Argument schemas (ADR 0002).
+ * Input schemas (issue #141, superseding ADR 0002's Zod rule).
  *
- * The stub namespace records what it was asked to build, so the shape can be
- * asserted without `@opencode-ai/plugin` installed — which is the whole reason
- * the schemas take the namespace as a parameter.
+ * The V2 host takes plain JSON Schema and validates it before a tool runs:
+ * a missing required key, a too-short string or a wrong type is refused with
+ * a message the model can act on, and unknown keys are stripped (issue #140).
+ * So these schemas are the first gate a call meets — and they are plain data,
+ * which is what lets this layer assert their exact shape with no host at all.
  *
- * The property that matters most is optionality. The host has a legacy
- * JSON-Schema fallback that marks **every** key required; accepting it would
- * make container, scheme, destination and timeout mandatory, and a model would
- * have to invent a destination on every single call.
+ * The property that matters most is still optionality. Container, scheme,
+ * destination and timeout are resolvable from project configuration; a schema
+ * that required them would make a model invent a destination on every call.
  */
 
 import { describe, expect, test } from "bun:test"
 
 import {
-  inspectArguments,
-  recoverArguments,
+  inspectInputSchema,
+  recoverInputSchema,
   REQUIRED_ARGUMENTS,
-  testArguments,
-  type ZodNamespace,
-  type ZodType,
+  testInputSchema,
+  type JsonSchema,
 } from "../../src/adapter/schema.ts"
 import { INSPECTION_FACETS } from "../../src/domain/inspection.ts"
 
-type Recorded = ZodType & {
-  kind: string
-  optional_: boolean
-  described: string | undefined
-  shape?: Record<string, Recorded>
-  options?: Recorded[]
-  values?: readonly string[]
-  inner?: Recorded
-  bounds: { min?: number; max?: number }
+function properties(schema: JsonSchema): Record<string, JsonSchema> {
+  return (schema.properties ?? {}) as Record<string, JsonSchema>
 }
 
-function node(kind: string, extra: Partial<Recorded> = {}): Recorded {
-  const self: Recorded = {
-    kind,
-    optional_: false,
-    described: undefined,
-    bounds: {},
-    ...extra,
-    optional() {
-      self.optional_ = true
-      return self
-    },
-    describe(text: string) {
-      self.described = text
-      return self
-    },
-  } as Recorded
-  return self
-}
-
-function stub(): ZodNamespace {
-  return {
-    string: () =>
-      Object.assign(node("string"), {
-        min(n: number) {
-          const self = this as unknown as Recorded
-          self.bounds.min = n
-          return self
-        },
-      }) as never,
-    number: () =>
-      Object.assign(node("number"), {
-        int() {
-          const self = this as unknown as Recorded
-          self.kind = "integer"
-          return Object.assign(self, {
-            min(n: number) {
-              self.bounds.min = n
-              return Object.assign(self, {
-                max(m: number) {
-                  self.bounds.max = m
-                  return self
-                },
-              })
-            },
-          })
-        },
-      }) as never,
-    boolean: () => node("boolean"),
-    literal: (value: string) => node(`literal:${value}`),
-    array: (inner: ZodType) => node("array", { inner: inner as Recorded }),
-    object: (shape: Record<string, ZodType>) =>
-      node("object", { shape: shape as Record<string, Recorded> }),
-    union: (options: ZodType[]) => node("union", { options: options as Recorded[] }),
-    enum: (values: readonly string[]) => node("enum", { values }),
+describe("every input schema", () => {
+  for (const [name, schema] of [
+    ["xcode_test", testInputSchema],
+    ["xcode_test_inspect", inspectInputSchema],
+    ["xcode_test_recover", recoverInputSchema],
+  ] as const) {
+    test(`${name} is a closed object, so stray keys are stripped rather than trusted`, () => {
+      expect(schema.type).toBe("object")
+      expect(schema.additionalProperties).toBe(false)
+    })
   }
-}
 
-function shapeOf(build: (z: ZodNamespace) => Record<string, ZodType>): Record<string, Recorded> {
-  return build(stub()) as Record<string, Recorded>
-}
+  test("are JSON all the way down, so the host receives exactly what is asserted here", () => {
+    for (const schema of [testInputSchema, inspectInputSchema, recoverInputSchema]) {
+      expect(JSON.parse(JSON.stringify(schema))).toEqual(schema)
+    }
+  })
+})
 
-describe("xcode_test arguments", () => {
-  const args = shapeOf(testArguments)
+describe("xcode_test input", () => {
+  const args = properties(testInputSchema)
 
-  test("require only the scope", () => {
-    const required = Object.entries(args)
-      .filter(([, value]) => !value.optional_)
-      .map(([key]) => key)
-    expect(required).toEqual([...REQUIRED_ARGUMENTS.xcode_test])
+  test("requires only the scope", () => {
+    expect(testInputSchema.required).toEqual(["scope"])
+    expect(REQUIRED_ARGUMENTS.xcode_test).toEqual(["scope"])
   })
 
-  test("leave every resolvable setting optional", () => {
+  test("leaves every resolvable setting optional", () => {
     for (const key of ["container", "scheme", "destination", "timeoutSeconds"]) {
-      expect(args[key]?.optional_).toBe(true)
+      expect(Object.keys(args)).toContain(key)
+      expect(testInputSchema.required).not.toContain(key)
     }
   })
 
-  test("declare the scope as a union, not a stringly-typed field", () => {
-    expect(args["scope"]?.kind).toBe("union")
-    expect(args["scope"]?.options?.map((option) => option.kind)).toEqual(["object", "object"])
+  test("declares the scope as a union of `all` and exact selections", () => {
+    const options = args["scope"]?.anyOf ?? []
+    expect(options.map((option) => (option.properties as Record<string, JsonSchema>)["kind"])).toEqual([
+      { const: "all" },
+      { const: "selected" },
+    ])
+    for (const option of options) expect(option.required).toContain("kind")
   })
 
-  test("keep the shape flat, with unions inside individual arguments", () => {
-    for (const value of Object.values(args)) {
-      expect(["union", "string", "integer"]).toContain(value.kind)
-    }
+  test("requires the bundle in a selection and leaves suite and test optional", () => {
+    const selected = args["scope"]?.anyOf?.[1]
+    const item = (selected?.properties as Record<string, JsonSchema>)["tests"]?.items as JsonSchema
+    expect(item.required).toEqual(["bundle"])
+    expect(Object.keys(item.properties ?? {}).sort()).toEqual(["bundle", "suite", "test"])
+    expect(item.additionalProperties).toBe(false)
   })
 
-  test("bound the timeout to the contract's range", () => {
-    expect(args["timeoutSeconds"]?.bounds).toEqual({ min: 1, max: 7_200 })
+  test("declares the container and destination as tagged unions", () => {
+    const kinds = (key: string) =>
+      (args[key]?.anyOf ?? []).map((option) => (option.properties as Record<string, JsonSchema>)["kind"])
+    expect(kinds("container")).toEqual([{ const: "workspace" }, { const: "project" }])
+    expect(kinds("destination")).toEqual([{ const: "id" }, { const: "named" }])
   })
 
-  test("describe every argument, since the description is all a model sees", () => {
+  test("leaves the destination's OS optional", () => {
+    const named = args["destination"]?.anyOf?.[1]
+    expect(named?.required).toEqual(["kind", "platform", "name"])
+  })
+
+  test("refuses empty strings where a name is expected", () => {
+    expect(args["scheme"]).toMatchObject({ type: "string", minLength: 1 })
+  })
+
+  test("bounds the timeout to the contract's range", () => {
+    expect(args["timeoutSeconds"]).toMatchObject({ type: "integer", minimum: 1, maximum: 7_200 })
+  })
+
+  test("describes every argument, since the description is all a model sees", () => {
     for (const [key, value] of Object.entries(args)) {
-      expect(`${key}:${value.described ?? ""}`.length).toBeGreaterThan(key.length + 10)
+      expect(`${key}:${value.description ?? ""}`.length).toBeGreaterThan(key.length + 10)
     }
   })
 })
 
-describe("xcode_test_inspect arguments", () => {
-  const args = shapeOf(inspectArguments)
+describe("xcode_test_inspect input", () => {
+  const args = properties(inspectInputSchema)
 
-  test("require only the run id and the facet", () => {
-    const required = Object.entries(args)
-      .filter(([, value]) => !value.optional_)
-      .map(([key]) => key)
-    expect(required.sort()).toEqual([...REQUIRED_ARGUMENTS.xcode_test_inspect].sort())
+  test("requires only the run id and the facet", () => {
+    expect([...(inspectInputSchema.required ?? [])].sort()).toEqual(["facet", "runId"])
+    expect([...REQUIRED_ARGUMENTS.xcode_test_inspect].sort()).toEqual(["facet", "runId"])
   })
 
-  test("constrain the facet to the closed set", () => {
-    expect(args["facet"]?.kind).toBe("enum")
-    expect(args["facet"]?.values).toEqual(INSPECTION_FACETS)
+  test("constrains the facet to the closed set", () => {
+    expect(args["facet"]?.enum).toEqual([...INSPECTION_FACETS])
   })
 
-  test("bound the page size and the log chunk to the contract's caps", () => {
-    expect(args["limit"]?.bounds).toEqual({ min: 1, max: 100 })
-    expect(args["maxBytes"]?.bounds).toEqual({ min: 1, max: 65_536 })
+  test("bounds the page size and the log chunk to the contract's caps", () => {
+    expect(args["limit"]).toMatchObject({ type: "integer", minimum: 1, maximum: 100 })
+    expect(args["maxBytes"]).toMatchObject({ type: "integer", minimum: 1, maximum: 65_536 })
+  })
+
+  test("describes every argument", () => {
+    for (const [key, value] of Object.entries(args)) {
+      expect(`${key}:${value.description ?? ""}`.length).toBeGreaterThan(key.length + 10)
+    }
   })
 })
 
-describe("xcode_test_recover arguments", () => {
-  test("are empty, because recovery has nothing to parameterize", () => {
+describe("xcode_test_recover input", () => {
+  test("is empty, because recovery has nothing to parameterize", () => {
     // Inventing a ceremonial argument would only invite a model to supply
     // something that cannot matter.
-    expect(shapeOf(recoverArguments)).toEqual({})
+    expect(recoverInputSchema.properties).toEqual({})
+    expect(recoverInputSchema.required).toBeUndefined()
     expect(REQUIRED_ARGUMENTS.xcode_test_recover).toEqual([])
   })
 })

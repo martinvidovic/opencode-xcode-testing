@@ -63,7 +63,7 @@ function portsFor(box: Sandbox, configurationRoot: string) {
     // about the clock without asserting where a checkout puts its files.
     requiredFiles: () => [],
     regularFileExists: () => true,
-    readHostVersion: async () => "1.18.29",
+    readHostVersion: async () => "2.0.25",
     onRuntime: () => {},
   })
 }

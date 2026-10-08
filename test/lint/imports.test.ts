@@ -26,14 +26,14 @@ describe("the import lint", () => {
   })
 
   test("permits the host package in the adapter", () => {
-    expect(rulesFor({ "adapter/a.ts": `import { tool } from "@opencode-ai/plugin"\n` })).toEqual([])
+    expect(rulesFor({ "adapter/a.ts": `import { Plugin } from "@opencode/plugin"\n` })).toEqual([])
   })
 
   test("rejects the host package outside the adapter", () => {
     const tree = {
-      "domain/a.ts": `import type { Tool } from "@opencode-ai/plugin"\n`,
-      "runner/a.ts": `import { tool } from "@opencode-ai/plugin"\n`,
-      "interpreter/a.ts": `export { tool } from "@opencode-ai/plugin"\n`,
+      "domain/a.ts": `import type { Plugin } from "@opencode/plugin"\n`,
+      "runner/a.ts": `import { Plugin } from "@opencode/plugin"\n`,
+      "interpreter/a.ts": `export { Plugin } from "@opencode/plugin"\n`,
     }
     expect(rulesFor(tree)).toEqual([
       "hostPackageOutsideAdapter",
