@@ -2,8 +2,8 @@
 
 > **Work in progress.** This is an early build being hardened against a real
 > Xcode install, and some of its edges show it: paths are absolute throughout,
-> installation is a manual symlink, and the shape of a tool's arguments may
-> still change between commits. It works, and it is not yet settled.
+> installation is a machine-local `plugins` entry, and the shape of a tool's
+> arguments may still change between commits. It works, and it is not yet settled.
 
 A local OpenCode capability for running scoped Xcode tests while exposing only
 trustworthy, compact results to the model.
@@ -32,9 +32,12 @@ being given the ability to clear a quarantine.
   toolchain that wrote them, and claims exactly one Xcode major.
 - **Bun on `PATH`.** See below — this is the prerequisite people are most
   likely to be missing.
-- **OpenCode `1.18.29` or `1.18.30`.** Other versions load normally and emit a
-  one-time startup diagnostic; the plugin never refuses to load over a patch
-  bump.
+- **OpenCode `2.0.25`, and only V2.** This is the one release the tool is
+  validated against, together with `@opencode/plugin` and `@opencode/client`
+  at exactly `2.0.25`. Other 2.x releases load normally and emit a one-time
+  startup diagnostic; nothing here claims blanket V2 compatibility. OpenCode V1
+  is not supported — a V1 plugin does not run on V2, and this one does not run
+  on V1. See [ADR 0003](docs/adr/0003-opencode-v2-migration.md).
 
 ### Bun is a real prerequisite
 
@@ -69,61 +72,89 @@ configuration, so pick a location you will not move.
 ```bash
 git clone https://github.com/martinvidovic/opencode-xcode-testing.git
 cd opencode-xcode-testing
-bun scripts/link-host-package.ts
+bun install
+bun scripts/check-install.ts
 ```
 
-### Why that second command is not optional
+### What `bun install` is for
 
-A source-loaded plugin resolves its imports from **its own** location, not from
-OpenCode's config directory — so a checkout with no `node_modules` cannot find
-`@opencode-ai/plugin`, and the host swallows the module-load error. The result
-is a plugin that loads nothing and says nothing, which is indistinguishable from
-a project you have not enabled yet.
+The plugin itself needs **nothing installed to load**. Its only non-built-in
+import is `@opencode/plugin`, and OpenCode V2 resolves that to its own copy for
+every plugin it loads — a clean checkout with no `node_modules` registers the
+tools, and the acceptance gate proves it from exactly such a copy.
 
-`link-host-package.ts` symlinks the package OpenCode installed and manages in
-its config environment into this checkout. It is a symlink rather than an
-install because the package is host-managed and this repository commits no
-manifest for it; the link is still necessary because source-loaded code resolves
-imports from the checkout. Run OpenCode once first if the script reports the
-package is not there yet.
+`bun install` installs the two packages this checkout pins exactly —
+`@opencode/plugin` and `@opencode/client`, both `2.0.25` — which the type
+check and the acceptance gates run against. `bun scripts/check-install.ts`
+says whether the `opencode` on your `PATH` is the validated release and
+whether what is installed is what the checkout pins, and names the command
+that fixes anything that is not.
 
 ### Global install (the documented default)
 
-Install once per machine, in OpenCode's own config directory:
+Add the checkout to `plugins` in `~/.config/opencode/opencode.json` (or
+`opencode.jsonc`):
 
 ```json
 {
-  "plugin": ["/absolute/path/to/opencode-xcode-testing/src/adapter/plugin.ts"]
+  "plugins": ["/absolute/path/to/opencode-xcode-testing"]
 }
 ```
 
-in `~/.config/opencode/opencode.json`. Or, equivalently, symlink the plugin
-**file** into OpenCode's plugin directory:
+The entry names the **checkout directory**, not a file. OpenCode 2.0.25 accepts
+a configured plugin only as a directory and loads its `server.ts`, which is
+there for exactly that. A path to a `.ts` file in `plugins` is rejected with
+`configured plugin path must be a directory`.
+
+Or, equivalently, symlink the plugin's entry file into OpenCode's plural
+`plugins/` directory, which it discovers on its own:
 
 ```bash
-mkdir -p ~/.config/opencode/plugin
+mkdir -p ~/.config/opencode/plugins
 ln -s /absolute/path/to/opencode-xcode-testing/src/adapter/plugin.ts \
-  ~/.config/opencode/plugin/xcode-test.ts
+  ~/.config/opencode/plugins/xcode-test.ts
 ```
-
-The link points at the file, not at the checkout: OpenCode loads `.ts` files
-from that directory and has no way to pick an entry point out of a repository.
-The symlink still resolves its imports from the real checkout, which is what
-lets the host-provided `@opencode-ai/plugin` link above do its job.
 
 **Why global is the default:** the entry contains an absolute path that is true
 only on your machine. `~/.config/opencode/opencode.json` is the one file that is
 never committed to a project repository, so that is where a machine-local path
-belongs. A globally installed plugin stays completely invisible in projects that
-have not opted in, at a sub-millisecond cost per session start.
+belongs. A globally installed plugin loads in every Location OpenCode opens and
+stays completely invisible in projects that have not opted in.
 
-### Per-project install (the alternative)
+OpenCode watches its configuration, so adding, changing or removing the entry
+takes effect without a restart.
 
-A project's own `opencode.json` also accepts an absolute `plugin` entry:
+### If you lower `tool_output`
+
+The tool keeps every response under OpenCode's output limits, because a
+truncated response is replaced by a pointer to a file the model cannot open.
+On V2 a plugin has no way to read those limits, so the tool assumes OpenCode's
+defaults — 2,000 lines and 51,200 bytes, verified against 2.0.25. If you set
+`tool_output` lower than that, give the plugin the same numbers:
 
 ```json
 {
-  "plugin": ["/absolute/path/to/opencode-xcode-testing/src/adapter/plugin.ts"]
+  "tool_output": { "max_lines": 300, "max_bytes": 4096 },
+  "plugins": [
+    {
+      "package": "/absolute/path/to/opencode-xcode-testing",
+      "options": { "tool_output": { "max_lines": 300, "max_bytes": 4096 } }
+    }
+  ]
+}
+```
+
+An option it cannot read holds responses to a conservative floor and says so on
+startup.
+
+### Per-project install (the alternative)
+
+A project's own `opencode.json` — or `.opencode/opencode.json` — accepts the
+same `plugins` entry:
+
+```json
+{
+  "plugins": ["/absolute/path/to/opencode-xcode-testing"]
 }
 ```
 
@@ -199,22 +230,22 @@ on `PATH`:
 { "schemaVersion": 1, "runtime": "/absolute/path/to/bun" }
 ```
 
-Treat this like the `plugin` entry: it describes one machine. A relative value
+Treat this like the `plugins` entry: it describes one machine. A relative value
 resolves against the configuration root, which is the only form worth committing. An
 explicit `runtime` that is set but unusable is a **hard error, never a
 fallback** — a setting that silently degrades is worse than one that fails.
 
 ## Restricted agents
 
-A plugin cannot register an agent, so the agents ship as committed templates in
-[`examples/agent/`](examples/agent). They contain no absolute paths, so unlike
-the plugin entry they are portable and a team can share them.
+A plugin does not register agents here, so the agents ship as committed
+templates in [`examples/agent/`](examples/agent). They contain no absolute
+paths, so unlike the plugin entry they are portable and a team can share them.
 
-Copy the one you want into your project:
+Copy the one you want into your project's plural `agents/` directory:
 
 ```bash
-mkdir -p .opencode/agent
-cp /absolute/path/to/opencode-xcode-testing/examples/agent/xcode-test-runner.md .opencode/agent/
+mkdir -p .opencode/agents
+cp /absolute/path/to/opencode-xcode-testing/examples/agent/xcode-test-runner.md .opencode/agents/
 ```
 
 | Template | Shape |
@@ -222,27 +253,39 @@ cp /absolute/path/to/opencode-xcode-testing/examples/agent/xcode-test-runner.md 
 | `xcode-test-runner.md` | A subagent with the three test tools and nothing else. No shell, no file access. |
 | `xcode-developer.md` | A primary agent that can read and edit code and run tests, but has no shell. |
 
-Both use `permission:` rules, never the deprecated `tools:` map, and both open
-with a catch-all:
+Both use V2's ordered `permissions` rules and open with a catch-all:
 
 ```yaml
-permission:
-  "*": deny
-  xcode_test: allow
-  xcode_test_inspect: allow
-  xcode_test_recover: allow
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: xcode_test
+    resource: "*"
+    effect: allow
+  - action: xcode_test_inspect
+    resource: "*"
+    effect: allow
+  - action: xcode_test_recover
+    resource: "*"
+    effect: allow
 ```
 
-Two details matter here. Rules are **last-match-wins with key order preserved**,
-so the catch-all has to come first and the specifics after — the reverse order
-denies everything. And a rule whose pattern is exactly `"*"` with action `deny`
-**hides** the remaining tools from the model entirely, rather than blocking them
-at call time. For a restricted agent that is the point: `bash` is not something
-the model is refused, it is something the model never sees.
+Two details matter here. The **last matching rule wins**, so the catch-all has
+to come first and the specifics after — the reverse order denies everything.
+And each tool's permission action is its own ID, so each can be allowed or
+denied on its own: an agent can run tests without being able to clear a
+quarantine. The shell (`shell` on V2) and Code Mode (`execute`) are never
+allowed back, and a model under either template is not offered them at all.
 
-These templates are asserted by the acceptance gate, which materializes these
-exact files and checks that the resulting permission ruleset hides `bash` while
-exposing the family. They are tested artifacts, not documentation that drifts.
+The Test Tools are registered outside Code Mode, so a restricted agent reaches
+them directly without being granted `execute` — which would be authority over
+every other tool's catalog, and nothing a test run needs.
+
+These templates are asserted by the acceptance gate, which installs these exact
+files in an isolated OpenCode, reads the effective permissions OpenCode
+resolves for them, and checks what a model under each is actually offered.
+They are tested artifacts, not documentation that drifts.
 
 ## What the tool will not do
 
@@ -290,15 +333,16 @@ quality gate** below says why it is one command and how to run either half on
 its own.
 
 The project has **zero runtime dependencies** — shipped code may import only
-`node:*` built-ins plus exactly one `@opencode-ai/plugin` import confined to
-`src/adapter`, and that is enforced by a lint rather than by convention.
+`node:*` built-ins plus `@opencode/plugin` confined to `src/adapter`, and that
+is enforced by a lint rather than by convention.
 
 ```
 src/domain/       shared typed results and the GLOSSARY.md vocabulary
 src/runner/       Xcode runner, supervisor, admission, retention, recovery
 src/interpreter/  xcresult interpretation
 src/adapter/      plugin entrypoint, tool definitions, renderer
-scripts/          fixture generation, freshness check
+server.ts         the checkout's entry as a V2 plugin directory
+scripts/          fixture generation, freshness check, install check, acceptance gate
 examples/agent/   restricted-agent templates
 ```
 
@@ -331,13 +375,15 @@ through its own shebang: this repository needs nothing but Bun, and a `node`
 shim on the path is enough to stop the bare binary. CI is a separate decision;
 what this establishes is that the check exists, is repeatable, and is green.
 
-**It is a development dependency, and the distinction matters.** The
-zero-runtime-dependency rule is about the *plugin*: it is loaded from source
-and resolves its imports from its own location, so anything it imports has to
-be there on a user's machine. A compiler and a set of type declarations run on
-a developer's machine and are never imported by shipped code. `dependencies`
-stays empty; `devDependencies` holds exactly `typescript` and `@types/bun`,
-and a test asserts both of those facts so the line cannot drift.
+**They are development dependencies, and the distinction matters.** The
+zero-runtime-dependency rule is about the *plugin*: it is loaded from source,
+so anything it imports has to be there on a user's machine. A compiler and a
+set of type declarations run on a developer's machine and are never imported
+by shipped code; `@opencode/plugin` is imported, but OpenCode supplies its own
+copy at runtime; and `@opencode/client` is the acceptance gate's.
+`dependencies` stays empty; `devDependencies` holds exactly `typescript`,
+`@types/bun`, `@opencode/plugin` and `@opencode/client`, the last two pinned to
+`2.0.25`, and a test asserts all of that so the line cannot drift.
 
 Two more commands are worth knowing:
 
@@ -356,22 +402,28 @@ Xcode update would be switched off within a week.
 ### The acceptance gate
 
 `bun run check` needs Bun and this checkout's installed development dependencies
-(`bun install`). It does not require OpenCode, Xcode, a simulator, a linked host
-package, or a real OpenCode host. The acceptance gate needs a real machine —
-Xcode, a simulator, OpenCode, and the host-package link from the installation
-steps above — because it is the only thing that proves the whole path works
-rather than that each piece agrees with its own tests:
+(`bun install`). It does not require OpenCode, Xcode, a simulator, or a real
+OpenCode host. The acceptance gate needs a real machine — Xcode, a simulator,
+OpenCode 2.0.25 on `PATH`, and `bun install` — because it is the only thing
+that proves the whole path works rather than that each piece agrees with its
+own tests:
 
 ```bash
 bun scripts/acceptance-gate.ts            # everything
 bun scripts/acceptance-gate.ts --layer4   # runner + interpreter, real xcodebuild
-bun scripts/acceptance-gate.ts --b1       # headless registration, credential-free
+bun scripts/acceptance-gate.ts --b1       # registration, permissions, isolation, installation
 bun scripts/acceptance-gate.ts --b2       # execution through a scripted model turn
 ```
 
+B1 and B2 never touch your own OpenCode. Each starts a private `opencode serve`
+with its own configuration, data, state and cache directories and its own
+password, never the shared background service, and only drives a server that
+reports the process it started. Its only model is a local stub that emits
+scripted tool calls, so neither needs a credential or the network.
+
 It generates its own Xcode project, so it depends on nothing private and
 nothing committed beyond this repository. Every run writes a durable report —
-selected suites, observed toolchain, host version, resolved runtime,
+selected suites, observed toolchain, host and package versions, resolved runtime,
 destination, per-scenario results and freshness drift — into the tool-managed
 storage root, never anywhere this repository could accidentally track it. That
 includes runs that fail before a scenario starts: an invocation that left no
@@ -413,5 +465,9 @@ gating scenario.
 
 The vocabulary is in [`GLOSSARY.md`](GLOSSARY.md); the decisions are in
 [`docs/adr/`](docs/adr). Start with
-[ADR 0002](docs/adr/0002-opencode-v1-adapter-and-restricted-agent-integration.md)
-if you want to know why installation works the way it does.
+[ADR 0003](docs/adr/0003-opencode-v2-migration.md) if you want to know why
+installation works the way it does; it supersedes the V1-specific parts of
+[ADR 0002](docs/adr/0002-opencode-v1-adapter-and-restricted-agent-integration.md),
+which is kept as the record of how the V1 integration was decided. The V2 host
+facts both rest on are in
+[`docs/v2-contract-verification.md`](docs/v2-contract-verification.md).

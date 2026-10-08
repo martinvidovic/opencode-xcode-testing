@@ -16,6 +16,9 @@ _Avoid_: Trusted root
 The nearest canonical ancestor from the launch directory through the Containment Root whose `.opencode/xcode-test.json` enables and configures the Test Tool. It is tracked independently from the Containment Root even when both identify the same directory; configuration-relative values such as `runtime` resolve against it, while `xcodeContainer.path` resolves against containment.
 _Avoid_: Config root
 
+**Location**:
+OpenCode V2's name for the directory a session or plugin instance is bound to. The host loads one plugin instance per Location and reports, with it, the working-copy root it belongs to; the Containment Root is derived from that working-copy root, and the Configuration Root search starts from the Location.
+
 **Test Run**:
 One execution of a Requested Scope, including its retained diagnostics and reported outcome.
 _Avoid_: Build, invocation

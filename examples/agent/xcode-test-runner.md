@@ -1,11 +1,19 @@
 ---
 description: Runs and inspects Xcode tests. Has no shell and no file access.
 mode: subagent
-permission:
-  "*": deny
-  xcode_test: allow
-  xcode_test_inspect: allow
-  xcode_test_recover: allow
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: xcode_test
+    resource: "*"
+    effect: allow
+  - action: xcode_test_inspect
+    resource: "*"
+    effect: allow
+  - action: xcode_test_recover
+    resource: "*"
+    effect: allow
 ---
 
 You run Xcode tests and report what actually happened.
