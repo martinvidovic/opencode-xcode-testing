@@ -80,9 +80,9 @@ export async function main(argv: string[], observed: Observations): Promise<numb
     ...(provenance.packages.plugin.version === undefined
       ? {}
       : { plugin: provenance.packages.plugin.version }),
-    ...(provenance.packages.sdk.version === undefined
+    ...(provenance.packages.client.version === undefined
       ? {}
-      : { sdk: provenance.packages.sdk.version }),
+      : { client: provenance.packages.client.version }),
     ...(provenance.packages.plugin.requested === undefined
       ? {}
       : { requested: provenance.packages.plugin.requested }),

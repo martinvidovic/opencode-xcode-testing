@@ -1,42 +1,42 @@
 /**
- * Which OpenCode packages this gate actually compiled and ran against (#81).
+ * Which OpenCode packages this gate actually compiled and ran against (issues
+ * #81, #142).
  *
- * The report named the host version and stopped there, which is the least
- * informative of the three numbers that matter. The adapter is written against
- * `@opencode-ai/plugin`; the acceptance gates drive a host through
- * `@opencode-ai/sdk`; and both of those are resolved from a package tree the
- * *host* manages under the user's config directory, on its own schedule. A
- * machine can run OpenCode 1.18.29 against plugin 1.15.12 and say nothing
- * about it — which is what this machine was doing.
- *
- * That is not a hypothetical drift. The config manifest pins a range, the
- * install happened once, and upgrading the host does not revisit it. So the
- * evidence a green gate produced was evidence about a package set nobody had
- * named, and "we tested against OpenCode 1.18.29" was true of the host and
- * false of everything the code was linked to.
+ * The report once named the host version and stopped, which is the least
+ * informative of the numbers that matter. The adapter is written against
+ * `@opencode/plugin` and the acceptance gates drive a host through
+ * `@opencode/client` — and on V2 both are **this checkout's own**: pinned
+ * exactly in `package.json` and installed with `bun install` (issue #140). The
+ * V1 model, where the host installed the packages under the user's config
+ * directory on its own schedule and the checkout only symlinked them, is gone.
  *
  * Three questions, kept separate because they have different answers and
  * different remedies:
  *
- * - **What is installed?** The versions in the linked packages themselves.
- * - **Does the tree agree with itself?** A manifest, a lockfile and an
- *   installed package that disagree mean the next install changes what is
- *   being tested, and nobody would know which run was which. The manifest
- *   says what was *asked for*; the lockfile says what was *resolved*; the
- *   installed package says what is *there*. All three can differ, and each
- *   difference means something else went wrong.
- * - **Is that relationship supported?** Stated as a rule rather than assumed,
- *   because "it worked" is not a claim anyone can check later.
+ * - **What is installed?** The versions in the checkout's `node_modules`.
+ * - **Does the checkout agree with itself?** The manifest says what was
+ *   *pinned*, the lockfile what was *resolved*, the installed package what is
+ *   *there*. Any disagreement means the next install changes what is being
+ *   tested, and nobody would know which run was which.
+ * - **Is the host the one the packages were validated against?** A different
+ *   major is a problem: the plugin interface may change across it. A different
+ *   minor or patch is a caveat — the standing policy is to surface skew, never
+ *   to block on it.
+ *
+ * Deliberately absent: the V1 rule that the packages share one version. That
+ * was a fact about a host-managed tree, and nothing about V2 requires it.
  */
 
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { safeFailure } from "../../src/adapter/sanitize.ts"
-import { defaultConfigDirectory, HOST_SCOPE } from "./host-tree.ts"
 
-/** The packages this adapter is written against, and how to say so. */
-export const PACKAGES = ["plugin", "sdk"] as const
+const REPO = join(import.meta.dir, "..", "..")
+const SCOPE = "@opencode"
+
+/** The packages this checkout is written against. */
+export const PACKAGES = ["plugin", "client"] as const
 export type PackageName = (typeof PACKAGES)[number]
 
 export type PackageFacts = {
@@ -46,9 +46,9 @@ export type PackageFacts = {
   version?: string
   /** Why it could not be read, when it could not. */
   unavailable?: string
-  /** The range the host's config manifest asks for, when it asks for one. */
+  /** The exact version the checkout's `package.json` pins. */
   requested?: string
-  /** The version a lockfile in that directory resolved it to, when one did. */
+  /** The version the checkout's `bun.lock` resolved it to. */
   locked?: string
 }
 
@@ -61,102 +61,74 @@ export type Provenance = {
 }
 
 /**
- * What a supported tree looks like.
+ * Why a gate cannot start, if a package it needs is not installed.
  *
- * **The two packages ship as a set**, so a tree where they disagree is a tree
- * assembled by hand or interrupted part-way, and neither is something to draw
- * conclusions from.
- *
- * **The major must match the host's.** Across a major, the plugin interface is
- * allowed to change out from under this adapter, and a gate that passed anyway
- * would be proving something about an interface nobody ships.
- *
- * **A trailing minor is a caveat, not a failure.** It is the ordinary state of
- * a host-managed tree — the config manifest pins a range and nothing revisits
- * it on upgrade — and ADR 0002's standing policy for version skew is to
- * surface it rather than block on it. What was missing was the surfacing.
- * Failing here would make the gate unrunnable on a machine whose only problem
- * is that somebody has not re-run an install in a directory this repository
- * does not own.
+ * Asked before anything boots, and answered with the command that fixes it:
+ * a missing prerequisite fails explicitly rather than skipping a scenario.
  */
-export function readProvenance(hostVersion: string, configDirectory = defaultConfigDirectory()): Provenance {
-  const requested = requestedRanges(configDirectory)
-  const locked = lockedVersions(configDirectory)
+export function missingPackages(repoRoot = REPO): string | undefined {
+  const missing = PACKAGES.filter((name) => !existsSync(join(repoRoot, "node_modules", SCOPE, name)))
+  if (missing.length === 0) return undefined
+  return `${missing.map((name) => `${SCOPE}/${name}`).join(" and ")} ${missing.length === 1 ? "is" : "are"} not installed in this checkout. Run \`bun install\`.`
+}
+
+export function readProvenance(hostVersion: string, repoRoot = REPO): Provenance {
+  const pinned = pinnedVersions(repoRoot)
+  const locked = lockedVersions(repoRoot)
   const packages = {} as Record<PackageName, PackageFacts>
   const problems: string[] = []
   const caveats: string[] = []
 
   for (const name of PACKAGES) {
-    packages[name] = {
-      ...readPackage(configDirectory, name),
-      ...ranged(requested, name),
+    const facts: PackageFacts = {
+      ...readPackage(repoRoot, name),
+      ...(pinned[name] === undefined ? {} : { requested: pinned[name] }),
       ...(locked[name] === undefined ? {} : { locked: locked[name] }),
     }
+    packages[name] = facts
 
-    // A package that is simply not installed is not a disagreement — there is
-    // nothing yet for anything to disagree with, and the gates that need one
-    // say so themselves, in words about what they were trying to do. A
-    // package that *is* there and cannot be read is a different matter: the
-    // tree exists and cannot be characterized, so nothing drawn from it can
-    // be attributed to a version.
-    const { unavailable, installed } = packages[name]
-    if (unavailable !== undefined && installed === true) {
-      problems.push(`${HOST_SCOPE}/${name}: ${unavailable}`)
+    // A package that is simply not installed is not a disagreement; the gates
+    // that need one say so through `missingPackages`. One that is there and
+    // cannot be read is: nothing drawn from it can be attributed to a version.
+    if (facts.unavailable !== undefined && facts.installed === true) {
+      problems.push(`${SCOPE}/${name}: ${facts.unavailable}`)
+    }
+
+    const { version, requested, locked: resolved } = facts
+    if (version === undefined) continue
+
+    if (requested !== undefined && version !== requested) {
+      problems.push(
+        `${SCOPE}/${name} is ${version}, but this checkout pins ${requested}. Run \`bun install\` so the run is against what the checkout says it is.`,
+      )
+    }
+    if (resolved !== undefined && resolved !== version) {
+      problems.push(
+        `${SCOPE}/${name} is ${version} on disk and ${resolved} in the checkout's lockfile; the next install would restore ${resolved}.`,
+      )
     }
   }
 
   const plugin = packages.plugin.version
-  const sdk = packages.sdk.version
+  const host = parse(hostVersion)
 
-  if (plugin !== undefined && sdk !== undefined && plugin !== sdk) {
-    problems.push(
-      `${HOST_SCOPE}/plugin is ${plugin} and ${HOST_SCOPE}/sdk is ${sdk}; they ship as a set, so a tree where they disagree was assembled by hand or interrupted part-way.`,
-    )
-  }
-
-  for (const name of PACKAGES) {
-    const { version, requested: range, locked: resolved } = packages[name]
-    if (version === undefined) continue
-
-    if (range !== undefined && !satisfiesCaret(version, range)) {
-      problems.push(
-        `${HOST_SCOPE}/${name} is ${version}, which does not satisfy the \`${range}\` its config manifest asks for; the next install in that directory would change what is being tested.`,
-      )
-    }
-
-    // The manifest says what was asked for; the lock says what was resolved;
-    // the package says what is there. A lock that disagrees with the package
-    // means somebody installed by hand or an install was interrupted, and the
-    // next one silently puts back a different version from the one every
-    // report so far was written about.
-    if (resolved !== undefined && resolved !== version) {
-      problems.push(
-        `${HOST_SCOPE}/${name} is ${version} on disk and ${resolved} in the lockfile beside it; the next install in that directory would restore ${resolved}.`,
-      )
-    }
-  }
-
-  const host = majorOf(hostVersion)
   if (host === undefined && plugin !== undefined) {
-    // Said rather than skipped. `observedHostVersion` answers "unknown" when
-    // `opencode --version` cannot be run, and the guard that skipped an
-    // unparseable host also skipped the major check — so a machine with a
-    // broken host binary quietly stopped enforcing the one rule that catches
-    // an incompatible package tree.
+    // Said rather than skipped: a host whose version cannot be read must not
+    // quietly stop the one rule that catches an incompatible package set.
     caveats.push(
       `the host version is \`${hostVersion}\`, which cannot be compared against the packages (${plugin}); the major-version rule was not applied.`,
     )
   }
 
-  if (host !== undefined && plugin !== undefined) {
-    const packageMajor = majorOf(plugin)
-    if (packageMajor !== host) {
+  const packageVersion = plugin === undefined ? undefined : parse(plugin)
+  if (host !== undefined && plugin !== undefined && packageVersion !== undefined) {
+    if (host[0] !== packageVersion[0]) {
       problems.push(
-        `the host is ${hostVersion} and its packages are ${plugin}; across a major the plugin interface may change, so a gate passing against these proves nothing about the one the host ships.`,
+        `the host is ${render(host)} and the packages are ${plugin}; across a major the plugin interface may change, so a gate passing against these proves nothing about the one the host ships.`,
       )
-    } else if (plugin !== hostVersion && olderThan(plugin, hostVersion)) {
+    } else if (render(host) !== render(packageVersion)) {
       caveats.push(
-        `the host is ${hostVersion} and its packages are ${plugin}. The config manifest pins a range and upgrading the host does not revisit it, so these were installed once and left. \`bun install\` in the OpenCode config directory refreshes them.`,
+        `the host is ${render(host)} and the packages are pinned to ${plugin}. The Test Tool is validated against exactly ${plugin}; this run is evidence about ${render(host)}, not a widening of that claim.`,
       )
     }
   }
@@ -165,114 +137,71 @@ export function readProvenance(hostVersion: string, configDirectory = defaultCon
 }
 
 /** What each installed package says about itself. */
-function readPackage(configDirectory: string, name: PackageName): PackageFacts {
-  const directory = join(configDirectory, "node_modules", HOST_SCOPE, name)
-  if (!existsSync(directory)) {
-    return { unavailable: "it is not installed under the OpenCode config directory" }
-  }
+function readPackage(repoRoot: string, name: PackageName): PackageFacts {
+  const directory = join(repoRoot, "node_modules", SCOPE, name)
+  if (!existsSync(directory)) return { unavailable: "it is not installed in this checkout" }
 
   try {
     const parsed = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as {
       name?: unknown
       version?: unknown
     }
-    if (parsed.name !== `${HOST_SCOPE}/${name}`) {
-      // Quoted back, and therefore redacted first. This is a field in a file
-      // under someone's home directory that this code's own comments call
-      // "assembled by hand", and it lands in a report a model reads — so it
-      // gets the same treatment as any other text this tool did not write.
-      return {
-        installed: true,
-        unavailable: `the package there declares itself \`${redact(parsed.name)}\``,
-      }
+    if (parsed.name !== `${SCOPE}/${name}`) {
+      // Quoted back, and therefore redacted first: it lands in a report.
+      return { installed: true, unavailable: `the package there declares itself \`${redact(parsed.name)}\`` }
     }
     if (typeof parsed.version !== "string") {
       return { installed: true, unavailable: "the package there declares no version" }
     }
     return { installed: true, version: parsed.version }
   } catch (error) {
-    // Sanitized: a parse error quotes the file, and the file is under the
-    // user's home by construction.
     return { installed: true, unavailable: `its manifest could not be read: ${safeFailure(error)}` }
   }
 }
 
-/**
- * The ranges the host's own config manifest asks for.
- *
- * Read from the manifest rather than the lockfile. A lockfile records a
- * resolution; the manifest records the intent, and it is intent against
- * installed reality that says whether the next install would move.
- */
-function requestedRanges(configDirectory: string): Record<string, string> {
+/** The exact versions the checkout pins. */
+function pinnedVersions(repoRoot: string): Partial<Record<PackageName, string>> {
   try {
-    const parsed = JSON.parse(
-      readFileSync(join(configDirectory, "package.json"), "utf8"),
-    ) as { dependencies?: Record<string, unknown> }
-    const found: Record<string, string> = {}
-    for (const [key, value] of Object.entries(parsed.dependencies ?? {})) {
-      if (typeof value === "string") found[key] = value
+    const parsed = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+      devDependencies?: Record<string, unknown>
+      dependencies?: Record<string, unknown>
+    }
+    const declared = { ...parsed.dependencies, ...parsed.devDependencies }
+    const found: Partial<Record<PackageName, string>> = {}
+    for (const name of PACKAGES) {
+      const value = declared[`${SCOPE}/${name}`]
+      if (typeof value === "string") found[name] = value
     }
     return found
   } catch {
-    // A host that has never installed anything has no manifest, which is not
-    // a disagreement — there is nothing yet to disagree with.
     return {}
   }
 }
 
 /**
- * What a lockfile in the config directory resolved each package to.
- *
- * Both formats are read because both turn up: OpenCode installs with Bun, and
- * a machine where somebody has run `npm install` in that directory has the
- * other. Neither is this repository's to own, so what they are consulted for
- * is agreement, never authority.
+ * What the checkout's `bun.lock` resolved each package to.
  *
  * `bun.lock` is JSONC — it carries trailing commas, which `JSON.parse`
- * refuses — so its entries are read by pattern rather than parsed. Narrow on
- * purpose: this reads two known keys out of a file somebody else's tool
- * writes, and a tolerant parser for the whole thing would be a much larger
- * claim about a format that is not ours.
+ * refuses — so its entries are read by pattern rather than parsed.
  */
-function lockedVersions(configDirectory: string): Partial<Record<PackageName, string>> {
+function lockedVersions(repoRoot: string): Partial<Record<PackageName, string>> {
   const found: Partial<Record<PackageName, string>> = {}
-
-  const bun = read(join(configDirectory, "bun.lock"))
-  if (bun !== undefined) {
-    for (const name of PACKAGES) {
-      const entry = new RegExp(`"${HOST_SCOPE}/${name}":\\s*\\["${HOST_SCOPE}/${name}@([^"]+)"`).exec(bun)
-      if (entry?.[1] !== undefined) found[name] = entry[1]
-    }
+  let text: string
+  try {
+    text = readFileSync(join(repoRoot, "bun.lock"), "utf8")
+  } catch {
+    return found
   }
-
-  const npm = read(join(configDirectory, "package-lock.json"))
-  if (npm !== undefined) {
-    try {
-      const parsed = JSON.parse(npm) as {
-        packages?: Record<string, { version?: unknown }>
-      }
-      for (const name of PACKAGES) {
-        const version = parsed.packages?.[`node_modules/${HOST_SCOPE}/${name}`]?.version
-        // Bun's answer wins where both exist: it is the one OpenCode writes.
-        if (typeof version === "string" && found[name] === undefined) found[name] = version
-      }
-    } catch {
-      // A lockfile nobody can parse says nothing, which is what it said
-      // before this function existed.
-    }
+  for (const name of PACKAGES) {
+    const entry = new RegExp(`"${SCOPE}/${name}":\\s*\\["${SCOPE}/${name}@([^"]+)"`).exec(text)
+    if (entry?.[1] !== undefined) found[name] = entry[1]
   }
-
   return found
 }
 
 /**
- * A value from somebody else's manifest, safe to quote back.
- *
- * `safeFailure` is about errors, so this borrows only its rule: paths and
- * private identifiers out, first line only, bounded. A name field is normally
- * a package name and a few characters long; anything else about it is a
- * reason to show less of it, not more.
+ * A value from somebody else's manifest, safe to quote back: paths and private
+ * identifiers out, first line only, bounded.
  */
 function redact(value: unknown): string {
   return safeFailure(new Error(String(value))).replace(/^Error: /, "").slice(0, NAME_CHAR_CAP)
@@ -281,62 +210,17 @@ function redact(value: unknown): string {
 /** Longer than a package name by a wide margin, and still a name. */
 const NAME_CHAR_CAP = 100
 
-function read(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf8")
-  } catch {
-    return undefined
-  }
-}
-
-function ranged(requested: Record<string, string>, name: PackageName): PackageFacts {
-  const range = requested[`${HOST_SCOPE}/${name}`]
-  return range === undefined ? {} : { requested: range }
-}
-
 /**
- * `^x.y.z`, as the host's manifest writes it. Anything else is not judged.
- *
- * The zero-major case is not the same rule and is the one that is easy to get
- * wrong: below 1.0.0 a caret pins the *minor*, because that is where breaking
- * changes go — `^0.2.3` admits `0.2.9` and refuses `0.3.0`. Written as a
- * major-only comparison it admitted `0.3.0`, which is the opposite of what the
- * range means. Nothing in the OpenCode line is 0.x today, which is exactly why
- * it would have gone unnoticed.
+ * The numeric head of a version, ignoring any prefix or pre-release suffix.
+ * `opencode --version` answers `opencode v2.0.25`, and that is the same
+ * version as `2.0.25`.
  */
-function satisfiesCaret(version: string, range: string): boolean {
-  if (!range.startsWith("^")) return true
-  const wanted = parse(range.slice(1))
-  const found = parse(version)
-  if (wanted === undefined || found === undefined) return true
-
-  // The leading non-zero component is the one a caret holds fixed.
-  const pinned = wanted[0] !== 0 ? 1 : wanted[1] !== 0 ? 2 : 3
-  for (let index = 0; index < pinned; index += 1) {
-    if (found[index] !== wanted[index]) return false
-  }
-  return !olderThan(version, range.slice(1))
-}
-
-function majorOf(version: string): number | undefined {
-  return parse(version)?.[0]
-}
-
-function olderThan(version: string, other: string): boolean {
-  const a = parse(version)
-  const b = parse(other)
-  if (a === undefined || b === undefined) return false
-  for (let index = 0; index < 3; index += 1) {
-    const left = a[index] ?? 0
-    const right = b[index] ?? 0
-    if (left !== right) return left < right
-  }
-  return false
-}
-
-/** The numeric head of a version, ignoring any pre-release suffix. */
 function parse(version: string): [number, number, number] | undefined {
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim())
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(version.trim())
   if (match === null) return undefined
   return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function render(version: [number, number, number]): string {
+  return version.join(".")
 }

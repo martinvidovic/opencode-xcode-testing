@@ -23,7 +23,8 @@ import { withTryLock } from "../../src/runner/locks.ts"
 
 export class DrivenRoots {
   readonly #homeDir: string
-  readonly #roots = new Map<string, string>()
+  /** Canonical storage identity — containment, then configuration — to its key. */
+  readonly #roots = new Map<string, { containment: string; configuration?: string }>()
 
   constructor(homeDir: string = homedir()) {
     this.#homeDir = homeDir
@@ -43,20 +44,32 @@ export class DrivenRoots {
    * addresses a directory that does not exist — and every `existsSync` after
    * it politely declines to do anything, which is how this reads as working.
    */
-  add(path: string): string {
-    this.#roots.set(canonicalize(path), path)
+  add(path: string, configurationRoot?: string): string {
+    const containment = canonicalize(path)
+    const configuration = configurationRoot === undefined ? undefined : canonicalize(configurationRoot)
+    this.#roots.set(`${containment}\0${configuration ?? ""}`, {
+      containment,
+      ...(configuration === undefined ? {} : { configuration }),
+    })
     return path
   }
 
   /** The opaque key one registered root is filed under. */
-  keyOf(path: string): string {
-    return storageFor(this.#homeDir, canonicalize(path)).rootKey
+  keyOf(path: string, configurationRoot?: string): string {
+    return this.#storage({
+      containment: canonicalize(path),
+      ...(configurationRoot === undefined ? {} : { configuration: canonicalize(configurationRoot) }),
+    }).rootKey
+  }
+
+  #storage(identity: { containment: string; configuration?: string }) {
+    return storageFor(this.#homeDir, identity.containment, identity.configuration)
   }
 
   /** Every registered root's storage directory that exists, with its key. */
   directories(): Array<{ key: string; path: string }> {
-    return [...this.#roots.keys()]
-      .map((root) => storageFor(this.#homeDir, root))
+    return [...this.#roots.values()]
+      .map((identity) => this.#storage(identity))
       .filter((storage) => existsSync(storage.rootDir))
       .map((storage) => ({ key: storage.rootKey, path: storage.rootDir }))
   }
@@ -85,7 +98,7 @@ export class DrivenRoots {
     // directories: the entries outlive everything they describe, and every
     // later housekeeping pass reopens the question of a root that has not
     // existed since the run that made it.
-    this.#forget([...this.#roots.keys()].map((root) => storageFor(this.#homeDir, root).rootKey))
+    this.#forget([...this.#roots.values()].map((identity) => this.#storage(identity).rootKey))
     return removed
   }
 

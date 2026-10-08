@@ -1,30 +1,46 @@
 /**
- * A local OpenAI-compatible stub provider (ADR 0002, (b2)).
+ * A local OpenAI-compatible stub provider (ADR 0002 (b2), issue #142).
  *
  * Tool execution in the host requires a real model turn, and there is no
  * built-in stub model provider — so the gate supplies one. It emits **scripted**
  * tool calls rather than deciding anything, which makes the whole execution
  * layer deterministic, credential-free and offline.
  *
- * The package it is configured through is installed by the host into its own
- * config directory as test infrastructure. It is not a repository dependency,
- * so the zero-dependency rule is untouched.
+ * On V2 it is also the gate's witness. The client has no route that lists a
+ * Location's tools, so the `tools` array of each request is the record of what
+ * the host offered a model under that agent's effective permissions (issue
+ * #140) — names, descriptions and parameter schemas exactly as rendered.
+ *
+ * It is configured through `@opencode/ai/providers/openai-compatible`, which
+ * the V2 host bundles: nothing is downloaded and nothing is a repository
+ * dependency.
  */
 
 export const STUB_PROVIDER_ID = "stub"
 export const STUB_MODEL_ID = "stub-model"
-export const STUB_NPM = "@ai-sdk/openai-compatible"
+export const STUB_PACKAGE = "@opencode/ai/providers/openai-compatible"
 
 export type ScriptedCall = { tool: string; args: unknown }
+
+/** One tool as a model request described it. */
+export type OfferedTool = { name: string; description?: string; parameters?: unknown }
 
 export type StubProvider = {
   /** The port the kernel assigned, and what `baseURL` is built from. */
   readonly port: number
   baseURL: string
-  /** What the next turn should call. Cleared once emitted. */
+  /** What the next turn that can make a call should call. Cleared once emitted. */
   script(call: ScriptedCall): void
   /** Turns served so far, so a scenario can prove a turn actually happened. */
   readonly turns: number
+  /** A position in the request log, for `offeredSince`. */
+  mark(): number
+  /**
+   * The tools offered by the first tool-bearing request after `mark`, or
+   * `undefined` if none has arrived. Tool-less requests — a session's title
+   * generation, an agent with nothing allowed — are skipped, not reported.
+   */
+  offeredSince(mark: number): OfferedTool[] | undefined
   stop(): void
 }
 
@@ -40,6 +56,7 @@ export type StubProvider = {
 export function startStubProvider(): StubProvider {
   let pending: ScriptedCall | undefined
   let turns = 0
+  const offered: OfferedTool[][] = []
 
   const server = Bun.serve({
     port: 0,
@@ -53,13 +70,24 @@ export function startStubProvider(): StubProvider {
         return new Response("not found", { status: 404 })
       }
 
-      const body = (await request.json()) as { stream?: boolean }
+      const body = (await request.json()) as {
+        stream?: boolean
+        tools?: Array<{ function?: { name?: unknown; description?: unknown; parameters?: unknown } }>
+        messages?: Array<{ role?: unknown }>
+      }
       turns += 1
 
-      // The first turn after a script emits the call; every turn after it just
-      // ends the conversation, so a scenario is exactly one tool invocation.
-      const call = pending
-      pending = undefined
+      const tools = (body.tools ?? []).map(offeredTool)
+      offered.push(tools)
+
+      // The scripted call goes to the first request that can make it: one
+      // that offers tools and is not already answering a tool result. A new
+      // session's first request is a tool-less title generation, and spending
+      // the script there would leave the real turn with nothing to do — so a
+      // scenario is still exactly one tool invocation.
+      const answering = body.messages?.at(-1)?.role === "tool"
+      const call = tools.length > 0 && !answering ? pending : undefined
+      if (call !== undefined) pending = undefined
 
       if (body.stream === false) {
         return Response.json({
@@ -115,6 +143,12 @@ export function startStubProvider(): StubProvider {
     get turns() {
       return turns
     },
+    mark() {
+      return offered.length
+    },
+    offeredSince(mark) {
+      return offered.slice(mark).find((tools) => tools.length > 0)
+    },
     stop() {
       server.stop(true)
     },
@@ -131,13 +165,22 @@ function chunk(delta: unknown, finish: string | null): string {
   })}\n\n`
 }
 
-/** The provider block the host needs to reach the stub. */
+function offeredTool(tool: { function?: { name?: unknown; description?: unknown; parameters?: unknown } }): OfferedTool {
+  const fn = tool.function ?? {}
+  return {
+    name: String(fn.name),
+    ...(typeof fn.description === "string" ? { description: fn.description } : {}),
+    ...(fn.parameters === undefined ? {} : { parameters: fn.parameters }),
+  }
+}
+
+/** The V2 `providers` block the host needs to reach the stub. */
 export function stubProviderConfig(baseURL: string): Record<string, unknown> {
   return {
     [STUB_PROVIDER_ID]: {
-      npm: STUB_NPM,
       name: "Acceptance gate stub",
-      options: { baseURL, apiKey: "stub" },
+      package: STUB_PACKAGE,
+      settings: { baseURL, apiKey: "stub" },
       models: { [STUB_MODEL_ID]: { name: "Scripted" } },
     },
   }
