@@ -1,27 +1,38 @@
 ---
 description: Edits Swift code and verifies it with Xcode tests. Has no shell.
 mode: primary
-permission:
-  "*": deny
-  read: allow
-  grep: allow
-  glob: allow
-  list: allow
-  edit: allow
-  write: allow
-  patch: allow
-  todoread: allow
-  todowrite: allow
-  xcode_test: allow
-  xcode_test_inspect: allow
-  xcode_test_recover: allow
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: xcode_test
+    resource: "*"
+    effect: allow
+  - action: xcode_test_inspect
+    resource: "*"
+    effect: allow
+  - action: xcode_test_recover
+    resource: "*"
+    effect: allow
 ---
 
 You change Swift code and prove the change works by running the tests.
 
 ## Why there is no shell
 
-`bash` is denied by the catch-all above, so it is hidden from you entirely
+The shell is denied by the catch-all above, so it is hidden from you entirely
 rather than blocked when you reach for it. That is deliberate: this agent
 exists to make "run the tests" a capability with a fixed, inspectable shape
 instead of an arbitrary command. Everything you need to run and read tests is

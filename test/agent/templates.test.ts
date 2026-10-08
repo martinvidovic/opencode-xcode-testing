@@ -1,5 +1,5 @@
 /**
- * The restricted-agent templates (ADR 0002).
+ * The restricted-agent templates (ADR 0002, ADR 0003).
  *
  * The acceptance gate asserts these through a real host, which is the check
  * that matters. These assertions are the cheap local ones that fail the moment
@@ -17,12 +17,14 @@ const TEMPLATE_DIR = join(import.meta.dir, "..", "..", "examples", "agent")
 /** The tool family the templates exist to expose. */
 const FAMILY = ["xcode_test", "xcode_test_inspect", "xcode_test_recover"]
 
+type Rule = { action: string; resource: string; effect: string }
+
 type Template = {
   name: string
   frontmatter: string
   body: string
-  /** Permission entries in source order — order is part of the contract. */
-  permissions: Array<{ pattern: string; action: string }>
+  /** V2 permission rules in source order — order is part of the contract. */
+  permissions: Rule[]
 }
 
 function templates(): Template[] {
@@ -33,32 +35,50 @@ function templates(): Template[] {
 }
 
 /**
- * A deliberately tiny frontmatter reader. The project has zero dependencies,
- * and the shape under test is two levels deep — a YAML library would be a
- * dependency taken to parse eight lines.
+ * A deliberately tiny frontmatter reader for the one shape under test: a
+ * `permissions:` list of `action` / `resource` / `effect` mappings. A YAML
+ * library would be a dependency taken to parse a dozen lines.
  */
 function parse(name: string, source: string): Template {
   const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(source)
   if (match === null) throw new Error(`${name} has no frontmatter`)
 
   const frontmatter = match[1] as string
-  const permissions: Array<{ pattern: string; action: string }> = []
+  const permissions: Rule[] = []
+  let current: Partial<Rule> | undefined
+  const flush = () => {
+    if (current === undefined) return
+    if (current.action === undefined || current.resource === undefined || current.effect === undefined) {
+      throw new Error(`${name} has an incomplete permission rule`)
+    }
+    permissions.push(current as Rule)
+    current = undefined
+  }
 
-  let inPermission = false
+  let inPermissions = false
   for (const line of frontmatter.split("\n")) {
-    if (/^permission:\s*$/.test(line)) {
-      inPermission = true
+    if (/^permissions:\s*$/.test(line)) {
+      inPermissions = true
       continue
     }
-    if (inPermission && /^\S/.test(line)) break
-    if (!inPermission) continue
+    if (inPermissions && /^\S/.test(line)) break
+    if (!inPermissions) continue
 
-    const entry = /^\s+("?)([^":]+)\1:\s*(\S+)\s*$/.exec(line)
-    if (entry !== null) permissions.push({ pattern: entry[2] as string, action: entry[3] as string })
+    const field = /^\s+(-\s+)?(action|resource|effect):\s*"?([^"]*?)"?\s*$/.exec(line)
+    if (field === null) continue
+    if (field[1] !== undefined) {
+      flush()
+      current = {}
+    }
+    if (current !== undefined) current[field[2] as keyof Rule] = field[3] as string
   }
+  flush()
 
   return { name, frontmatter, body: match[2] as string, permissions }
 }
+
+const allowed = (template: Template) =>
+  template.permissions.filter((rule) => rule.effect === "allow").map((rule) => rule.action)
 
 describe("the shipped templates", () => {
   test("are the two the documentation names", () => {
@@ -70,27 +90,29 @@ describe("the shipped templates", () => {
 
   for (const template of templates()) {
     describe(template.name, () => {
-      test("opens with a catch-all deny, which is what hides a tool rather than blocking it", () => {
-        // Rules are last-match-wins with key order preserved, so a catch-all
-        // placed after the specifics would deny everything.
-        expect(template.permissions[0]).toEqual({ pattern: "*", action: "deny" })
+      test("opens with a catch-all deny, so nothing is reachable unless named after it", () => {
+        // The last matching rule wins (issue #140), so a catch-all placed
+        // after the specifics would deny everything.
+        expect(template.permissions[0]).toEqual({ action: "*", resource: "*", effect: "deny" })
       })
 
-      test("exposes the whole tool family", () => {
-        const allowed = template.permissions
-          .filter((entry) => entry.action === "allow")
-          .map((entry) => entry.pattern)
-        for (const tool of FAMILY) expect(allowed).toContain(tool)
+      test("exposes the whole tool family, each on its own key", () => {
+        for (const tool of FAMILY) {
+          expect(template.permissions).toContainEqual({ action: tool, resource: "*", effect: "allow" })
+        }
       })
 
-      test("hides bash by never allowing it back", () => {
-        const patterns = template.permissions.map((entry) => entry.pattern)
-        expect(patterns).not.toContain("bash")
+      test("never allows the shell back, and grants no Code Mode authority", () => {
+        // On V2 the shell's action is `shell`, and `execute` is Code Mode —
+        // which would reach every tool through a route the rules above do not
+        // shape. Neither is needed to run tests.
+        expect(allowed(template)).not.toContain("shell")
+        expect(allowed(template)).not.toContain("bash")
+        expect(allowed(template)).not.toContain("execute")
       })
 
-      test("uses permission rules, never the deprecated tools map", () => {
-        // `tools` is normalized into `permission` and then overridden by any
-        // explicit `permission` block, so mixing them silently loses one.
+      test("uses V2 permission rules, never the V1 map or the deprecated tools map", () => {
+        expect(template.frontmatter).not.toMatch(/^permission:/m)
         expect(template.frontmatter).not.toMatch(/^tools:/m)
       })
 
@@ -120,14 +142,13 @@ describe("the shipped templates", () => {
 describe("the two templates", () => {
   test("differ in reach, not in what they hide", () => {
     const [developer, runner] = templates() as [Template, Template]
-    const allowed = (template: Template) =>
-      template.permissions.filter((entry) => entry.action === "allow").map((entry) => entry.pattern)
 
     // The runner is the strict one: the family and nothing else.
     expect(allowed(runner).sort()).toEqual([...FAMILY].sort())
-    // The developer can read and edit, and still has no shell.
+    // The developer can read and edit — `edit` covers write and patch on V2 —
+    // and still has no shell.
     expect(allowed(developer)).toContain("edit")
     expect(allowed(developer)).toContain("read")
-    expect(allowed(developer)).not.toContain("bash")
+    expect(allowed(developer)).not.toContain("shell")
   })
 })

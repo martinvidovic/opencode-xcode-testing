@@ -53,6 +53,9 @@ every probe ran on a private `opencode serve` with its own `HOME`,
 | `setup` throws | Plugin state becomes `failed` with the error **and its stack**, which includes private paths; host logs `failed to load plugin`. | `plugin.list` |
 | `process.stderr` from `setup` | Goes to the server's stderr. | probe |
 | Cleanup | Runs per Location instance on file change (hot reload), on config change and on removal from config. | probe |
+| Adding a plugin entry | Takes effect without a restart: the acceptance gate removes the plugin from a watched config, then restores it, and the family is offered again (issue #142, `b1 plugin reload`). | gate |
+| Project-level entries | A `plugins` entry in a project's `.opencode/opencode.json` loads like a global one (issue #143, `b1 documented installation path`); the docs list `./opencode.json(c)` and `./.opencode/opencode.json(c)` beside the global file. | gate; docs |
+| Dual V1/V2 export | The plugin migration guide documents one default export carrying both `server()` (V1) and `setup()` (V2) for a temporary window. Not adopted (V2-only policy). | docs |
 | `process.cwd()` | The server's working directory, not the Location. Never use it. | probe |
 
 ### Location and the two roots
@@ -93,7 +96,7 @@ Mapping onto the existing root roles:
 | **Code Mode default** | **`codemode` defaults to on.** A tool registered without `options` is **not** offered to the model directly: it is only reachable through `execute` (Code Mode). With `options: { codemode: false }` it is offered as a first-class tool. | stub provider recorded each request's `tools` array |
 | Permission action | Defaults to the tool's effective name. `options.permission` overrides it. | probe agent rules |
 | Restricted agent | Agent rules `[{ "*","*",deny }, { "xcode_probe_pinned","*",allow }]` → the model was offered **only** `xcode_probe_pinned`; no `shell`, `read`, `edit`, `execute` or anything else. A `codemode` tool under the same agent was unreachable, because `execute` was denied. | stub-provider request body |
-| Default `build` agent | Offered every built-in plus the `codemode: false` tool plus `execute`. | stub-provider request body |
+| Default `build` agent | Offered `edit`, `glob`, `grep`, `question`, `read`, `shell`, `skill`, `subagent`, `webfetch`, `websearch`, `write`, the `codemode: false` tool, and `execute`. There is no `list`, `todoread` or `todowrite` tool on V2, and `write` and `patch` use the `edit` action. | stub-provider request body; permissions docs |
 | Execute context | `{ sessionID, agent, messageID, id, signal, progress }`. `agent` is the agent ID (`runner`, `build`). | probe |
 | Result | `{ content: string \| (TextContent \| FileContent)[], output?, metadata? }`. Content array text is what the model receives. | types; probe |
 | Progress | `await context.progress(metadata)`; the latest metadata is kept on the tool part, including when the call is later aborted. | session context |

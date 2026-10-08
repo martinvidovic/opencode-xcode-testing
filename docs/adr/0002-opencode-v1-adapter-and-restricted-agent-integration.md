@@ -1,6 +1,6 @@
 # ADR 0002: OpenCode v1 adapter and restricted-agent integration
 
-- **Status:** Accepted
+- **Status:** Accepted; partially superseded by [ADR 0003](0003-opencode-v2-migration.md) (OpenCode V2 migration)
 - **Date:** 2026-09-13
 - **Decides:** [Issue #5 — Define the OpenCode v1 adapter and restricted-agent integration](https://github.com/martinvidovic/opencode-xcode-testing/issues/5)
 - **Settled contracts relied on:** #3 (process lifecycle and Result Bundle retention), #4 (OpenCode v1 tool execution constraints), #6 (Test Run request and project configuration contract), #7 (Result Summary and progressive inspection contract), #8 (xcresult interpretation and fallback behavior), #2 / ADR 0001 (validation layers)
