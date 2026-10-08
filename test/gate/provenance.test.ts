@@ -113,6 +113,16 @@ describe("a host other than the one the packages were validated against", () => 
     })
   })
 
+  test("holds the client to the host's major too, since the gates drive the host through it", () => {
+    const tree: Tree = {
+      installed: { plugin: "2.0.25", client: "3.0.0" },
+      pinned: { plugin: "2.0.25", client: "3.0.0" },
+    }
+    withCheckout(tree, (repoRoot) => {
+      expect(readProvenance("2.0.25", repoRoot).problems.join(" ")).toContain("@opencode/client is 3.0.0")
+    })
+  })
+
   test("reads a host version written the way `opencode --version` writes it", () => {
     withCheckout(AGREED, (repoRoot) => {
       expect(readProvenance("opencode v2.0.25", repoRoot)).toMatchObject({ problems: [], caveats: [] })

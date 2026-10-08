@@ -20,13 +20,13 @@ import { join } from "node:path"
 import { TOOL_IDS } from "../../src/adapter/descriptions.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 import type { DrivenRoots } from "./driven-roots.ts"
-import { bootHost, hostConfigDirectory, loadClient, observedHostVersion, type BootedHost } from "./host.ts"
+import { baseHostConfig, bootHost, hostConfigDirectory, loadClient, observedHostVersion, type BootedHost } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { readProvenance } from "./provenance.ts"
-import { startStubProvider, stubProviderConfig, type StubProvider } from "./provider.ts"
+import { startStubProvider, type StubProvider } from "./provider.ts"
 import type { ScenarioResult } from "./report.ts"
 import { SCENARIO } from "./scenarios.ts"
-import { scriptedTurn } from "./turn.ts"
+import { offeredNames, scriptedTurn } from "./turn.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const PLUGIN = join(REPO, "src", "adapter", "plugin.ts")
@@ -61,19 +61,19 @@ export async function runInstallationGate(record: ScenarioSink, roots: DrivenRoo
     stub = startStubProvider()
     host = await bootHost({
       workspace,
-      config: { $schema: "https://opencode.ai/config.json", providers: stubProviderConfig(stub.baseURL), share: "disabled", update: "disable" },
+      config: baseHostConfig(stub.baseURL),
       cwd: project,
       connect: loaded.connect,
     })
 
-    const offered = ((await scriptedTurn(host.client, stub, { directory: project })).offered ?? []).map((tool) => tool.name)
+    const offered = offeredNames(await scriptedTurn(host.client, stub, { directory: project }))
     const missing = TOOL_IDS.filter((id) => !offered.includes(id))
     record(
       scenario(
         started,
         missing.length === 0 ? "passed" : "failed",
         missing.length === 0
-          ? `a plugins-directory symlink, exactly as the README describes it, offers the family (against ${checkoutPackages()})`
+          ? `the plugin's entry file symlinked into the config directory's plural plugins/ offers the family (against ${checkoutPackages()})`
           : `installing the documented way offered nothing: ${missing.join(", ")} absent`,
       ),
     )

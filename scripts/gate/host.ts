@@ -27,6 +27,7 @@ import type { OpenCodeClient } from "@opencode/client"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 import { reportedPort } from "./ports.ts"
 import { missingPackages, readProvenance } from "./provenance.ts"
+import { stubProviderConfig } from "./provider.ts"
 
 /**
  * How long the host may take to come up.
@@ -140,7 +141,6 @@ export type HostLauncher = (input: { command: string; arguments: string[]; optio
 
 export type BootedHost = {
   port: number
-  baseUrl: string
   /** The server's own answer to `server.info`, checked against the child. */
   version: string
   client: HostClient
@@ -170,7 +170,7 @@ export async function bootHost(
   launch: HostLauncher = ({ command, arguments: args, options }) => spawn(command, args, options),
 ): Promise<BootedHost> {
   const xdg = isolatedDirectories(input.workspace)
-  const configPath = join(xdg.XDG_CONFIG_HOME, "opencode", "opencode.json")
+  const configPath = join(hostConfigDirectory(input.workspace), "opencode.json")
   const configure = (config: Record<string, unknown>) => writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
   configure(input.config)
 
@@ -203,7 +203,18 @@ export async function bootHost(
       )
     }
 
-    return { port, baseUrl, version: info.version, client, configure, output: () => output, stop: () => exited(child) }
+    return {
+      port,
+      version: info.version,
+      client,
+      configure,
+      output: () => output,
+      // Awaited, not fired and forgotten (issue #104). Signalling a host and
+      // returning says only that the signal was sent: the plugin inside it may
+      // still be preparing storage for a root it resolved, and storage that
+      // lands after the run's sweep is storage nobody collects.
+      stop: () => exited(child),
+    }
   } catch (error) {
     // A host that never finished starting is still a process (issue #125).
     // Left alive it holds its port and makes the next run's failure a
@@ -227,7 +238,7 @@ function hostEnvironment(): NodeJS.ProcessEnv {
 }
 
 function isolatedDirectories(workspace: string): Record<"XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME" | "XDG_CACHE_HOME", string> {
-  const root = join(workspace, "host")
+  const root = isolatedRoot(workspace)
   const directories = {
     XDG_CONFIG_HOME: join(root, "config"),
     XDG_DATA_HOME: join(root, "data"),
@@ -235,13 +246,30 @@ function isolatedDirectories(workspace: string): Record<"XDG_CONFIG_HOME" | "XDG
     XDG_CACHE_HOME: join(root, "cache"),
   }
   for (const directory of Object.values(directories)) mkdirSync(directory, { recursive: true })
-  mkdirSync(join(directories.XDG_CONFIG_HOME, "opencode"), { recursive: true })
+  mkdirSync(hostConfigDirectory(workspace), { recursive: true })
   return directories
 }
 
 /** The config directory an isolated host under `workspace` reads. */
 export function hostConfigDirectory(workspace: string): string {
-  return join(workspace, "host", "config", "opencode")
+  return join(isolatedRoot(workspace), "config", "opencode")
+}
+
+function isolatedRoot(workspace: string): string {
+  return join(workspace, "host")
+}
+
+/**
+ * What every gate host shares: the stub as its only provider, and nothing
+ * that reaches out — no sharing, no self-update.
+ */
+export function baseHostConfig(stubBaseURL: string): Record<string, unknown> {
+  return {
+    $schema: "https://opencode.ai/config.json",
+    share: "disabled",
+    update: "disable",
+    providers: stubProviderConfig(stubBaseURL),
+  }
 }
 
 /** Resolves with the port the child reported it is listening on. */
@@ -296,7 +324,9 @@ export function provenanceProblem(hostVersion: string): string | undefined {
  * Kill a host and wait for it to be gone.
  *
  * Bounded, because a child that will not die must not hold the gate open for
- * ever.
+ * ever — and a host that outlives its bound is one whose storage may still
+ * appear afterwards, which the report shows as a directory nobody claimed
+ * rather than as a silence.
  */
 function exited(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve()

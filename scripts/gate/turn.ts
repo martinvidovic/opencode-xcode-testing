@@ -91,3 +91,8 @@ function textOf(content: unknown): string | undefined {
     .map((part) => ((part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : ""))
     .join("")
 }
+
+/** The names a turn offered; none when no tool-bearing request arrived. */
+export function offeredNames(turn: TurnResult): string[] {
+  return (turn.offered ?? []).map((tool) => tool.name)
+}

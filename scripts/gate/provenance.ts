@@ -120,13 +120,22 @@ export function readProvenance(hostVersion: string, repoRoot = REPO): Provenance
     )
   }
 
-  const packageVersion = plugin === undefined ? undefined : parse(plugin)
-  if (host !== undefined && plugin !== undefined && packageVersion !== undefined) {
-    if (host[0] !== packageVersion[0]) {
+  // The client is held to the same major as the host as the plugin is: the
+  // gates drive the host through it, and its routes may change across a major
+  // just as the plugin interface may.
+  for (const name of PACKAGES) {
+    const version = packages[name].version
+    const parsed = version === undefined ? undefined : parse(version)
+    if (host !== undefined && parsed !== undefined && host[0] !== parsed[0]) {
       problems.push(
-        `the host is ${render(host)} and the packages are ${plugin}; across a major the plugin interface may change, so a gate passing against these proves nothing about the one the host ships.`,
+        `the host is ${render(host)} and ${SCOPE}/${name} is ${version}; across a major the interface may change, so a gate passing against these proves nothing about the one the host ships.`,
       )
-    } else if (render(host) !== render(packageVersion)) {
+    }
+  }
+
+  const packageVersion = plugin === undefined ? undefined : parse(plugin)
+  if (host !== undefined && plugin !== undefined && packageVersion !== undefined && host[0] === packageVersion[0]) {
+    if (render(host) !== render(packageVersion)) {
       caveats.push(
         `the host is ${render(host)} and the packages are pinned to ${plugin}. The Test Tool is validated against exactly ${plugin}; this run is evidence about ${render(host)}, not a widening of that claim.`,
       )

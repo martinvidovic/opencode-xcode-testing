@@ -27,39 +27,46 @@ import { join } from "node:path"
 import { TOOL_IDS, descriptionFor } from "../../src/adapter/descriptions.ts"
 import { safeFailure } from "../../src/adapter/sanitize.ts"
 import type { DrivenRoots } from "./driven-roots.ts"
-import { bootHost, bounded, loadClient, observedHostVersion, provenanceProblem, type BootedHost, type HostClient } from "./host.ts"
+import { baseHostConfig, bootHost, bounded, loadClient, observedHostVersion, provenanceProblem, type BootedHost, type HostClient } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
-import { startStubProvider, stubProviderConfig, type OfferedTool, type StubProvider } from "./provider.ts"
+import { startStubProvider, type OfferedTool, type StubProvider } from "./provider.ts"
 import type { ScenarioResult } from "./report.ts"
 import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import { schemaComplaints } from "./schemas.ts"
-import { scriptedTurn } from "./turn.ts"
+import { offeredNames, scriptedTurn } from "./turn.ts"
 
 const REPO = join(import.meta.dir, "..", "..")
 const TEMPLATES = join(REPO, "examples", "agent")
 
-/** An agent the gate defines, allowing every Test Tool except recovery. */
-export const DENIES_RECOVERY = "gate-denies-recovery"
+/** The template that promises no shell and no file access at all. */
+const TEST_RUNNER = "xcode-test-runner"
+
+/**
+ * One gate-defined agent per Test Tool, each denying exactly that tool and
+ * allowing the other two — the reason there are three IDs rather than one.
+ */
+export function denyingAgent(denied: string): string {
+  return `gate-denies-${denied}`
+}
 
 /** The host configuration B1 runs under: this checkout as a plugin, and the stub. */
 export function registrationConfig(baseURL: string, withPlugin = true): Record<string, unknown> {
   return {
-    $schema: "https://opencode.ai/config.json",
+    ...baseHostConfig(baseURL),
     ...(withPlugin ? { plugins: [REPO] } : {}),
-    providers: stubProviderConfig(baseURL),
-    share: "disabled",
-    update: "disable",
-    agents: {
-      [DENIES_RECOVERY]: {
-        mode: "primary",
-        description: "Acceptance gate: every Test Tool but recovery",
-        permissions: [
-          { action: "*", resource: "*", effect: "deny" },
-          { action: "xcode_test", resource: "*", effect: "allow" },
-          { action: "xcode_test_inspect", resource: "*", effect: "allow" },
-        ],
-      },
-    },
+    agents: Object.fromEntries(
+      TOOL_IDS.map((denied) => [
+        denyingAgent(denied),
+        {
+          mode: "primary",
+          description: `Acceptance gate: every Test Tool but ${denied}`,
+          permissions: [
+            { action: "*", resource: "*", effect: "deny" },
+            ...TOOL_IDS.filter((id) => id !== denied).map((id) => ({ action: id, resource: "*", effect: "allow" })),
+          ],
+        },
+      ]),
+    ),
   }
 }
 
@@ -86,8 +93,13 @@ export async function runRegistrationGate(
   let host: BootedHost | undefined
 
   try {
-    // Registered as each is prepared, so a throw in a later one does not
-    // leave an earlier one registered nowhere (issue #98).
+    // A real host writes per-root storage under the user's own home for each
+    // project it is pointed at, and nothing downstream can collect it unless
+    // it is registered (issue #98). Registered as each is prepared, so a throw
+    // in a later one does not leave an earlier one registered nowhere — and
+    // swept by the caller, once, at the end of the run: a suite that cleaned
+    // up after itself raced the host it had just closed, whose plugin
+    // instances kept writing after the sweep.
     const marked = roots.add(prepareRoot(join(workspace, "marked"), { marker: true }))
     const unmarked = roots.add(prepareRoot(join(workspace, "unmarked"), { marker: false }))
     const modules = prepareModules(join(workspace, "modules"), roots)
@@ -110,7 +122,12 @@ export async function runRegistrationGate(
     record(await reloadScenario(host, stub, marked))
   } catch (error) {
     // Beside whatever already ran, not instead of it.
-    bootstrapFailed(`the isolated host could not be driven: ${safeFailure(error)}`)
+    record({
+      name: SCENARIO["b1 host registration"],
+      kind: "gating",
+      status: "failed",
+      detail: `the isolated host could not be driven: ${safeFailure(error)}`,
+    })
   } finally {
     await host?.stop()
     stub?.stop()
@@ -209,33 +226,42 @@ async function agentScenario(client: HostClient, stub: StubProvider, directory: 
       }
     }
 
-    const { offered } = await scriptedTurn(client, stub, { directory, agent: name })
-    const offeredNames = (offered ?? []).map((tool) => tool.name)
-    const absent = TOOL_IDS.filter((id) => !offeredNames.includes(id))
+    const offered = offeredNames(await scriptedTurn(client, stub, { directory, agent: name }))
+    const absent = TOOL_IDS.filter((id) => !offered.includes(id))
     if (absent.length > 0) {
       return fail(SCENARIO["b1 restricted agents"], `${name} was not offered ${absent.join(", ")}`)
     }
-    const forbidden = offeredNames.filter((tool) => tool === "shell" || tool === "execute")
+    const forbidden = offered.filter((tool) => tool === "shell" || tool === "execute")
     if (forbidden.length > 0) {
       return fail(SCENARIO["b1 restricted agents"], `${name} was offered ${forbidden.join(", ")}`)
+    }
+    // The runner promises no file access either, so it is offered the family
+    // and nothing else: no read, edit, write, patch, grep or glob.
+    const extra = offered.filter((tool) => !(TOOL_IDS as readonly string[]).includes(tool))
+    if (name === TEST_RUNNER && extra.length > 0) {
+      return fail(SCENARIO["b1 restricted agents"], `${name} was also offered ${extra.join(", ")}`)
     }
   }
 
   return pass(
     SCENARIO["b1 restricted agents"],
-    `${names.join(", ")} deny shell and Code Mode and are offered the family, as the host enforces them`,
+    `${names.join(", ")} deny shell and Code Mode and are offered the family; ${TEST_RUNNER} is offered nothing else`,
   )
 }
 
-/** One tool denied, the others untouched: the reason there are three IDs. */
+/** Each tool denied on its own, the other two untouched. */
 async function denialScenario(client: HostClient, stub: StubProvider, directory: string): Promise<ScenarioResult> {
-  const { offered } = await scriptedTurn(client, stub, { directory, agent: DENIES_RECOVERY })
-  const names = (offered ?? []).map((tool) => tool.name).sort()
-  const expected = ["xcode_test", "xcode_test_inspect"]
-
-  return names.join(",") === expected.join(",")
-    ? pass(SCENARIO["b1 independent denial"], "denying xcode_test_recover alone leaves exactly xcode_test and xcode_test_inspect")
-    : fail(SCENARIO["b1 independent denial"], `an agent denying only recovery was offered ${names.join(", ") || "nothing"}`)
+  for (const denied of TOOL_IDS) {
+    const names = offeredNames(await scriptedTurn(client, stub, { directory, agent: denyingAgent(denied) })).sort()
+    const expected = TOOL_IDS.filter((id) => id !== denied).sort()
+    if (names.join(",") !== expected.join(",")) {
+      return fail(
+        SCENARIO["b1 independent denial"],
+        `an agent denying only ${denied} was offered ${names.join(", ") || "nothing"}`,
+      )
+    }
+  }
+  return pass(SCENARIO["b1 independent denial"], "denying any one Test Tool leaves exactly the other two")
 }
 
 type Modules = { nested: string; sibling: string; worktreeNested: string }
@@ -248,8 +274,7 @@ type Modules = { nested: string; sibling: string; worktreeNested: string }
  * enabled on its own, as its own working copy.
  */
 async function isolationScenario(client: HostClient, stub: StubProvider, modules: Modules): Promise<ScenarioResult> {
-  const offeredIn = async (directory: string) =>
-    ((await scriptedTurn(client, stub, { directory })).offered ?? []).map((tool) => tool.name)
+  const offeredIn = async (directory: string) => offeredNames(await scriptedTurn(client, stub, { directory }))
 
   const nested = await offeredIn(modules.nested)
   const sibling = await offeredIn(modules.sibling)
@@ -280,7 +305,7 @@ async function reloadScenario(host: BootedHost, stub: StubProvider, directory: s
   if (!(await pluginState(host.client, directory, "absent"))) {
     return fail(SCENARIO["b1 plugin reload"], "the plugin was still loaded after it was removed from the config")
   }
-  const removed = ((await scriptedTurn(host.client, stub, { directory })).offered ?? []).map((tool) => tool.name)
+  const removed = offeredNames(await scriptedTurn(host.client, stub, { directory }))
   if (TOOL_IDS.some((id) => removed.includes(id))) {
     return fail(SCENARIO["b1 plugin reload"], "the family was still offered after the plugin was removed")
   }
@@ -289,7 +314,7 @@ async function reloadScenario(host: BootedHost, stub: StubProvider, directory: s
   if (!(await pluginState(host.client, directory, "active"))) {
     return fail(SCENARIO["b1 plugin reload"], "the plugin did not come back after it was restored to the config")
   }
-  const restored = ((await scriptedTurn(host.client, stub, { directory })).offered ?? []).map((tool) => tool.name)
+  const restored = offeredNames(await scriptedTurn(host.client, stub, { directory }))
   return TOOL_IDS.every((id) => restored.includes(id))
     ? pass(SCENARIO["b1 plugin reload"], "removing the plugin unloads the family; restoring it brings it back, without a restart")
     : fail(SCENARIO["b1 plugin reload"], "the family was not offered after the plugin was restored")
@@ -386,10 +411,22 @@ function prepareModules(path: string, roots: DrivenRoots): Modules {
   }
 }
 
+/**
+ * Git for a fixture, never the user's git: no global config, no hooks, no
+ * signing prompt, and bounded — a fixture step that can hang is a gate that
+ * can hang.
+ */
 function git(cwd: string, args: string[]): void {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" })
+  const result = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], {
+    cwd,
+    encoding: "utf8",
+    timeout: GIT_MS,
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
+  })
   if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${safeFailure(new Error(result.stderr ?? ""))}`)
 }
+
+const GIT_MS = 30_000
 
 function pass(name: ScenarioName, detail: string): ScenarioResult {
   return { name, kind: "gating", status: "passed", detail }

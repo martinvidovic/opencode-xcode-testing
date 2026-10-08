@@ -23,8 +23,8 @@ import { B2Evidence, worthKeeping, type B2Correlation } from "./b2-evidence.ts"
 import type { DrivenRoots } from "./driven-roots.ts"
 import type { EvidenceSource } from "./forensics.ts"
 import { FIXTURE, generate } from "../generate-fixture-project.ts"
-import { startStubProvider, stubProviderConfig, type StubProvider } from "./provider.ts"
-import { bootHost, loadClient, observedHostVersion, provenanceProblem, type BootedHost, type HostClient } from "./host.ts"
+import { startStubProvider, type StubProvider } from "./provider.ts"
+import { baseHostConfig, bootHost, loadClient, observedHostVersion, provenanceProblem, type BootedHost, type HostClient } from "./host.ts"
 import type { ScenarioSink } from "./observations.ts"
 import { SCENARIO, type ScenarioName } from "./scenarios.ts"
 import type { ScenarioResult } from "./report.ts"
@@ -97,7 +97,10 @@ export async function runExecutionGate(
   }
 
   try {
-    // Registered as each one is prepared, not after both (#98).
+    // Registered as each one is prepared, not after both. A throw in the
+    // second would otherwise leave the first project's storage registered
+    // nowhere — never kept, never cleaned, and accumulating exactly the way
+    // this suite is here to stop (#98).
     const passing = evidence.root(prepareProject(join(workspace, "passing"), "passing", options))
     const broken = evidence.root(prepareProject(join(workspace, "build-failed"), "buildFailed", options))
 
@@ -105,14 +108,11 @@ export async function runExecutionGate(
     host = await bootHost({
       workspace,
       config: {
-        $schema: "https://opencode.ai/config.json",
-        share: "disabled",
-        update: "disable",
+        ...baseHostConfig(stub.baseURL),
         // The checkout as a plugin directory, carrying the limits below as an
         // option: the V2 plugin cannot read the host's effective `tool_output`
         // (issue #140), so a user who lowers it tells the plugin too.
         plugins: [{ package: REPO, options: { tool_output: CONFIGURED_LIMITS } }],
-        providers: stubProviderConfig(stub.baseURL),
         // Deliberately below the host's defaults (issue #82). The whole claim
         // is that the adapter stays under *the host's* limits rather than
         // under numbers it likes.
