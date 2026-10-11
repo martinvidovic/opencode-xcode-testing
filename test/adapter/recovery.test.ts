@@ -17,6 +17,7 @@ import { finalizeRecovered, reconcile, SUMMARY_ARTIFACT } from "../../src/adapte
 import type { ServiceEnvironment } from "../../src/adapter/service.ts"
 import { createRunDirectory, runDirectory } from "../../src/runner/paths.ts"
 import { readQueue, writeQueue } from "../../src/runner/queue.ts"
+import { reclamationsSettled } from "../../src/runner/reclamation.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { identityFor, loadFixture, RESOLVED } from "../interpreter/harness.ts"
 import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
@@ -125,6 +126,8 @@ describe("a run whose process is gone and whose summary was never published", ()
     await withSandbox(async (box) => {
       seedCrashedRun(box, "run-crashed", { derivedDataMode: "isolated" })
       await finalizeRecovered(environmentFor(box), "run-crashed")
+      // In the background, so the finished run is never held up by it (#161).
+      await reclamationsSettled()
 
       expect(existsSync(join(runDirectory(box.storage, "run-crashed"), "DerivedData"))).toBe(false)
       expect(readRunRecord(box.storage, "run-crashed")?.derivedDataCleaned).toBe(true)

@@ -81,11 +81,8 @@ import {
   writePrivateFileAtomic,
   type Storage,
 } from "../runner/paths.ts"
-import {
-  reclaimIsolatedDerivedData,
-  reconcileRoot,
-  type RecoveryReport,
-} from "../runner/recovery.ts"
+import { reclaimInBackground, type TreeRemover } from "../runner/reclamation.ts"
+import { reconcileRoot, type RecoveryReport } from "../runner/recovery.ts"
 import { resolveTestRun, type ConfigurationOutcome } from "../runner/resolution.ts"
 import {
   advance,
@@ -140,6 +137,8 @@ export type ServiceEnvironment = {
    */
   killProcess?(pid: number): boolean
   identifyProcess?(pid: number): ProcessIdentity | undefined
+  /** How isolated DerivedData is deleted. A test seam, like the above. */
+  removeDerivedData?: TreeRemover
   /** How this run was made possible. */
   runtime: RuntimeFacts
 }
@@ -220,15 +219,27 @@ export function createTestToolService(environment: ServiceEnvironment): TestTool
  * and without a reason a caller cannot tell it from "nothing needed to
  * happen" — which would make retrying look pointless when it is exactly what
  * to do.
+ *
+ * A failed reclamation is said too (issue #161). It changes no outcome, but it
+ * is bytes the tool is still holding, and the recorded error code is the only
+ * account of why — it names no path, so it is safe to show.
  */
 function recoveryMessage(report: RecoveryReport): string | undefined {
   if (report.status === "deferred") {
     return "another OpenCode instance is reconciling this project right now. Nothing was examined; try again in a moment."
   }
+  const parts: string[] = []
   if (report.uncertain.length > 0) {
-    return `${report.uncertain.length} run(s) could not be accounted for and still hold the execution slot.`
+    parts.push(`${report.uncertain.length} run(s) could not be accounted for and still hold the execution slot.`)
   }
-  return undefined
+  const failures = report.reclamationFailures
+  if (failures.length > 0) {
+    parts.push(
+      `${failures.length} completed run(s) still hold isolated DerivedData that could not be deleted ` +
+        `(${[...new Set(failures)].join(", ")}); it is being retried in the background.`,
+    )
+  }
+  return parts.length === 0 ? undefined : parts.join(" ")
 }
 
 function startRun(
@@ -509,8 +520,10 @@ function withRuntimeProvenance<T extends { provenance?: ResultProvenance }>(
  *
  * The order is the contract: the immutable index and the summary land first,
  * so that a crash after this point leaves a run that is fully readable, and
- * only then does the record say `completed`. Isolated DerivedData is scratch
- * rather than evidence, so it is reclaimed before the run becomes retainable.
+ * only then does the record say `completed`. Isolated DerivedData is not
+ * evidence, so it is reclaimed — in the background, because the caller's
+ * result must not wait on the deletion (issue #161). Retention holds the run
+ * until that deletion has finished.
  */
 function publishTerminal(
   environment: ServiceEnvironment,
@@ -531,7 +544,7 @@ function publishTerminal(
     completedAt: environment.timestamp(),
     bundleDigestVerified: index.bundleDigestVerified,
   })
-  reclaimIsolatedDerivedData(storage, completed)
+  reclaimInBackground(environment, [completed.runId])
 }
 
 /** The terminal summary, readable after a crash without rerunning anything. */
@@ -582,7 +595,7 @@ function publishIndexOnly(
   const completed = advance(environment.storage, record, "completed", {
     completedAt: environment.timestamp(),
   })
-  reclaimIsolatedDerivedData(environment.storage, completed)
+  reclaimInBackground(environment, [completed.runId])
 }
 
 /**
@@ -601,6 +614,8 @@ export async function reconcile(environment: ServiceEnvironment) {
     timestamp: environment.timestamp,
     claimant: selfIdentity(),
   })
+
+  reclaimInBackground(environment, report.needsReclamation)
 
   for (const runId of report.needsFinalization) {
     await finalizeRecovered(environment, runId)

@@ -22,6 +22,7 @@
 import { monotonicNow } from "../domain/clock.ts"
 import { noteRootSeen, runHousekeeping } from "../runner/housekeeping.ts"
 import { systemProbe } from "../runner/identity.ts"
+import { reclaimInBackground } from "../runner/reclamation.ts"
 import { reconcileRoot } from "../runner/recovery.ts"
 import { prepareStorage, storageForRootKey, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
@@ -92,12 +93,16 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
       // `deadlineMs` came from `now` below and is read against `monotonicNow`
       // inside the pass. Two clocks here would not make the pass late — they
       // would make it cancelled before it began, on every start.
-      reconcileRootBounded({
+      const timestamp = () => new Date().toISOString()
+      const report = reconcileRootBounded({
         storage: wiring.storage,
         probe: systemProbe,
         deadlineMs,
-        timestamp: () => new Date().toISOString(),
+        timestamp,
       })
+      // Recovery names a crash's leftover isolated DerivedData and leaves the
+      // deletion to its caller, which must not wait for it (issue #161).
+      reclaimInBackground({ storage: wiring.storage, timestamp }, report.needsReclamation)
     },
 
     async runHousekeeping() {
@@ -113,12 +118,15 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
         //
         // No claimant: this pass cannot finalize anything, and adopting a run
         // it has no interpreter for would take it from an instance that has.
-        reconcile: (storage) =>
-          reconcileRoot({
-            storage,
-            probe: systemProbe,
-            timestamp: () => new Date().toISOString(),
-          }),
+        //
+        // Leftover isolated DerivedData is reclaimed from here too: in a root
+        // nobody opens again, this is the only pass that will ever name it.
+        reconcile: (storage) => {
+          const timestamp = () => new Date().toISOString()
+          const report = reconcileRoot({ storage, probe: systemProbe, timestamp })
+          reclaimInBackground({ storage, timestamp }, report.needsReclamation)
+          return report
+        },
       })
     },
 

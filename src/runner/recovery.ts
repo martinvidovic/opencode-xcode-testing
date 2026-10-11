@@ -24,13 +24,13 @@
  * Nothing inside re-acquires it — the lock is not reentrant.
  */
 
-import { existsSync, readdirSync, rmSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, readdirSync } from "node:fs"
 
 import { allIdentitiesGone, signallingIsSafe, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
 import { withLock, withTryLock } from "./locks.ts"
-import { isRunId, RUN_ARTIFACTS, runDirectory, type Storage } from "./paths.ts"
+import { isRunId, runDirectory, type Storage } from "./paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue, type QueueState } from "./queue.ts"
+import { isReclaimable } from "./reclamation.ts"
 import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
 import { isCancelled } from "../domain/cancellation.ts"
 
@@ -75,8 +75,15 @@ export type RecoveryReport = {
   quarantined: string[]
   /** Slots released because their run is no longer live or already finished. */
   slotsReleased: string[]
-  /** Completed runs whose isolated DerivedData was reclaimed. */
-  derivedDataCleaned: string[]
+  /**
+   * Completed runs whose isolated DerivedData is still there to reclaim —
+   * including after a crash between publication and cleanup. Named, not
+   * deleted: this pass is synchronous, and the deletion must not be (see
+   * `reclamation.ts`). The caller reclaims them in the background.
+   */
+  needsReclamation: string[]
+  /** The error codes recorded by earlier failed reclamations of those runs. */
+  reclamationFailures: string[]
   quarantineCleared: boolean
 }
 
@@ -117,7 +124,8 @@ function emptyReport(): RecoveryReport {
     uncertain: [],
     quarantined: [],
     slotsReleased: [],
-    derivedDataCleaned: [],
+    needsReclamation: [],
+    reclamationFailures: [],
     quarantineCleared: false,
   }
 }
@@ -174,7 +182,11 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
       ) {
         report.quarantined.push(runId)
       }
-      if (reclaimIsolatedDerivedData(storage, record)) report.derivedDataCleaned.push(runId)
+      if (isReclaimable(record)) {
+        report.needsReclamation.push(runId)
+        const failure = record.derivedDataReclamationFailure
+        if (failure !== undefined) report.reclamationFailures.push(failure.code)
+      }
       continue
     }
 
@@ -234,7 +246,6 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
     report.needsFinalization.length > 0 ||
     report.quarantined.length > 0 ||
     report.slotsReleased.length > 0 ||
-    report.derivedDataCleaned.length > 0 ||
     report.quarantineCleared
   return { ...report, status: changed ? "recovered" : "alreadyHealthy" }
 }
@@ -370,23 +381,6 @@ function recordedIdentities(record: RunRecord): ProcessIdentity[] {
   if (record.supervisor !== undefined) identities.push(record.supervisor)
   if (record.child !== undefined) identities.push(record.child)
   return identities
-}
-
-/**
- * Isolated DerivedData is a per-run scratch directory, not evidence, so it is
- * reclaimed once the run is durably completed — including after a crash that
- * happened between publication and cleanup. Shared DerivedData is a cache
- * across runs and is never touched here.
- */
-export function reclaimIsolatedDerivedData(storage: Storage, record: RunRecord): boolean {
-  if (record.derivedDataMode !== "isolated" || record.derivedDataCleaned === true) return false
-
-  rmSync(join(runDirectory(storage, record.runId), RUN_ARTIFACTS.derivedData), {
-    recursive: true,
-    force: true,
-  })
-  writeRunRecord(storage, { ...record, derivedDataCleaned: true })
-  return true
 }
 
 /** Quarantine the root's execution slot, holding it until recovery clears it. */

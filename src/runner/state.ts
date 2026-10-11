@@ -121,6 +121,12 @@ export type RunRecord = {
   bundleDigestVerified?: "yes" | "no" | "unknown"
   /** Isolated DerivedData has been reclaimed; retention may then evict the run. */
   derivedDataCleaned?: boolean
+  /**
+   * The last attempt to reclaim isolated DerivedData failed (issue #161). The
+   * error code only — the message names a machine path. Cleared by the attempt
+   * that succeeds; the terminal summary is never rewritten for it.
+   */
+  derivedDataReclamationFailure?: { at: string; code: string }
 }
 
 export function metadataPath(storage: Storage, runId: string): string {
