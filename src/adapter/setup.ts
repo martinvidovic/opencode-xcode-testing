@@ -27,7 +27,8 @@ import { storageFor, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
-import type { ToolchainProbe, ToolchainResolution } from "../runner/toolchain.ts"
+import { isSupportedXcodeVersion, SUPPORTED_XCODE_MAJORS } from "../interpreter/schema.ts"
+import { SELECTIONS, type ToolchainProbe, type ToolchainResolution } from "../runner/toolchain.ts"
 import { outputLimitsFromOptions, resolveBudget } from "./budget.ts"
 import { toolDefinitions, type ToolDefinition } from "./definitions.ts"
 import { DESCRIPTION_FILES } from "./descriptions.ts"
@@ -59,6 +60,8 @@ export type SetupOverrides = {
   write?(line: string): void
   /** How toolchain discovery probes. Defaults to spawning the real tools. */
   toolchainProbe?: ToolchainProbe
+  /** Where an inherited `DEVELOPER_DIR` is read from. Defaults to this process's environment. */
+  environment?: Readonly<Record<string, string | undefined>>
   /** How a runtime candidate is probed. Defaults to running a real script. */
   runtimeProbe?: RuntimeProbe
   /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
@@ -110,6 +113,7 @@ async function prepare(
       readHostVersion: async () => host.version,
       ...(overrides.toolchainProbe === undefined ? {} : { toolchainProbe: overrides.toolchainProbe }),
       ...(overrides.runtimeProbe === undefined ? {} : { runtimeProbe: overrides.runtimeProbe }),
+      ...(overrides.environment === undefined ? {} : { environment: overrides.environment }),
       ...(overrides.startupDeadlineMs === undefined ? {} : { deadlineMs: overrides.startupDeadlineMs }),
   })
   const outcome = await runStartup(ports)
@@ -241,7 +245,17 @@ function toolchainProbed(toolchain: ToolchainResolution | undefined, occasion: P
   if (toolchain === undefined) {
     return unavailable(true, `Xcode toolchain discovery did not finish in time ${occasion}.`)
   }
-  if (toolchain.status !== "resolved") return unavailable(toolchain.timedOut === true, `${toolchain.message}.`)
+  if (toolchain.status !== "resolved") return unavailable(toolchain.timedOut === true, sentence(toolchain.message))
+  // Checked here rather than after a Test Run (issue #164): an unsupported
+  // Xcode's results can only ever be refused, so a run against it is a run
+  // spent finding out what is already known.
+  if (!isSupportedXcodeVersion(toolchain.identity.xcodeVersion)) {
+    const { name, remedy } = SELECTIONS[toolchain.selectedBy]
+    return unavailable(
+      false,
+      `Xcode ${toolchain.identity.xcodeVersion} is not supported by this Test Tool, which supports Xcode ${SUPPORTED_XCODE_MAJORS.join(" and ")}. It was chosen by ${name}. To use a supported one, ${remedy}.`,
+    )
+  }
   return { ok: true, value: toolchain.identity }
 }
 
@@ -259,6 +273,11 @@ function runtimeProbed(
   }
   if (runtime.status !== "resolved") return unavailable(runtime.timedOut === true, runtimeDiagnostic(runtime))
   return { ok: true, value: runtime }
+}
+
+/** A message ending as a sentence does, without doubling a full stop it already has. */
+function sentence(message: string): string {
+  return /[.!?]$/.test(message) ? message : `${message}.`
 }
 
 function unavailable(transient: boolean, message: string): { ok: false; failure: Unavailable } {

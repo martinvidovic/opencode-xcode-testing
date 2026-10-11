@@ -34,9 +34,11 @@ being given the ability to clear a quarantine.
   when the pinned reads and critical payload validation succeed; future majors
   require validation before support is added.
 
-  For installations managed by Xcodes, select the intended Xcode in Xcodes or
-  set `DEVELOPER_DIR` before starting OpenCode. Installing another Xcode alone
-  does not select it. Acceptance gates can also be run per installation:
+  Installing another Xcode alone does not select it. Choose one per project with
+  [`developerDirectory`](#the-xcode-developer-directory), start OpenCode with
+  `DEVELOPER_DIR` set, or select it in Xcodes or with `xcode-select`. The Test Tool
+  never changes the system selection. Acceptance gates can also be run per
+  installation:
 
   ```bash
   DEVELOPER_DIR=/Applications/Xcode-27.0.0.app/Contents/Developer bun scripts/acceptance-gate.ts
@@ -215,6 +217,7 @@ are all optional:
 | `timeoutSeconds` | `900`. Range is 1 to 7200. |
 | `testLanguage` | Scheme default. Set e.g. `"en"` to pass `-testLanguage en`. |
 | `testRegion` | Scheme default. Set e.g. `"US"` to pass `-testRegion US`. |
+| `developerDirectory` | An inherited `DEVELOPER_DIR`, else the system selection. See [below](#the-xcode-developer-directory). |
 
 The plugin tracks two root roles explicitly. The **containment root** is the
 canonical safety boundary used for discovery, container paths, execution, and
@@ -247,6 +250,34 @@ Treat this like the `plugins` entry: it describes one machine. A relative value
 resolves against the configuration root, which is the only form worth committing. An
 explicit `runtime` that is set but unusable is a **hard error, never a
 fallback** — a setting that silently degrades is worse than one that fails.
+
+### The Xcode developer directory
+
+The Xcode a project tests with is chosen in this order, first match wins:
+
+1. `developerDirectory` in the project configuration — an absolute path to a
+   full Xcode installation's `Contents/Developer`;
+2. a `DEVELOPER_DIR` in the environment OpenCode was started with, which is how
+   a toolchain wrapper such as mise selects an Xcode for a shell;
+3. the system selection, `xcode-select -p`.
+
+```json
+{ "schemaVersion": 1, "developerDirectory": "/Applications/Xcode-27.0.0.app/Contents/Developer" }
+```
+
+Whichever is chosen must be a full, supported Xcode (26 or 27) — Command Line
+Tools cannot run `xcodebuild test`. An unusable choice is a **hard error naming
+which setting chose it, never a fallback** to the next one: testing against an
+Xcode nobody picked is worse than not testing. The directory is frozen when the
+plugin starts, and every Test Run and every Result Bundle read uses that same
+installation.
+
+`developerDirectory` is machine-local, like `runtime`: keep an absolute
+installation path out of a configuration the team shares. When OpenCode is
+launched by something that does not pass your shell's environment through — a
+desktop launcher, a service manager — and the system selection is Command Line
+Tools, either set `developerDirectory` or export `DEVELOPER_DIR` into that
+launch environment. No `sudo xcode-select -s` is needed for either.
 
 ## Restricted agents
 

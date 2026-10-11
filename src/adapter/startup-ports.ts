@@ -52,6 +52,8 @@ export type StartupWiring = {
   readHostVersion(): Promise<string>
   /** How toolchain discovery probes. Defaults to spawning the real tools. */
   toolchainProbe?: ToolchainProbe
+  /** Where an inherited `DEVELOPER_DIR` is read from. Defaults to this process's environment. */
+  environment?: Readonly<Record<string, string | undefined>>
   /** How a runtime candidate is probed. Defaults to running a real script. */
   runtimeProbe?: RuntimeProbe
   /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
@@ -100,11 +102,27 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
       return runtime
     },
 
-    resolveToolchain: (signal) =>
-      resolveToolchain({
+    // The configured directory travels with every discovery — startup's and
+    // a later revalidation's alike — so neither can fall back from it.
+    resolveToolchain: async (signal) => {
+      // Nothing is discovered from elsewhere while the setting meant to choose
+      // the Xcode cannot be read: a typo in it would hide behind a
+      // DEVELOPER_DIR or a system selection that happened to work.
+      if (wiring.configuration.status === "invalid") {
+        return {
+          status: "failed",
+          message: `.opencode/xcode-test.json is invalid, so no Xcode was selected: ${wiring.configuration.message}`,
+        }
+      }
+      const configured =
+        wiring.configuration.status === "loaded" ? wiring.configuration.configuration.developerDirectory : undefined
+      return resolveToolchain({
         signal,
+        ...(configured === undefined ? {} : { developerDirectory: configured }),
+        ...(wiring.environment === undefined ? {} : { environment: wiring.environment }),
         ...(wiring.toolchainProbe === undefined ? {} : { probe: wiring.toolchainProbe }),
-      }),
+      })
+    },
 
     async reconcileRoot(deadlineMs: number) {
       prepareStorage(wiring.storage)

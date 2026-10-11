@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs"
-import { dirname, join, relative, sep } from "node:path"
+import { dirname, isAbsolute, join, relative, sep } from "node:path"
 
 import { DERIVED_DATA_MODES, type ProjectConfiguration } from "../domain/request.ts"
 import { MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS } from "../domain/limits.ts"
@@ -130,6 +130,7 @@ const KNOWN_FIELDS = new Set([
   "derivedData",
   "timeoutSeconds",
   "runtime",
+  "developerDirectory",
   "testLanguage",
   "testRegion",
 ])
@@ -221,6 +222,16 @@ function fieldProblems(record: Record<string, unknown>): string[] {
   // Machine-local, and relative resolves against the configuration root — so the
   // only thing that can be said here is that it is a path-shaped string.
   check("runtime", (value) => nonEmptyStringProblem(value))
+  // Machine-local too, but absolute only (issue #164): a relative path would be
+  // relative to wherever OpenCode started, which says nothing about an Xcode.
+  check("developerDirectory", (value) =>
+    typeof value === "string" &&
+    isAbsolute(value) &&
+    value === value.trim() &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+      ? undefined
+      : "must be an absolute path to an Xcode installation's Contents/Developer, with no surrounding whitespace (a leading ~ is not expanded)",
+  )
 
   return problems
 }
