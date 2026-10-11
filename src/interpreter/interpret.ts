@@ -194,10 +194,10 @@ async function gather(
     setDefect("unsupportedResultSchema", "the Xcode major version is not supported")
     return state
   }
-  if (identity.schemaVersion !== REQUESTED_SCHEMA_VERSION) {
-    setDefect("unsupportedResultSchema", "the structured schema version is not supported")
-    return state
-  }
+  // `identity.schemaVersion` is the installation's default, not a list of
+  // supported schemas (#159). Xcode 27 defaults to 0.4.0 but still serves
+  // 0.1.0. Capability is established by the explicitly pinned reads below and
+  // validation of their critical payload paths; a failed read never passes.
 
   state.provenance = {
     xcodeVersion: identity.xcodeVersion,

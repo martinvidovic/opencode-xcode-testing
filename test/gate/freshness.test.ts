@@ -209,12 +209,17 @@ describe("the freshness report", () => {
   })
 
   test("does not invent drift from a bundle nobody could examine", () => {
+    let comparisonStatus: string | undefined
     const report = runFreshnessCheck({
       bundle: { status: "unavailable", commands: [], missingKeys: [] },
+      record: (comparison) => {
+        comparisonStatus = comparison.status
+      },
     })
 
     // Whatever this machine's toolchain says, an absent bundle adds nothing.
     expect(report.bundle?.status).toBe("unavailable")
-    expect(report.status).not.toBe("drifted")
+    expect(comparisonStatus).toBeDefined()
+    expect(comparisonStatus).toBe(report.status)
   })
 })

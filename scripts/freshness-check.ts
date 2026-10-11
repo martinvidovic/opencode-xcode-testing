@@ -305,7 +305,7 @@ export function observeToolchain(
 
   const xcresulttool = run("/usr/bin/xcrun", ["xcresulttool", "version"])
   const toolVersion = /version\s+(\d+)/i.exec(xcresulttool.stdout)
-  const schemaVersion = /schema\s+version\s+([0-9.]+)/i.exec(xcresulttool.stdout)
+  const schemaVersion = /schema\s+version:?\s+([0-9.]+)/i.exec(xcresulttool.stdout)
 
   return {
     ...(versionLine?.[1] === undefined ? {} : { xcodeVersion: versionLine[1] }),

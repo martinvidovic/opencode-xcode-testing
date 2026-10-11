@@ -21,7 +21,7 @@ export type ToolchainIdentity = {
   xcresulttoolVersion: string
   /** SHA-256 of the `xcresulttool` executable. Private; never model-facing. */
   xcresulttoolDigest: string
-  /** The structured schema version this installation supports. */
+  /** The installation's reported default schema, not the requested read schema. */
   schemaVersion: string
 }
 
