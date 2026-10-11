@@ -43,6 +43,10 @@ function ports(overrides: Partial<StartupPorts> = {}, trace: Trace = []): Startu
     reconcileRoot: async () => {
       trace.push("reconcile")
     },
+    resolveToolchain: async () => {
+      trace.push("toolchain")
+      return { status: "failed", message: "not under test" }
+    },
     runHousekeeping: async () => {
       trace.push("housekeeping")
     },
@@ -117,7 +121,7 @@ describe("a marked root", () => {
     const outcome = await runStartup(ports({}, trace))
 
     expect(outcome.status).toBe("ready")
-    for (const item of ["probe", "version", "reconcile", "housekeeping"]) {
+    for (const item of ["probe", "toolchain", "version", "reconcile", "housekeeping"]) {
       expect(trace).toContain(item)
     }
   })
@@ -159,6 +163,7 @@ describe("a marked root", () => {
         reconcileRoot: () => Promise.reject(new Error("locked")),
         runHousekeeping: () => Promise.reject(new Error("locked")),
         readHostVersion: () => Promise.reject(new Error("unreachable")),
+        resolveToolchain: () => Promise.reject(new Error("no Xcode")),
       }),
     )
     expect(outcome.status).toBe("ready")
@@ -168,7 +173,57 @@ describe("a marked root", () => {
       "housekeeping",
       "reconciliation",
       "runtimeProbe",
+      "toolchain",
     ])
+  })
+})
+
+describe("toolchain discovery (issue #153)", () => {
+  test("happens inside the startup deadline, and its answer is returned", async () => {
+    const outcome = await runStartup(
+      ports({
+        resolveToolchain: async () => ({ status: "failed", message: "no Xcode developer directory is selected" }),
+      }),
+    )
+
+    expect(outcome.status).toBe("ready")
+    if (outcome.status !== "ready") return
+    expect(outcome.toolchain).toEqual({ status: "failed", message: "no Xcode developer directory is selected" })
+  })
+
+  test("is abandoned at its budget, so whatever it was waiting on can be stopped", async () => {
+    let handed: AbortSignal | undefined
+    const outcome = await runStartup(
+      ports({
+        // Never settles: a probe that hangs and ignores everything.
+        resolveToolchain: (signal) => {
+          handed = signal
+          return new Promise(() => {})
+        },
+        deadlineMs: 200,
+      }),
+    )
+
+    expect(outcome.status).toBe("ready")
+    if (outcome.status !== "ready") return
+    expect(outcome.incomplete).toContain("toolchain")
+    expect(outcome.toolchain).toBeUndefined()
+    expect(handed?.aborted).toBe(true)
+  }, 10_000)
+})
+
+describe("housekeeping (issue #153)", () => {
+  test("is handed a deadline to stop at, rather than only raced against one", async () => {
+    let deadline: number | undefined
+    await runStartup(
+      ports({
+        runHousekeeping: async (deadlineMs: number) => {
+          deadline = deadlineMs
+        },
+      }),
+    )
+
+    expect(deadline).toBeGreaterThan(0)
   })
 })
 

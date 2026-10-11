@@ -22,7 +22,16 @@
  * file that is merely read at runtime. A partial copy of the plugin is a
  * different failure class from host-version skew, and registering tools that
  * cannot work is worse than registering none.
+ *
+ * Toolchain discovery is one of the bounded items (issue #153). It used to run
+ * after startup had returned, outside any deadline, through probes with no
+ * timeout — so the ceiling bounded everything except the step most able to
+ * hang. An item that outlives its budget is now *abandoned*, not merely
+ * stopped being waited for: its signal aborts, and a probe still running is
+ * killed rather than left to finish on its own time.
  */
+
+import type { ToolchainResolution } from "../runner/toolchain.ts"
 
 export const STARTUP_DEADLINE_MS = 10_000
 export const RUNTIME_PROBE_BUDGET_MS = 2_000
@@ -33,6 +42,11 @@ export const RUNTIME_PROBE_BUDGET_MS = 2_000
 export const HOST_VERSION_BUDGET_MS = 2_000
 export const RECONCILIATION_BUDGET_MS = 5_000
 export const HOUSEKEEPING_BUDGET_MS = 5_000
+/**
+ * Three probes in sequence, the middle one `xcodebuild -version`, which is
+ * slow on a cold start. Inside the ceiling with room left for the rest.
+ */
+export const TOOLCHAIN_BUDGET_MS = 8_000
 
 /** Enumerated explicitly. Adding one is a deliberate, recorded act. */
 export const TESTED_HOST_VERSIONS = ["2.0.25"] as const
@@ -60,7 +74,17 @@ export type StartupPorts = {
    * between runs itself.
    */
   reconcileRoot(deadlineMs: number): Promise<void>
-  runHousekeeping(): Promise<void>
+  /**
+   * Discover the Xcode toolchain. `signal` aborts when the budget expires, and
+   * a probe still running then must be killed.
+   */
+  resolveToolchain(signal: AbortSignal): Promise<ToolchainResolution>
+  /**
+   * User-wide housekeeping, stopping at `deadlineMs` and leaving the roots it
+   * did not reach for the next pass. Handed the deadline for the same reason
+   * reconciliation is: work that cannot be interrupted has to check it itself.
+   */
+  runHousekeeping(deadlineMs: number): Promise<void>
   /** Monotonic. */
   now(): number
   sleep(ms: number): Promise<void>
@@ -75,6 +99,8 @@ export type StartupOutcome =
       hostVersion: string
       hostVersionTested: boolean
       runtime: unknown
+      /** Absent when discovery did not finish within its budget. */
+      toolchain?: ToolchainResolution
       /** True when the ceiling expired — a defect signal, not a normal state. */
       deadlineExpired: boolean
       /** Which bounded items did not finish in time. */
@@ -88,7 +114,7 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   const bounded = async <T>(
     name: string,
     budgetMs: number,
-    start: () => Promise<T>,
+    start: (limits: { signal: AbortSignal; deadlineMs: number }) => Promise<T>,
   ): Promise<T | undefined> => {
     const remaining = Math.min(budgetMs, deadline - ports.now())
     if (remaining <= 0) {
@@ -100,12 +126,18 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     // timer exists. Taking an already-created promise would mean the caller
     // had begun it at the call site — and anything synchronous inside it would
     // already have run to completion before this function was entered.
+    const abandon = new AbortController()
     const expiry = ports.sleep(remaining).then(() => EXPIRED)
     const outcome = await Promise.race([
-      (async () => start())().catch(() => FAILED),
+      (async () => start({ signal: abandon.signal, deadlineMs: ports.now() + remaining }))().catch(
+        () => FAILED,
+      ),
       expiry,
     ])
     if (outcome === EXPIRED || outcome === FAILED) {
+      // No longer waited for, so no longer wanted: whatever it started is
+      // stopped rather than left to finish behind the return.
+      abandon.abort()
       incomplete.push(name)
       return undefined
     }
@@ -126,8 +158,8 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   // deliberately **not** gated on enablement: it exists for roots whose
   // repositories moved, disappeared, or were de-marked, and gating it on the
   // marker would mean exactly those roots are never reclaimed.
-  const housekeeping = bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, () =>
-    ports.runHousekeeping(),
+  const housekeeping = bounded("housekeeping", HOUSEKEEPING_BUDGET_MS, ({ deadlineMs }) =>
+    ports.runHousekeeping(deadlineMs),
   )
 
   if (!marked) {
@@ -146,14 +178,15 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     }
   }
 
-  // Independent work: a subprocess probe, an HTTP read, and two lock-guarded
-  // filesystem passes. Running them concurrently is what keeps the expected
-  // cost near the longest one rather than the sum.
-  const [runtime, hostVersion] = await Promise.all([
+  // Independent work: two subprocess probes, a version read, and two
+  // lock-guarded filesystem passes. Running them concurrently is what keeps the
+  // expected cost near the longest one rather than the sum.
+  const [runtime, toolchain, hostVersion] = await Promise.all([
     bounded("runtimeProbe", RUNTIME_PROBE_BUDGET_MS, () => ports.probeRuntime()),
+    bounded("toolchain", TOOLCHAIN_BUDGET_MS, ({ signal }) => ports.resolveToolchain(signal)),
     bounded("hostVersion", HOST_VERSION_BUDGET_MS, () => ports.readHostVersion()),
-    bounded("reconciliation", RECONCILIATION_BUDGET_MS, () =>
-      ports.reconcileRoot(ports.now() + RECONCILIATION_BUDGET_MS),
+    bounded("reconciliation", RECONCILIATION_BUDGET_MS, ({ deadlineMs }) =>
+      ports.reconcileRoot(deadlineMs),
     ),
     housekeeping,
   ])
@@ -164,6 +197,7 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     hostVersion: version,
     hostVersionTested: isTestedHostVersion(version),
     runtime,
+    ...(toolchain === undefined ? {} : { toolchain }),
     deadlineExpired: ports.now() >= deadline,
     incomplete: incomplete.sort(),
   }

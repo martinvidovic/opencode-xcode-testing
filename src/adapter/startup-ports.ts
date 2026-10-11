@@ -19,13 +19,17 @@
  * something a test can build, run and assert against with no host at all.
  */
 
+import { Worker } from "node:worker_threads"
+
 import { monotonicNow } from "../domain/clock.ts"
-import { noteRootSeen, runHousekeeping } from "../runner/housekeeping.ts"
+import type { HousekeepingReply, HousekeepingRequest } from "../runner/housekeeping-entry.ts"
+import { noteRootSeen } from "../runner/housekeeping.ts"
 import { systemProbe } from "../runner/identity.ts"
 import { reclaimInBackground } from "../runner/reclamation.ts"
-import { reconcileRoot } from "../runner/recovery.ts"
-import { prepareStorage, storageForRootKey, type Storage } from "../runner/paths.ts"
+import { resolveToolchain, type ToolchainProbe } from "../runner/toolchain.ts"
+import { prepareStorage, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
+import { HOUSEKEEPING_ENTRYPOINT } from "./entrypoints.ts"
 import { bunOnPath, probeRuntimeCandidate } from "./probe.ts"
 import { reconcileRootBounded } from "./reconciliation.ts"
 import { cachedRuntime, rememberRuntime, resolveRuntime, type RuntimeResolution } from "./runtime.ts"
@@ -43,6 +47,10 @@ export type StartupWiring = {
   readHostVersion(): Promise<string>
   /** Told what the probe resolved, since the caller needs it after startup. */
   onRuntime(runtime: RuntimeResolution): void
+  /** How toolchain discovery probes. Defaults to spawning the real tools. */
+  toolchainProbe?: ToolchainProbe
+  /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
+  deadlineMs?: number
 }
 
 export function startupPortsFor(wiring: StartupWiring): StartupPorts {
@@ -86,6 +94,12 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
       return runtime
     },
 
+    resolveToolchain: (signal) =>
+      resolveToolchain({
+        signal,
+        ...(wiring.toolchainProbe === undefined ? {} : { probe: wiring.toolchainProbe }),
+      }),
+
     async reconcileRoot(deadlineMs: number) {
       prepareStorage(wiring.storage)
       noteRootSeen(wiring.storage, Date.now())
@@ -105,32 +119,45 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
       reclaimInBackground({ storage: wiring.storage, timestamp }, report.needsReclamation)
     },
 
-    async runHousekeeping() {
-      runHousekeeping({
-        storage: wiring.storage,
-        now: () => Date.now(),
-        storageForRootKey: (rootKey) => storageForRootKey(wiring.homeDir, rootKey),
-        // Recovery, asked about every root this pass visits (issue #110).
-        // Without it a run that crashed leaves its execution slot held for
-        // ever, and retention reads that slot and declines to reclaim the
-        // root's build caches — for ever, because recovery otherwise runs
-        // only when a root is opened again.
-        //
-        // No claimant: this pass cannot finalize anything, and adopting a run
-        // it has no interpreter for would take it from an instance that has.
-        //
-        // Leftover isolated DerivedData is reclaimed from here too: in a root
-        // nobody opens again, this is the only pass that will ever name it.
-        reconcile: (storage) => {
-          const timestamp = () => new Date().toISOString()
-          const report = reconcileRoot({ storage, probe: systemProbe, timestamp })
-          reclaimInBackground({ storage, timestamp }, report.needsReclamation)
-          return report
-        },
-      })
-    },
+    // On its own thread (issue #153): see `housekeeping-entry.ts`. The budget
+    // crosses as a duration, not an instant, so the two threads never have to
+    // agree on a clock origin.
+    runHousekeeping: (deadlineMs) =>
+      housekeepOffThread({
+        homeDir: wiring.homeDir,
+        rootKey: wiring.storage.rootKey,
+        budgetMs: deadlineMs - monotonicNow(),
+      }),
 
     now: monotonicNow,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    ...(wiring.deadlineMs === undefined ? {} : { deadlineMs: wiring.deadlineMs }),
   }
+}
+
+/**
+ * Run one housekeeping pass on a worker, settling when the worker is done.
+ *
+ * Unreferenced, so a host shutting down is never held by maintenance it will
+ * simply pick up next time. A worker that cannot be started, throws, or says
+ * its pass failed is a failed item — never a reason to fall back to doing this
+ * work on the host's own thread, which is the whole of what moving it was for.
+ */
+function housekeepOffThread(request: HousekeepingRequest): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let worker: Worker
+    try {
+      worker = new Worker(HOUSEKEEPING_ENTRYPOINT, { workerData: request })
+    } catch (error) {
+      reject(error)
+      return
+    }
+    worker.unref()
+    let failed = false
+    worker.on("message", (reply: HousekeepingReply) => {
+      if (reply.status === "failed") failed = true
+    })
+    worker.once("error", reject)
+    worker.once("exit", () => (failed ? reject(new Error("housekeeping failed")) : resolve()))
+  })
 }

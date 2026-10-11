@@ -429,21 +429,21 @@ describe("while a root is held", () => {
 
 describe("publishing a quarantine", () => {
   test("does not depend on still holding the execution slot", async () => {
-    await withSandbox((box) => {
+    await withSandbox(async (box) => {
       // A recovery pass released this run's stale slot a moment ago; its owner
       // is only now finding out the lifecycle could not be confirmed. Dropping
       // the quarantine because the slot has gone would release a root nobody
       // has established is safe, which is the one thing it exists to prevent.
       writeQueue(box.storage, { schemaVersion: 1, nextSequence: 1, tickets: [] })
 
-      releaseSlot(box.storage, RUN, { reason: QUARANTINE_REASON, since: TIMESTAMP })
+      await releaseSlot(box.storage, RUN, { reason: QUARANTINE_REASON, since: TIMESTAMP })
 
       expect(readQueue(box.storage).quarantine?.runId).toBe(RUN)
     })
   })
 
   test("still releases the slot when it does hold it", async () => {
-    await withSandbox((box) => {
+    await withSandbox(async (box) => {
       writeQueue(box.storage, {
         schemaVersion: 1,
         nextSequence: 1,
@@ -451,7 +451,7 @@ describe("publishing a quarantine", () => {
         activeRunId: RUN,
       })
 
-      releaseSlot(box.storage, RUN, { reason: QUARANTINE_REASON, since: TIMESTAMP })
+      await releaseSlot(box.storage, RUN, { reason: QUARANTINE_REASON, since: TIMESTAMP })
 
       const state = readQueue(box.storage)
       // Both facts at once: a root that is quarantined must never also look
@@ -462,13 +462,13 @@ describe("publishing a quarantine", () => {
   })
 
   test("never displaces another run's live quarantine", async () => {
-    await withSandbox((box) => {
+    await withSandbox(async (box) => {
       // Somebody else's held root, with its own reason and its own moment.
       // Replacing it would leave the root just as held and no longer explain
       // why, which is the part anyone reading it needs.
       holdRoot(box, "run-someone-else")
 
-      releaseSlot(box.storage, RUN, { reason: "a different reason", since: TIMESTAMP })
+      await releaseSlot(box.storage, RUN, { reason: "a different reason", since: TIMESTAMP })
 
       const state = readQueue(box.storage)
       expect(state.quarantine?.runId).toBe("run-someone-else")
@@ -477,7 +477,7 @@ describe("publishing a quarantine", () => {
   })
 
   test("leaves an unrelated run's slot alone", async () => {
-    await withSandbox((box) => {
+    await withSandbox(async (box) => {
       writeQueue(box.storage, {
         schemaVersion: 1,
         nextSequence: 1,
@@ -485,7 +485,7 @@ describe("publishing a quarantine", () => {
         activeRunId: "run-someone-else",
       })
 
-      releaseSlot(box.storage, RUN, { reason: QUARANTINE_REASON, since: TIMESTAMP })
+      await releaseSlot(box.storage, RUN, { reason: QUARANTINE_REASON, since: TIMESTAMP })
 
       const state = readQueue(box.storage)
       expect(state.activeRunId).toBe("run-someone-else")

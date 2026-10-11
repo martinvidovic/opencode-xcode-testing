@@ -56,6 +56,12 @@ export type Registry = {
   lastHousekeepingAtMs?: number
   roots: Record<string, { lastSeenAtMs: number }>
   /**
+   * Roots the last pass did not reach before its deadline (issue #153), which
+   * the next pass visits first. Without it a pass that always runs out at the
+   * same root would never reach the ones after it.
+   */
+  pendingRoots?: string[]
+  /**
    * The last runtime probe that succeeded, revalidated by `stat` rather than
    * re-spawned. First start pays for a subprocess; later starts pay for a
    * stat, which is the identity-recheck philosophy #8 applies to toolchains.
@@ -125,6 +131,8 @@ export type HousekeepingOutcome =
        * this is a root nobody has opened in two months going away entirely.
        */
       staleRoots: string[]
+      /** Roots the deadline stopped this pass reaching, left for the next. */
+      unvisited: string[]
     }
   | { status: "skipped"; reason: "tooSoon" }
   | { status: "skipped"; reason: "lockHeld" }
@@ -155,6 +163,13 @@ export type HousekeepingEnvironment = {
    * cannot supply a probe.
    */
   reconcile?(storage: Storage): { status: RecoveryStatus }
+  /**
+   * Whether the pass has run out of time (issue #153). Checked between roots,
+   * because the work for one root is synchronous filesystem work nothing
+   * outside it can interrupt — the only deadline that can hold is one the pass
+   * reads itself. Absent means the pass runs to completion.
+   */
+  expired?(): boolean
 }
 
 /**
@@ -172,7 +187,7 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
     const registry = readRegistry(storage)
     if (!housekeepingIsDue(registry, nowMs)) return undefined
     writeRegistry(storage, { ...registry, lastHousekeepingAtMs: nowMs })
-    return Object.keys(registry.roots).sort()
+    return visitingOrder(registry)
   })
 
   if (claimed === undefined) {
@@ -188,14 +203,20 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
   // against is the one that remains rather than one inflated by storage this
   // pass is about to remove — otherwise a single sweep evicts evidence from
   // live roots to make room for roots it then deletes anyway.
+  const expired = () => environment.expired?.() === true
   const staleRoots = collectStaleRoots(environment, claimed, nowMs)
   const surviving = claimed.filter((rootKey) => !staleRoots.includes(rootKey))
 
-  const userWideBytes = totalToolBytes(storage)
+  const userWideBytes = totalToolBytes(storage, expired)
   const reports: Record<string, RetentionReport> = {}
   const held: string[] = []
+  const unvisited: string[] = []
 
   for (const rootKey of surviving) {
+    if (expired()) {
+      unvisited.push(rootKey)
+      continue
+    }
     const rootStorage = environment.storageForRootKey(rootKey)
 
     // A registered root with no directory has nothing to retain, and trying
@@ -249,7 +270,31 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
     }
   }
 
-  return { status: "ran", reports, staleRoots, held }
+  rememberUnvisited(storage, unvisited)
+  return { status: "ran", reports, staleRoots, held, unvisited }
+}
+
+/** Roots the last pass left unvisited first, then the rest, each in key order. */
+function visitingOrder(registry: Registry): string[] {
+  const registered = Object.keys(registry.roots).sort()
+  const pending = (registry.pendingRoots ?? []).filter((rootKey) => rootKey in registry.roots).sort()
+  return [...pending, ...registered.filter((rootKey) => !pending.includes(rootKey))]
+}
+
+/**
+ * Record what this pass did not reach, or that it reached everything.
+ *
+ * Tried rather than waited for like every other registry write here: a sibling
+ * holding the lock costs the next pass its ordering, never this one its return.
+ */
+function rememberUnvisited(storage: Storage, unvisited: readonly string[]): void {
+  withTryLock(storage.registryLock, () => {
+    const registry = readRegistry(storage)
+    const next: Registry = { ...registry }
+    if (unvisited.length > 0) next.pendingRoots = [...unvisited]
+    else delete next.pendingRoots
+    writeRegistry(storage, next)
+  })
 }
 
 /**
@@ -359,6 +404,9 @@ function collectStaleRoots(
 
   const collected: string[] = []
   for (const rootKey of candidates(environment.storage, claimed)) {
+    // A candidate not reached is reconsidered by the next pass from scratch:
+    // its age only grows, so nothing has to be remembered about it.
+    if (environment.expired?.() === true) break
     const lastSeenAtMs = seen.roots[rootKey]?.lastSeenAtMs
 
     // A directory with no registry entry is storage nothing will ever account
@@ -449,16 +497,20 @@ function collectStaleRoots(
  * drives user-wide eviction, so anything else that happens to sit in the roots
  * directory must not be able to inflate it — or to be walked at all.
  */
-export function totalToolBytes(storage: Storage): number {
+export function totalToolBytes(storage: Storage, expired: () => boolean = () => false): number {
   const rootsDir = join(storage.toolRoot, "roots")
+  let total = 0
   try {
-    return readdirSync(rootsDir)
-      .filter(isRootKey)
-      .map((rootKey) => directorySize(join(rootsDir, rootKey)))
-      .reduce((total, bytes) => total + bytes, 0)
+    // A total cut short by the deadline is never acted on: the pass checks the
+    // same deadline before every root, so it stops before retention reads it.
+    for (const rootKey of readdirSync(rootsDir).filter(isRootKey)) {
+      if (expired()) break
+      total += directorySize(join(rootsDir, rootKey))
+    }
   } catch {
     return 0
   }
+  return total
 }
 
 /**
@@ -482,6 +534,8 @@ function isRegistry(value: unknown): value is Registry {
     ) &&
     (registry.lastHousekeepingAtMs === undefined ||
       typeof registry.lastHousekeepingAtMs === "number") &&
+    (registry.pendingRoots === undefined ||
+      (Array.isArray(registry.pendingRoots) && registry.pendingRoots.every(isRootKey))) &&
     (registry.runtime === undefined || isRuntimeEntry(registry.runtime))
   )
 }

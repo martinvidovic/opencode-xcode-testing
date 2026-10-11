@@ -578,3 +578,78 @@ describe("what recovery's verdict is allowed to mean", () => {
     })
   })
 })
+
+describe("a pass that reaches its deadline (issue #153)", () => {
+  /** Three registered roots, each with storage, in key order. */
+  function threeRoots(box: Sandbox): [string, string, string] {
+    const keys = [box.storage.rootKey]
+    for (const name of ["second", "third"]) {
+      const root = storageFor(box.homeDir, `/workspace/${name}`)
+      prepareStorage(root)
+      keys.push(root.rootKey)
+    }
+    writeRegistry(box.storage, {
+      schemaVersion: 1,
+      roots: Object.fromEntries(keys.map((key) => [key, { lastSeenAtMs: NOW }])),
+    })
+    const [first, second, third] = keys.sort()
+    if (first === undefined || second === undefined || third === undefined) throw new Error("three roots")
+    return [first, second, third]
+  }
+
+  /** A pass whose deadline arrives as soon as it has visited `budget` roots. */
+  function housekeepFor(box: Sandbox, nowMs: number, budget: number, visited: string[]) {
+    return runHousekeeping({
+      storage: box.storage,
+      now: () => nowMs,
+      storageForRootKey: (rootKey) => storageForRootKey(box.homeDir, rootKey),
+      reconcile: (storage) => {
+        visited.push(storage.rootKey)
+        return { status: "alreadyHealthy" }
+      },
+      expired: () => visited.length >= budget,
+    })
+  }
+
+  test("stops between roots and says which it did not reach", async () => {
+    await withSandbox((box) => {
+      const keys = threeRoots(box)
+      const visited: string[] = []
+
+      const outcome = housekeepFor(box, NOW, 1, visited)
+
+      expect(outcome.status).toBe("ran")
+      if (outcome.status !== "ran") return
+      expect(visited).toEqual([keys[0]])
+      expect(Object.keys(outcome.reports)).toEqual([keys[0]])
+      expect(outcome.unvisited).toEqual([keys[1], keys[2]])
+    })
+  })
+
+  test("leaves the roots it did not reach to be visited first by the next pass", async () => {
+    await withSandbox((box) => {
+      const keys = threeRoots(box)
+      housekeepFor(box, NOW, 1, [])
+
+      const visited: string[] = []
+      const next = housekeepFor(box, NOW + HOUSEKEEPING_MIN_INTERVAL_MS, 2, visited)
+
+      // Without this, a pass that always runs out at the same root would
+      // never reach the ones after it.
+      expect(visited).toEqual([keys[1], keys[2]])
+      if (next.status !== "ran") throw new Error(`expected a pass: ${next.status}`)
+      expect(next.unvisited).toEqual([keys[0]])
+    })
+  })
+
+  test("reports nothing unvisited when it finishes", async () => {
+    await withSandbox((box) => {
+      threeRoots(box)
+      const outcome = housekeepFor(box, NOW, 3, [])
+
+      if (outcome.status !== "ran") throw new Error(`expected a pass: ${outcome.status}`)
+      expect(outcome.unvisited).toEqual([])
+      expect(readRegistry(box.storage).pendingRoots).toBeUndefined()
+    })
+  })
+})
