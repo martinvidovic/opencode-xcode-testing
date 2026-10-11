@@ -82,6 +82,10 @@ import graph cannot protect — and if any is missing, registers no tools and em
 naming the expected checkout layout. A partial copy of the plugin is a different failure class
 from host-version skew, and registering tools that cannot work is worse than registering none.
 
+> **Amended (issue #153):** the housekeeping worker entrypoint (`src/runner/housekeeping-entry.ts`)
+> is a third verified file, for the same reason: it is started by path on a worker thread, never
+> imported.
+
 ### Tool surface
 
 **Three tool IDs**, not one multiplexed tool: `xcode_test`, `xcode_test_inspect`,
@@ -282,6 +286,27 @@ per `ctx.directory` instance, so a worktree with two session directories pays tw
   re-validated by `stat` (path, mtime, size, recorded version) rather than re-spawned, re-probing
   only on mismatch — the identity-recheck philosophy #8 applies to toolchains. First start pays the
   full probe; later starts pay milliseconds.
+
+> **Amended (issue #153): toolchain discovery and housekeeping are bounded too.** Two things the
+> budget above did not actually bound:
+>
+> - **Toolchain discovery** ran after the factory returned, outside every deadline, through
+>   `spawnSync` probes with no timeout. It is now a fifth bounded item (8s). Each probe times out
+>   on its own (6s), and the item's budget expiring *abandons* it: every bounded item is handed an
+>   abort signal, and a probe still running is killed with its whole process group. A discovery
+>   that did not finish is reported as such, never waited for.
+> - **Housekeeping** was synchronous, so the timer meant to bound it could not fire until it had
+>   finished — and neither could any other item's, which could then be reported as timed out
+>   after succeeding. It now runs on a **worker thread**, where no step can hold the host's event
+>   loop. It still checks its deadline between roots and records the roots it did not reach
+>   (`pendingRoots` in the registry), which the next pass visits first. The worker is never
+>   terminated from outside; it ends when its work does. Kernel `flock`s exclude each other across
+>   threads as across processes, so coordination is unchanged, and the host's own lock
+>   acquisitions on admission and slot release now wait by polling rather than inside `open(2)`,
+>   so a lock housekeeping holds costs a Test Run time and never the host its responsiveness.
+>
+> With toolchain discovery concurrent with the rest, the expected worst case is the longest item
+> (near 8 seconds on a cold `xcodebuild -version`); the 10-second ceiling still stands.
 
 ### Language, topology, and runtime resolution
 

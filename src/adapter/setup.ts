@@ -21,8 +21,6 @@
 
 import { lstatSync, statfsSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
 
 import { monotonicNow } from "../domain/clock.ts"
 import { storageFor, type Storage } from "../runner/paths.ts"
@@ -36,12 +34,11 @@ import { readProjectConfiguration, resolveRootRoles, rootContextFromLocation, ty
 import type { RuntimeResolution } from "./runtime.ts"
 import { safeFailure } from "./sanitize.ts"
 import { createTestToolService, unavailableService } from "./service.ts"
-import { HOUSEKEEPING_ENTRYPOINT, startupPortsFor } from "./startup-ports.ts"
+import { HOUSEKEEPING_ENTRYPOINT, SUPERVISOR_ENTRYPOINT } from "./entrypoints.ts"
+import { startupPortsFor } from "./startup-ports.ts"
 import { hostVersionDiagnostic, runStartup } from "./startup.ts"
 import type { ToolDeps } from "./tools.ts"
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-export const SUPERVISOR_ENTRYPOINT = join(HERE, "..", "runner", "supervisor-entry.ts")
 
 /** What `setup` reads off the host context. */
 export type HostHandles = {

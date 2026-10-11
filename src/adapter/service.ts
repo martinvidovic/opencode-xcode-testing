@@ -361,7 +361,7 @@ function startRun(
         ...(cancellation === undefined ? {} : { cancellation }),
       })
     } finally {
-      releaseOwnership(environment, runId)
+      await releaseOwnership(environment, runId)
     }
   })()
 
@@ -702,7 +702,7 @@ export async function finalizeRecovered(
     clock: { now: environment.now },
   })
 
-  publishRecovered(environment, current, summary, index)
+  await publishRecovered(environment, current, summary, index)
 }
 
 
@@ -777,7 +777,7 @@ async function finalizePreLaunch(
     ),
   )
 
-  publishRecovered(environment, finished, summary, index)
+  await publishRecovered(environment, finished, summary, index)
 }
 
 /**
@@ -794,15 +794,15 @@ async function finalizePreLaunch(
  * so a later inspection answers "nothing was retained" instead of "never
  * known".
  */
-function publishRecovered(
+async function publishRecovered(
   environment: ServiceEnvironment,
   record: RunRecord,
   summary: TestRunSummary | undefined,
   index: NormalizedIndex,
-): void {
+): Promise<void> {
   if (summary === undefined) publishIndexOnly(environment, record, index)
   else publishTerminal(environment, record, summary, index)
-  releaseOwnership(environment, record.runId)
+  await releaseOwnership(environment, record.runId)
 }
 
 /** The gated child, if one was recorded and is still identifiably running. */
@@ -851,16 +851,16 @@ function admissionMs(environment: ServiceEnvironment, record: RunRecord): number
  * next admission fail fast with a reason instead of waiting out its deadline
  * behind a run nobody can account for.
  */
-function releaseOwnership(environment: ServiceEnvironment, runId: string): void {
+async function releaseOwnership(environment: ServiceEnvironment, runId: string): Promise<void> {
   const record = readRunRecord(environment.storage, runId)
   if (record?.quarantined === true) {
-    releaseSlot(environment.storage, runId, {
+    await releaseSlot(environment.storage, runId, {
       reason: record.quarantineReason ?? QUARANTINE_REASON,
       since: environment.timestamp(),
     })
     return
   }
-  releaseSlot(environment.storage, runId)
+  await releaseSlot(environment.storage, runId)
 }
 
 function logFacts(path: string): { retainedBytes?: number; retainedBytesExact: boolean } {

@@ -71,6 +71,38 @@ export function withLock<T>(path: string, work: (lock: Lock) => T): T {
   }
 }
 
+/** How often `withLockWhenFree` tries a held lock again. */
+export const LOCK_POLL_INTERVAL_MS = 10
+
+/**
+ * Run `work` under the lock, waiting for it without blocking the thread.
+ *
+ * `acquireLock` waits inside `open(2)`, which holds the whole thread until the
+ * lock is free — fine for a supervisor or a worker, and not for the host's
+ * thread, whose event loop is what the host answers on (issue #153).
+ * Housekeeping holds a root lock while it reclaims and runs on its own thread,
+ * and another OpenCode process may hold it for the same reason; either way
+ * this waits by trying, yielding, and trying again, so the wait costs the
+ * caller time and never the host its responsiveness.
+ */
+export async function withLockWhenFree<T>(
+  path: string,
+  work: (lock: Lock) => T,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T> {
+  for (;;) {
+    const lock = tryLock(path)
+    if (lock !== undefined) {
+      try {
+        return work(lock)
+      } finally {
+        lock.release()
+      }
+    }
+    await sleep(LOCK_POLL_INTERVAL_MS)
+  }
+}
+
 /** Run `work` only if the lock is free. Returns `undefined` when it is held. */
 export function withTryLock<T>(path: string, work: (lock: Lock) => T): T | undefined {
   const lock = tryLock(path)

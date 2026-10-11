@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto"
 import { isArrayOf, isRecord } from "../domain/json.ts"
 import type { QueuedFailureReason } from "../domain/outcome.ts"
 import { identityMatches, type ProcessIdentity, type ProcessProbe } from "./identity.ts"
-import { withLock } from "./locks.ts"
+import { withLockWhenFree } from "./locks.ts"
 import { isRunId, newRunId, readPrivateFile, type Storage, writePrivateFileAtomic } from "./paths.ts"
 import { isCancelled } from "../domain/cancellation.ts"
 
@@ -176,7 +176,13 @@ export async function admit(
     return { status: "failed", reason: "insufficientStorage", ...queued() }
   }
 
-  const ticket = withLock(storage.rootLock, () => {
+  // Every acquisition here waits without blocking (issue #153): this runs on
+  // the host's thread, and the lock may be held by housekeeping mid-reclaim.
+  // A real timer between tries, not the injected `sleep`: a test's instant
+  // sleep would turn the wait into a loop that never yields to anything.
+  const lock = <T>(work: () => T) => withLockWhenFree(storage.rootLock, work)
+
+  const ticket = await lock(() => {
     const state = reap(environment, readQueue(storage))
     const allocated: Ticket = {
       sequence: state.nextSequence,
@@ -194,8 +200,8 @@ export async function admit(
     return allocated
   })
 
-  const release = (result: AdmissionResult): AdmissionResult => {
-    withLock(storage.rootLock, () => {
+  const release = async (result: AdmissionResult): Promise<AdmissionResult> => {
+    await lock(() => {
       const state = readQueue(storage)
       writeQueue(storage, {
         ...state,
@@ -208,7 +214,7 @@ export async function admit(
   for (;;) {
     if (isCancelled(options.signal)) return release({ status: "cancelled", ...queued() })
 
-    const attempt = withLock(storage.rootLock, (): AdmissionResult | undefined => {
+    const attempt = await lock((): AdmissionResult | undefined => {
       const state = reap(environment, readQueue(storage))
 
       if (state.quarantine !== undefined) {
@@ -266,13 +272,18 @@ export async function admit(
   }
 }
 
-/** Release the execution slot once a run is durably completed or quarantined. */
-export function releaseSlot(
+/**
+ * Release the execution slot once a run is durably completed or quarantined.
+ *
+ * Asynchronous because it runs on the host's thread and waits for the root
+ * lock without blocking it (issue #153).
+ */
+export async function releaseSlot(
   storage: Storage,
   runId: string,
   quarantine?: Omit<Quarantine, "runId">,
-): void {
-  withLock(storage.rootLock, () => {
+): Promise<void> {
+  await withLockWhenFree(storage.rootLock, () => {
     const state = readQueue(storage)
     const holdsSlot = state.activeRunId === runId
 

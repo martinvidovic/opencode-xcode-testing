@@ -20,33 +20,21 @@
  */
 
 import { Worker } from "node:worker_threads"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
 
 import { monotonicNow } from "../domain/clock.ts"
-import type { HousekeepingRequest } from "../runner/housekeeping-entry.ts"
+import type { HousekeepingReply, HousekeepingRequest } from "../runner/housekeeping-entry.ts"
 import { noteRootSeen } from "../runner/housekeeping.ts"
 import { systemProbe } from "../runner/identity.ts"
 import { reclaimInBackground } from "../runner/reclamation.ts"
 import { resolveToolchain, type ToolchainProbe } from "../runner/toolchain.ts"
 import { prepareStorage, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
+import { HOUSEKEEPING_ENTRYPOINT } from "./entrypoints.ts"
 import { bunOnPath, probeRuntimeCandidate } from "./probe.ts"
 import { reconcileRootBounded } from "./reconciliation.ts"
 import { cachedRuntime, rememberRuntime, resolveRuntime, type RuntimeResolution } from "./runtime.ts"
 import type { StartupPorts } from "./startup.ts"
 import { enablementMarkerExists } from "./root-roles.ts"
-
-/**
- * The housekeeping worker's entrypoint. Read at runtime rather than imported,
- * so it is one of the files structural verification has to check is there.
- */
-export const HOUSEKEEPING_ENTRYPOINT = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "runner",
-  "housekeeping-entry.ts",
-)
 
 export type StartupWiring = {
   configurationRoot?: string
@@ -151,9 +139,9 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
  * Run one housekeeping pass on a worker, settling when the worker is done.
  *
  * Unreferenced, so a host shutting down is never held by maintenance it will
- * simply pick up next time. A worker that cannot be started is a failed item —
- * never a reason to fall back to doing this work on the host's own thread,
- * which is the whole of what moving it was for.
+ * simply pick up next time. A worker that cannot be started, throws, or says
+ * its pass failed is a failed item — never a reason to fall back to doing this
+ * work on the host's own thread, which is the whole of what moving it was for.
  */
 function housekeepOffThread(request: HousekeepingRequest): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -165,7 +153,11 @@ function housekeepOffThread(request: HousekeepingRequest): Promise<void> {
       return
     }
     worker.unref()
+    let failed = false
+    worker.on("message", (reply: HousekeepingReply) => {
+      if (reply.status === "failed") failed = true
+    })
     worker.once("error", reject)
-    worker.once("exit", () => resolve())
+    worker.once("exit", () => (failed ? reject(new Error("housekeeping failed")) : resolve()))
   })
 }

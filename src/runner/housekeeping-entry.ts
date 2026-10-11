@@ -36,7 +36,10 @@ import { reconcileRoot } from "./recovery.ts"
 /** What the host hands this thread: where storage is, whose, and for how long. */
 export type HousekeepingRequest = { homeDir: string; rootKey: string; budgetMs: number }
 
-export function isHousekeepingRequest(value: unknown): value is HousekeepingRequest {
+/** What this thread answers before it ends. Anything but `failed` is a pass that ran or was skipped. */
+export type HousekeepingReply = { status: "ran" | "skipped" | "failed" }
+
+function isHousekeepingRequest(value: unknown): value is HousekeepingRequest {
   return (
     isRecord(value) &&
     typeof value.homeDir === "string" &&
@@ -47,7 +50,7 @@ export function isHousekeepingRequest(value: unknown): value is HousekeepingRequ
 }
 
 /** One pass, stopping once `budgetMs` has elapsed on this thread's clock. */
-export async function housekeep(request: HousekeepingRequest): Promise<string> {
+async function housekeep(request: HousekeepingRequest): Promise<HousekeepingReply["status"]> {
   const deadline = monotonicNow() + request.budgetMs
   const storageFor = (rootKey: string) => storageForRootKey(request.homeDir, rootKey)
   const timestamp = () => new Date().toISOString()
@@ -81,12 +84,10 @@ export async function housekeep(request: HousekeepingRequest): Promise<string> {
 
 if (parentPort !== null) {
   const port = parentPort
+  const reply = (status: HousekeepingReply["status"]) => port.postMessage({ status } satisfies HousekeepingReply)
   if (isHousekeepingRequest(workerData)) {
-    housekeep(workerData).then(
-      (status) => port.postMessage({ status }),
-      () => port.postMessage({ status: "failed" }),
-    )
+    housekeep(workerData).then(reply, () => reply("failed"))
   } else {
-    port.postMessage({ status: "failed" })
+    reply("failed")
   }
 }

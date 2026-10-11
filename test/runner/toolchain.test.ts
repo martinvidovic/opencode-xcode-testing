@@ -65,6 +65,42 @@ describe("a probe that never exits", () => {
     expect(childrenRunning(marker)).toEqual([])
   })
 
+  test("is killed with everything it started, even what still holds its output open", async () => {
+    // `xcrun` is a launcher: what hangs is often a process it started, which
+    // inherits the probe's pipes. Killing only the direct child would leave
+    // that one holding them open, and a probe that waits for its output to
+    // close would wait as long as it ran.
+    const marker = "xcode-test-grandchild-probe-153"
+    const started = performance.now()
+
+    const outcome = await spawnProbe({ timeoutMs: 200 })("/bin/sh", ["-c", `/bin/sleep 30 & wait # ${marker}`])
+
+    expect(performance.now() - started).toBeLessThan(2_000)
+    expect(outcome.timedOut).toBe(true)
+    const stragglers = spawnSync("/usr/bin/pgrep", ["-f", "sleep 30"], { encoding: "utf8" }).stdout
+    const ours = spawnSync("/bin/ps", ["-o", "pid=,command=", "-p", stragglers.split("\n").filter(Boolean).join(",") || "0"], {
+      encoding: "utf8",
+    }).stdout
+    expect(ours).not.toContain(marker)
+  })
+
+  test("is never started once discovery has been abandoned", async () => {
+    const started: string[] = []
+    const abandon = new AbortController()
+    abandon.abort()
+
+    await resolveToolchain({
+      signal: abandon.signal,
+      probe: async (command) => {
+        started.push(command)
+        return { status: 0, stdout: "/Applications/Xcode.app/Contents/Developer\n" }
+      },
+      digest: () => "digest",
+    })
+
+    expect(started).toEqual([])
+  })
+
   test("fails discovery with a reason naming what did not answer", async () => {
     const resolution = await resolveToolchain({
       probe: scripted({ [XCODEBUILD]: { status: null, stdout: "", timedOut: true } }),

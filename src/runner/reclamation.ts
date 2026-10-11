@@ -55,11 +55,13 @@ export const removeTree: TreeRemover = (path) =>
   rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
 
 /**
- * Reclamations in flight in this process, by run directory.
+ * Reclamations in flight on this thread, by run directory.
  *
- * Process-wide rather than per service, because that is the scope in which two
- * of them could race: every plugin instance this host loads for the same
- * project shares one storage scope.
+ * Shared by every service on the thread rather than kept per service, because
+ * every plugin instance this host loads for the same project shares one
+ * storage scope. Housekeeping's worker thread keeps its own; a deletion it
+ * races with this one, like another process's, is absorbed by `removeTree`'s
+ * retries, and a failure is recorded and retried.
  */
 const inFlight = new Map<string, Promise<void>>()
 

@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { spawn } from "node:child_process"
 import { writeFileSync } from "node:fs"
 
 import {
@@ -70,7 +71,7 @@ describe("admission", () => {
       const blocked = await admit(environmentFor(box), { waitDeadlineMs: 30 })
       expect(blocked).toMatchObject({ status: "failed", reason: "concurrencyWaitTimedOut" })
 
-      if (first.status === "admitted") releaseSlot(box.storage, first.runId)
+      if (first.status === "admitted") await releaseSlot(box.storage, first.runId)
       const second = await admit(environmentFor(box))
       expect(second.status).toBe("admitted")
     })
@@ -259,4 +260,71 @@ describe("malformed coordination state", () => {
       await sleep(0)
     })
   })
+})
+
+describe("a root lock someone else is holding (issue #153)", () => {
+  /**
+   * Hold `path` from another process for `ms`, resolving once it is held.
+   *
+   * Another process rather than a second open here, because the property is
+   * about this thread: a blocking acquisition would wait on a lock nothing on
+   * this thread could ever release.
+   */
+  function holdElsewhere(path: string, ms: number): Promise<void> {
+    const script = `
+      const fs = require("node:fs")
+      const fd = fs.openSync(${JSON.stringify(path)}, fs.constants.O_CREAT | fs.constants.O_RDWR | 0x20, 0o600)
+      process.stdout.write("held\\n")
+      setTimeout(() => { fs.closeSync(fd); process.exit(0) }, ${ms})
+    `
+    const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "inherit"] })
+    return new Promise((resolve) => child.stdout?.once("data", () => resolve()))
+  }
+
+  test("is waited for without holding this thread's event loop", async () => {
+    await withSandbox(async (box) => {
+      await holdElsewhere(box.storage.rootLock, 600)
+
+      let worst = 0
+      let last = performance.now()
+      const timer = setInterval(() => {
+        const now = performance.now()
+        worst = Math.max(worst, now - last - 10)
+        last = now
+      }, 10)
+      const result = await admit(
+        environmentFor(box, { sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }),
+      )
+      await sleep(30)
+      clearInterval(timer)
+
+      // Housekeeping holds a root lock while it reclaims, and on its own
+      // thread it can now be doing so while this host admits a run. Waiting
+      // for it has to cost the caller time, never the host its event loop.
+      expect(result.status).toBe("admitted")
+      expect(worst).toBeLessThan(150)
+    })
+  }, 10_000)
+
+  test("is waited for the same way when a slot is given back", async () => {
+    await withSandbox(async (box) => {
+      const first = await admit(environmentFor(box))
+      if (first.status !== "admitted") throw new Error(`expected admission: ${first.status}`)
+      await holdElsewhere(box.storage.rootLock, 600)
+
+      let worst = 0
+      let last = performance.now()
+      const timer = setInterval(() => {
+        const now = performance.now()
+        worst = Math.max(worst, now - last - 10)
+        last = now
+      }, 10)
+      await releaseSlot(box.storage, first.runId)
+      await sleep(30)
+      clearInterval(timer)
+
+      expect(readQueue(box.storage).activeRunId).toBeUndefined()
+      expect(worst).toBeLessThan(150)
+    })
+  }, 10_000)
 })

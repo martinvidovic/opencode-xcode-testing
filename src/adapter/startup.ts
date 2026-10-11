@@ -114,7 +114,7 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   const bounded = async <T>(
     name: string,
     budgetMs: number,
-    start: (bound: { signal: AbortSignal; deadlineMs: number }) => Promise<T>,
+    start: (limits: { signal: AbortSignal; deadlineMs: number }) => Promise<T>,
   ): Promise<T | undefined> => {
     const remaining = Math.min(budgetMs, deadline - ports.now())
     if (remaining <= 0) {

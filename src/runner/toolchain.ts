@@ -46,9 +46,11 @@ export type ToolchainProbe = (
 /**
  * How long one probe may take on its own. `xcodebuild -version` is the slow
  * one, and a cold first run after a reboot has been seen to take seconds; a
- * probe that has not answered in this long is not going to.
+ * probe that has not answered in this long is not going to. Shorter than the
+ * startup budget for discovery as a whole, so that a hung probe is reported as
+ * the probe that hung rather than as discovery running out of time.
  */
-export const PROBE_TIMEOUT_MS = 8_000
+export const PROBE_TIMEOUT_MS = 6_000
 
 /**
  * Probe by spawning the command, killing it at `timeoutMs` or when `signal`
@@ -57,6 +59,11 @@ export const PROBE_TIMEOUT_MS = 8_000
  * `SIGKILL` rather than a polite signal: these are read-only version queries,
  * there is nothing for them to clean up, and a process that ignored the
  * deadline has no claim on a grace period.
+ *
+ * The probe leads its own process group, and the whole group is killed.
+ * `xcrun` is a launcher, and what hangs is often a process it started — one
+ * that inherits the probe's pipes and would hold them open, and the probe with
+ * them, if only the direct child were killed.
  */
 export function spawnProbe(options: { timeoutMs?: number; signal?: AbortSignal } = {}): ToolchainProbe {
   return (command, args, env) =>
@@ -74,14 +81,17 @@ export function spawnProbe(options: { timeoutMs?: number; signal?: AbortSignal }
 
       const child = spawn(command, args, {
         stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
         ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
       })
       child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")))
       child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")))
 
+      let killed = false
       const kill = () => {
+        killed = true
         try {
-          child.kill("SIGKILL")
+          if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL")
         } catch {
           // Already gone, which is what killing it was for.
         }
@@ -95,11 +105,15 @@ export function spawnProbe(options: { timeoutMs?: number; signal?: AbortSignal }
       else options.signal?.addEventListener("abort", abandon, { once: true })
 
       child.on("error", () => finish({ status: null, stdout: output }))
-      // `close`, not `exit`: it waits for the output streams, so a probe that
-      // answers and exits at once is never read as having said nothing.
-      child.on("close", (status) =>
-        finish(timedOut ? { status: null, stdout: output, timedOut: true } : { status, stdout: output }),
-      )
+      // A killed probe settles on `exit`: its answer no longer matters, and
+      // waiting for its pipes to close is waiting on whatever still holds them.
+      child.on("exit", () => {
+        if (killed) finish(timedOut ? { status: null, stdout: output, timedOut: true } : { status: null, stdout: output })
+      })
+      // One that answered settles on `close`, which waits for the output
+      // streams, so a probe that answers and exits at once is never read as
+      // having said nothing.
+      child.on("close", (status) => finish({ status, stdout: output }))
     })
 }
 
@@ -114,8 +128,12 @@ export function spawnProbe(options: { timeoutMs?: number; signal?: AbortSignal }
 export async function resolveToolchain(
   options: { probe?: ToolchainProbe; digest?: (path: string) => string; signal?: AbortSignal } = {},
 ): Promise<ToolchainResolution> {
-  const probe =
+  const unguarded =
     options.probe ?? spawnProbe(options.signal === undefined ? {} : { signal: options.signal })
+  // Abandoned discovery starts nothing further: a probe spawned only to be
+  // killed at once is a process nobody wanted.
+  const probe: ToolchainProbe = (command, args, env) =>
+    options.signal?.aborted === true ? Promise.resolve({ status: null, stdout: "" }) : unguarded(command, args, env)
 
   const selected = await probe(XCODE_SELECT, ["-p"])
   if (selected.timedOut === true) return didNotAnswer("xcode-select")
@@ -167,10 +185,7 @@ export async function resolveToolchain(
 }
 
 function didNotAnswer(tool: string): ToolchainResolution {
-  return {
-    status: "failed",
-    message: `${tool} did not answer within ${PROBE_TIMEOUT_MS / 1000} seconds and was stopped`,
-  }
+  return { status: "failed", message: `${tool} did not answer in time and was stopped` }
 }
 
 export function fileDigest(path: string): string {
