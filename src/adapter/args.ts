@@ -16,6 +16,7 @@
 import type { Destination, TestRunRequest, XcodeContainer } from "../domain/request.ts"
 import type { InspectionFacet, InspectRunRequest } from "../domain/inspection.ts"
 import type { RequestedScope } from "../domain/scope.ts"
+import type { TestStatus } from "../domain/evidence.ts"
 
 /** The shape `xcode_test` declares. Optionality mirrors the Zod schema exactly. */
 export type TestArguments = {
@@ -45,6 +46,7 @@ export type InspectArguments = {
   diagnosticId?: string
   testId?: string
   maxBytes?: number
+  status?: TestStatus
 }
 
 export function toInspectRunRequest(args: InspectArguments): InspectRunRequest {
@@ -56,5 +58,6 @@ export function toInspectRunRequest(args: InspectArguments): InspectRunRequest {
     ...(args.diagnosticId === undefined ? {} : { diagnosticId: args.diagnosticId }),
     ...(args.testId === undefined ? {} : { testId: args.testId }),
     ...(args.maxBytes === undefined ? {} : { maxBytes: args.maxBytes }),
+    ...(args.status === undefined ? {} : { status: args.status }),
   }
 }

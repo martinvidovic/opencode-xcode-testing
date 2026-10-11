@@ -23,6 +23,7 @@ import type { DiagnosticSummary, InspectionAvailability } from "../domain/inspec
 import type { Destination, ResolvedTestRun, XcodeContainer } from "../domain/request.ts"
 import type {
   CappedSection,
+  FailedTest,
   RequestCancelled,
   RequestRejected,
   RequestResolutionFailed,
@@ -127,6 +128,7 @@ function renderTestRun(summary: TestRunSummary): Document {
       ),
     ),
     block(PRIORITY.diagnostics, ...attestationLines(summary.scope)),
+    block(PRIORITY.diagnostics, ...failedTestLines(summary.diagnostics.failedTests, summary.diagnostics.failedTestSection)),
     block(PRIORITY.diagnostics, ...diagnosticLines("failures", summary.diagnostics.testFailures, summary.diagnostics.testFailureSection)),
     block(PRIORITY.diagnostics, ...diagnosticLines("build errors", summary.diagnostics.buildErrors, summary.diagnostics.buildErrorSection)),
     block(
@@ -337,6 +339,26 @@ function locationText(diagnostic: DiagnosticSummary): string {
   return [location.path, location.line, location.column]
     .filter((part) => part !== undefined)
     .join(":")
+}
+
+/**
+ * Which tests failed, one line each (issue #163).
+ *
+ * The failures section below is per assertion and leads with a location, so a
+ * caller asking "which tests failed?" had to recover the answer from handles,
+ * one Focused Detail at a time. This answers it directly, by full identifier,
+ * and says how many assertions a test failed rather than repeating the test.
+ * When there are more than fit, it says where the rest are.
+ */
+function failedTestLines(failed: FailedTest[], capped: CappedSection): string[] {
+  if (capped.total === 0) return []
+  return [
+    section("failed tests", capped),
+    ...failed.map((entry) =>
+      indent(1, entry.failureCount > 1 ? `${entry.identity.canonical}  (${entry.failureCount} failures)` : entry.identity.canonical),
+    ),
+    ...(capped.truncated ? [indent(1, "the rest: xcode_test_inspect facet tests, status failed")] : []),
+  ]
 }
 
 function observedLines(observed: TestIdentity[], capped: CappedSection): string[] {

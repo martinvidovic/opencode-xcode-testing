@@ -103,3 +103,13 @@ describe("every description", () => {
     }
   })
 })
+
+describe("guidance for listing failed tests (issue #163)", () => {
+  test("steers a caller to one filtered read rather than one Focused Detail per test", () => {
+    const inspect = descriptionFor("xcode_test_inspect")
+
+    expect(inspect).toContain("status")
+    expect(inspect).toMatch(/failed tests/i)
+    expect(inspect).toMatch(/one (call|read)/i)
+  })
+})

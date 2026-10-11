@@ -11,7 +11,9 @@ import type {
   EvidenceCompleteness,
   TestCounts,
   TestEvidence,
+  TestStatus,
 } from "../domain/evidence.ts"
+import type { FailedTest } from "../domain/result.ts"
 import {
   FACET_AVAILABILITIES,
   type DiagnosticSummary,
@@ -423,4 +425,37 @@ export function countOccurrences(occurrences: IndexedOccurrence[]): TestCounts {
   }
   for (const occurrence of occurrences) counts[occurrence.status] += 1
   return counts
+}
+
+/**
+ * Statuses whose messages are not failures (issue #163).
+ *
+ * A skipped test's reason and an expected failure's message arrive as the same
+ * `Failure Message` node a real failure does. They stay in the index — a
+ * Focused Detail of that test still shows them — but counting them as test
+ * failures put "Test skipped" among the failures a caller was asked to fix.
+ */
+const NOT_FAILING: ReadonlySet<TestStatus> = new Set(["skipped", "expectedFailure"])
+
+/**
+ * The test-failure diagnostics a caller should read as failures: every one
+ * except those belonging to a test that did not fail. The summary and the
+ * `failures` facet both answer from this, so they cannot disagree.
+ */
+export function reportedFailures(index: NormalizedIndex): DiagnosticSummary[] {
+  const notFailing = new Set(
+    index.occurrences.filter((occurrence) => NOT_FAILING.has(occurrence.status)).map((occurrence) => occurrence.id),
+  )
+  return index.testFailures.filter((entry) => entry.testId === undefined || !notFailing.has(entry.testId))
+}
+
+/** Every failed test once, in index order, with how many failures it had. */
+export function failedTestsOf(index: NormalizedIndex): FailedTest[] {
+  const failuresByTest = new Map<string, number>()
+  for (const entry of index.testFailures) {
+    if (entry.testId !== undefined) failuresByTest.set(entry.testId, (failuresByTest.get(entry.testId) ?? 0) + 1)
+  }
+  return index.occurrences
+    .filter((occurrence) => occurrence.status === "failed")
+    .map((occurrence) => ({ identity: occurrence.identity, failureCount: failuresByTest.get(occurrence.id) ?? 0 }))
 }

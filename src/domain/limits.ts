@@ -30,6 +30,15 @@ export const SUMMARY_TEST_FAILURE_CAP = 20
 /** Build-error diagnostics carried in a compact summary. */
 export const SUMMARY_BUILD_ERROR_CAP = 20
 
+/**
+ * Failed tests named in a compact summary (issue #163).
+ *
+ * More than the other sections carry, because this one is a list of
+ * identifiers a caller usually wants whole: one line per test, never per
+ * assertion, and the count is uncapped beside it.
+ */
+export const SUMMARY_FAILED_TEST_CAP = 50
+
 /** Sampled observed test identifiers carried in a compact summary. */
 export const SUMMARY_OBSERVED_TEST_CAP = 20
 

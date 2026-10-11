@@ -9,6 +9,13 @@ retained evidence:
   tests        every observed test, with its status and duration
   log          the raw merged stdout/stderr, in chunks
 
+To list failed tests, read the tests facet with status failed and limit 100:
+one call returns each failed test once, by its full identifier, with how many
+assertion failures it had. The xcode_test result already names up to 50 of
+them. Read failures, or focus a test or diagnostic, only to diagnose why one
+failed — not to find out which ones did. A skipped test's reason is not a
+failure; read status skipped for those.
+
 This never runs tests and never accepts a path. It reads the evidence that was
 retained when the run finished, so the answer is the same every time.
 

@@ -10,6 +10,33 @@ tests          25 total, 25 failed (complete)
 build          0 errors (complete)
 process        exit 65, exec yes, terminated by none, descendants exited yes
 
+failed tests (25):
+  AppTests/LoginTests/testCase00()
+  AppTests/LoginTests/testCase01()
+  AppTests/LoginTests/testCase02()
+  AppTests/LoginTests/testCase03()
+  AppTests/LoginTests/testCase04()
+  AppTests/LoginTests/testCase05()
+  AppTests/LoginTests/testCase06()
+  AppTests/LoginTests/testCase07()
+  AppTests/LoginTests/testCase08()
+  AppTests/LoginTests/testCase09()
+  AppTests/LoginTests/testCase10()
+  AppTests/LoginTests/testCase11()
+  AppTests/LoginTests/testCase12()
+  AppTests/LoginTests/testCase13()
+  AppTests/LoginTests/testCase14()
+  AppTests/LoginTests/testCase15()
+  AppTests/LoginTests/testCase16()
+  AppTests/LoginTests/testCase17()
+  AppTests/LoginTests/testCase18()
+  AppTests/LoginTests/testCase19()
+  AppTests/LoginTests/testCase20()
+  AppTests/LoginTests/testCase21()
+  AppTests/LoginTests/testCase22()
+  AppTests/LoginTests/testCase23()
+  AppTests/LoginTests/testCase24()
+
 failures (showing 20 of 25):
   Sources/App/Login.swift:100:9
     XCTAssertEqual failed in case 0

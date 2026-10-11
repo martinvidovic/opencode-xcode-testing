@@ -22,6 +22,8 @@ import {
   type JsonSchema,
 } from "../../src/adapter/schema.ts"
 import { INSPECTION_FACETS } from "../../src/domain/inspection.ts"
+import { TEST_STATUSES } from "../../src/domain/evidence.ts"
+import { toInspectRunRequest } from "../../src/adapter/args.ts"
 
 function properties(schema: JsonSchema): Record<string, JsonSchema> {
   return (schema.properties ?? {}) as Record<string, JsonSchema>
@@ -136,5 +138,23 @@ describe("xcode_test_recover input", () => {
     expect(recoverInputSchema.properties).toEqual({})
     expect(recoverInputSchema.required).toBeUndefined()
     expect(REQUIRED_ARGUMENTS.xcode_test_recover).toEqual([])
+  })
+})
+
+describe("the inspection status filter (issue #163)", () => {
+  test("offers exactly the statuses a test can have", () => {
+    expect(properties(inspectInputSchema)["status"]).toMatchObject({ type: "string", enum: [...TEST_STATUSES] })
+  })
+
+  test("stays optional, because every other read means all of them", () => {
+    expect(REQUIRED_ARGUMENTS.xcode_test_inspect).not.toContain("status")
+  })
+
+  test("reaches the request a facet is read with", () => {
+    expect(toInspectRunRequest({ runId: "run", facet: "tests", status: "failed" })).toEqual({
+      runId: "run",
+      facet: "tests",
+      status: "failed",
+    })
   })
 })

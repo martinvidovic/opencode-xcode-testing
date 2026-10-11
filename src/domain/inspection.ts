@@ -63,6 +63,12 @@ export type InspectRunRequest = {
   diagnosticId?: string
   testId?: string
   maxBytes?: number
+  /**
+   * Only tests with this status (issue #163). The `tests` facet alone, and
+   * never with a Focused Detail read: it narrows a page, and a Focused Detail
+   * is not one.
+   */
+  status?: TestStatus
 }
 
 /** Which kind of thing an inspection could not find. Never leaks membership. */

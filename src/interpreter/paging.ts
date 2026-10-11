@@ -26,11 +26,12 @@ import {
   RESPONSE_ENVELOPE_BYTES,
 } from "../domain/limits.ts"
 import type { ScopeAttestation } from "../domain/scope.ts"
+import { TEST_STATUSES, type TestStatus } from "../domain/evidence.ts"
 import { CURSOR_ORDERING_VERSION, decodeCursor, encodeCursor } from "./cursor.ts"
 import { capRecords, LOCATION_FIELDS, responseBytes } from "./cap.ts"
 import { focusedDiagnostic, focusedTest, type LazyOutcome } from "./focus.ts"
 import { chunkLog, logWindow, type ChunkedLog, type LogWindow } from "./log.ts"
-import type { NormalizedIndex } from "./index-model.ts"
+import { reportedFailures, type NormalizedIndex } from "./index-model.ts"
 
 /** One page of a structured facet, tagged so a caller cannot confuse two facets. */
 /**
@@ -90,7 +91,7 @@ export function inspectIndex(
   if (position.ok === false) return position.response
 
   const limit = request.limit ?? INSPECTION_PAGE_DEFAULT
-  return page(index, request.facet, position.value, limit, secret)
+  return page(index, request.facet, position.value, limit, secret, request.status)
 }
 
 /**
@@ -111,6 +112,15 @@ function validateRequest(
   }
   if (request.cursor !== undefined && (request.diagnosticId ?? request.testId) !== undefined) {
     return invalid("identifiers and cursors cannot be combined")
+  }
+  if (request.status !== undefined) {
+    if (request.facet !== "tests") return invalid("status filters the tests facet only")
+    if ((request.diagnosticId ?? request.testId) !== undefined) {
+      return invalid("status narrows a page, and cannot be combined with an identifier")
+    }
+    if (!(TEST_STATUSES as readonly string[]).includes(request.status)) {
+      return invalid(`status must be one of ${TEST_STATUSES.join(", ")}`)
+    }
   }
   if (request.limit !== undefined) {
     if (!Number.isInteger(request.limit) || request.limit < 1) {
@@ -249,6 +259,7 @@ function nextCursor(
   index: NormalizedIndex,
   facet: InspectionFacet,
   position: number | undefined,
+  status?: TestStatus,
 ): string | undefined {
   if (position === undefined) return undefined
   return encodeCursor(secret, {
@@ -256,6 +267,7 @@ function nextCursor(
     facet,
     orderingVersion: CURSOR_ORDERING_VERSION,
     position,
+    ...(status === undefined ? {} : { status }),
   })
 }
 
@@ -265,8 +277,9 @@ function page(
   position: number,
   limit: number,
   secret: Buffer,
+  status?: TestStatus,
 ): InspectionResponse<FacetPage> {
-  const all = recordsFor(index, facet)
+  const all = recordsFor(index, facet, status)
   const asked = all.slice(position, position + limit)
 
   // The cap is applied before the cursor is issued, not after the page is
@@ -284,7 +297,7 @@ function page(
   const nextPosition = position + capped.consumed
   const hasMore = nextPosition < all.length
 
-  const cursor = nextCursor(secret, index, facet, hasMore ? nextPosition : undefined)
+  const cursor = nextCursor(secret, index, facet, hasMore ? nextPosition : undefined, status)
 
   // `responseTruncated` and `collectionTruncated` mean different things and
   // both can be true: the first says the cap cut this page, the second says
@@ -338,16 +351,23 @@ function page(
 function recordsFor(
   index: NormalizedIndex,
   facet: "scope" | "failures" | "buildErrors" | "tests",
+  status?: TestStatus,
 ): Array<ScopeAttestation | DiagnosticSummary | TestRecord> {
   switch (facet) {
     case "scope":
       return index.attestations
     case "failures":
-      return index.testFailures
+      // What the summary counts as failures, so the two cannot disagree.
+      return reportedFailures(index)
     case "buildErrors":
       return index.buildErrors
     case "tests":
-      return index.occurrences.map(toTestRecord)
+      // Filtered before paging, so the completeness the page reports is the
+      // filter's: an `available` page of failed tests with no cursor is every
+      // failed test there is (issue #163).
+      return index.occurrences
+        .filter((occurrence) => status === undefined || occurrence.status === status)
+        .map(toTestRecord)
   }
 }
 
@@ -619,6 +639,9 @@ function resolveCursor(
   }
   if (decoded.payload.orderingVersion !== CURSOR_ORDERING_VERSION) {
     return { ok: false, response: invalid("the cursor uses an unsupported ordering version") }
+  }
+  if (decoded.payload.status !== request.status) {
+    return { ok: false, response: invalid("the cursor belongs to a different status filter") }
   }
   return { ok: true, value: decoded.payload.position }
 }

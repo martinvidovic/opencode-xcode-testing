@@ -68,6 +68,13 @@ export const EXPECTED_SCHEMAS: Record<string, ToolExpectation> = {
       diagnosticId: { type: "string", described: true },
       testId: { type: "string", described: true },
       maxBytes: { type: "integer", minimum: 1, maximum: 65_536, described: true },
+      // Closed for the same reason as `facet` (issue #163): a status no test
+      // can have would filter to a plausible-looking empty page.
+      status: {
+        type: "string",
+        enum: ["passed", "failed", "skipped", "expectedFailure", "unknown"],
+        described: true,
+      },
     },
   },
   // Recovery is a whole-root operation. An argument here would be an argument

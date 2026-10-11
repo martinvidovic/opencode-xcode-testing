@@ -405,14 +405,7 @@ export function pendingCancellation(
     },
     outcome: "cancelled",
     interruptionPhase: "unknown",
-    diagnostics: {
-      testFailures: [],
-      testFailureSection: { total: 0, shown: 0, truncated: false },
-      buildErrors: [],
-      buildErrorSection: { total: 0, shown: 0, truncated: false },
-      observedTests: [],
-      observedTestSection: { total: 0, shown: 0, truncated: false },
-    },
+    diagnostics: NO_DIAGNOSTICS,
   }
 }
 

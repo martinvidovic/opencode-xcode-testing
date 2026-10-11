@@ -26,6 +26,7 @@ import {
   LOG_CHUNK_MAX_BYTES,
 } from "../domain/limits.ts"
 import { INSPECTION_FACETS } from "../domain/inspection.ts"
+import { TEST_STATUSES } from "../domain/evidence.ts"
 
 /** The slice of JSON Schema these definitions use. */
 export type JsonSchema = {
@@ -127,6 +128,11 @@ export const inspectInputSchema: JsonSchema = object(
     diagnosticId: nonEmpty("Focus one diagnostic. Cannot be combined with a cursor."),
     testId: nonEmpty("Focus one test. Cannot be combined with a cursor."),
     maxBytes: integer(1, LOG_CHUNK_MAX_BYTES, `Log bytes to read. Defaults to 16 KiB, at most ${LOG_CHUNK_MAX_BYTES}.`),
+    status: {
+      type: "string",
+      enum: [...TEST_STATUSES],
+      description: "Tests facet only: just the tests with this status. Use failed to list every failed test.",
+    },
   },
   ["runId", "facet"],
 )

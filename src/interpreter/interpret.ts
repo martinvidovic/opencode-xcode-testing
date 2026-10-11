@@ -21,6 +21,7 @@ import type { FacetAvailability, InspectionAvailability } from "../domain/inspec
 import {
   SCOPE_ATTESTATION_CAP,
   SUMMARY_BUILD_ERROR_CAP,
+  SUMMARY_FAILED_TEST_CAP,
   SUMMARY_OBSERVED_TEST_CAP,
   SUMMARY_TEST_FAILURE_CAP,
 } from "../domain/limits.ts"
@@ -56,7 +57,13 @@ import {
 } from "./decode.ts"
 import { buildBuildErrors, buildTestFailures, type IndexedOccurrence } from "./diagnostics.ts"
 import { deriveId } from "./ids.ts"
-import { countOccurrences, INDEX_VERSION, type NormalizedIndex } from "./index-model.ts"
+import {
+  countOccurrences,
+  failedTestsOf,
+  INDEX_VERSION,
+  reportedFailures,
+  type NormalizedIndex,
+} from "./index-model.ts"
 import { normalizeTestNodes, type NormalizedOccurrence } from "./occurrences.ts"
 import { facetCompleteness } from "./paging.ts"
 import type { CancellationSignal, ExecutionFacts, MonotonicClock, XcresultTool } from "./ports.ts"
@@ -677,9 +684,13 @@ function publish(
 
 function summaryDiagnostics(index: NormalizedIndex): SummaryDiagnostics {
   const observedTests = index.occurrences.map((occurrence) => occurrence.identity)
+  const failedTests = failedTestsOf(index)
+  const testFailures = reportedFailures(index)
   return {
-    testFailures: index.testFailures.slice(0, SUMMARY_TEST_FAILURE_CAP),
-    testFailureSection: section(index.testFailures.length, SUMMARY_TEST_FAILURE_CAP),
+    failedTests: failedTests.slice(0, SUMMARY_FAILED_TEST_CAP),
+    failedTestSection: section(failedTests.length, SUMMARY_FAILED_TEST_CAP),
+    testFailures: testFailures.slice(0, SUMMARY_TEST_FAILURE_CAP),
+    testFailureSection: section(testFailures.length, SUMMARY_TEST_FAILURE_CAP),
     buildErrors: index.buildErrors.slice(0, SUMMARY_BUILD_ERROR_CAP),
     buildErrorSection: section(index.buildErrors.length, SUMMARY_BUILD_ERROR_CAP),
     observedTests: observedTests.slice(0, SUMMARY_OBSERVED_TEST_CAP),
