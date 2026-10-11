@@ -30,7 +30,7 @@ import { allIdentitiesGone, signallingIsSafe, type ProcessIdentity, type Process
 import { withLock, withTryLock } from "./locks.ts"
 import { isRunId, runDirectory, type Storage } from "./paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue, type QueueState } from "./queue.ts"
-import { needsReclamation } from "./reclamation.ts"
+import { isReclaimable } from "./reclamation.ts"
 import { readRunRecord, writeRunRecord, type RunRecord } from "./state.ts"
 import { isCancelled } from "../domain/cancellation.ts"
 
@@ -78,11 +78,12 @@ export type RecoveryReport = {
   /**
    * Completed runs whose isolated DerivedData is still there to reclaim —
    * including after a crash between publication and cleanup. Named, not
-   * deleted: this pass is synchronous and holds the root lock, and deleting a
-   * ten-gigabyte tree here would hold the host's event loop for as long as it
-   * took (issue #161). The caller reclaims them asynchronously.
+   * deleted: this pass is synchronous, and the deletion must not be (see
+   * `reclamation.ts`). The caller reclaims them in the background.
    */
-  derivedDataPending: string[]
+  needsReclamation: string[]
+  /** The error codes recorded by earlier failed reclamations of those runs. */
+  reclamationFailures: string[]
   quarantineCleared: boolean
 }
 
@@ -123,7 +124,8 @@ function emptyReport(): RecoveryReport {
     uncertain: [],
     quarantined: [],
     slotsReleased: [],
-    derivedDataPending: [],
+    needsReclamation: [],
+    reclamationFailures: [],
     quarantineCleared: false,
   }
 }
@@ -180,7 +182,11 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
       ) {
         report.quarantined.push(runId)
       }
-      if (needsReclamation(record)) report.derivedDataPending.push(runId)
+      if (isReclaimable(record)) {
+        report.needsReclamation.push(runId)
+        const failure = record.derivedDataReclamationFailure
+        if (failure !== undefined) report.reclamationFailures.push(failure.code)
+      }
       continue
     }
 

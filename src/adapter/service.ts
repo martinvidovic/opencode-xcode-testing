@@ -81,7 +81,7 @@ import {
   writePrivateFileAtomic,
   type Storage,
 } from "../runner/paths.ts"
-import { reclaimIsolatedDerivedData, type TreeRemover } from "../runner/reclamation.ts"
+import { reclaimInBackground, type TreeRemover } from "../runner/reclamation.ts"
 import { reconcileRoot, type RecoveryReport } from "../runner/recovery.ts"
 import { resolveTestRun, type ConfigurationOutcome } from "../runner/resolution.ts"
 import {
@@ -137,11 +137,7 @@ export type ServiceEnvironment = {
    */
   killProcess?(pid: number): boolean
   identifyProcess?(pid: number): ProcessIdentity | undefined
-  /**
-   * How isolated DerivedData is deleted once a run has completed. Defaults to
-   * the real asynchronous removal; overridden only so a slow or failing
-   * deletion can be produced on demand (issue #161).
-   */
+  /** How isolated DerivedData is deleted. A test seam, like the above. */
   removeDerivedData?: TreeRemover
   /** How this run was made possible. */
   runtime: RuntimeFacts
@@ -207,7 +203,7 @@ export function createTestToolService(environment: ServiceEnvironment): TestTool
 
     async recover() {
       const report = await reconcile(environment)
-      const message = recoveryMessage(environment, report)
+      const message = recoveryMessage(report)
       return {
         status: report.status,
         ...(message === undefined ? {} : { message }),
@@ -228,7 +224,7 @@ export function createTestToolService(environment: ServiceEnvironment): TestTool
  * is bytes the tool is still holding, and the recorded error code is the only
  * account of why — it names no path, so it is safe to show.
  */
-function recoveryMessage(environment: ServiceEnvironment, report: RecoveryReport): string | undefined {
+function recoveryMessage(report: RecoveryReport): string | undefined {
   if (report.status === "deferred") {
     return "another OpenCode instance is reconciling this project right now. Nothing was examined; try again in a moment."
   }
@@ -236,10 +232,7 @@ function recoveryMessage(environment: ServiceEnvironment, report: RecoveryReport
   if (report.uncertain.length > 0) {
     parts.push(`${report.uncertain.length} run(s) could not be accounted for and still hold the execution slot.`)
   }
-  const failures = report.derivedDataPending.flatMap((runId) => {
-    const failure = readRunRecord(environment.storage, runId)?.derivedDataReclamationFailure
-    return failure === undefined ? [] : [failure.code]
-  })
+  const failures = report.reclamationFailures
   if (failures.length > 0) {
     parts.push(
       `${failures.length} completed run(s) still hold isolated DerivedData that could not be deleted ` +
@@ -527,10 +520,10 @@ function withRuntimeProvenance<T extends { provenance?: ResultProvenance }>(
  *
  * The order is the contract: the immutable index and the summary land first,
  * so that a crash after this point leaves a run that is fully readable, and
- * only then does the record say `completed`. Isolated DerivedData is scratch
- * rather than evidence, so it is reclaimed — but in the background, because the
- * caller's result must not wait on deleting ten gigabytes (issue #161).
- * Retention holds the run until that deletion has finished.
+ * only then does the record say `completed`. Isolated DerivedData is not
+ * evidence, so it is reclaimed — in the background, because the caller's
+ * result must not wait on the deletion (issue #161). Retention holds the run
+ * until that deletion has finished.
  */
 function publishTerminal(
   environment: ServiceEnvironment,
@@ -551,25 +544,7 @@ function publishTerminal(
     completedAt: environment.timestamp(),
     bundleDigestVerified: index.bundleDigestVerified,
   })
-  reclaimInBackground(environment, completed.runId)
-}
-
-/**
- * Start reclaiming a completed run's isolated DerivedData, and return at once.
- *
- * Deliberately not awaited by anything a caller is waiting on. The deletion
- * never rejects and records its own outcome on the run; a host that exits
- * before it finishes leaves a run the next reconciliation picks up again.
- */
-function reclaimInBackground(environment: ServiceEnvironment, runId: string): void {
-  void reclaimIsolatedDerivedData(
-    {
-      storage: environment.storage,
-      timestamp: environment.timestamp,
-      ...(environment.removeDerivedData === undefined ? {} : { remove: environment.removeDerivedData }),
-    },
-    runId,
-  )
+  reclaimInBackground(environment, [completed.runId])
 }
 
 /** The terminal summary, readable after a crash without rerunning anything. */
@@ -620,7 +595,7 @@ function publishIndexOnly(
   const completed = advance(environment.storage, record, "completed", {
     completedAt: environment.timestamp(),
   })
-  reclaimInBackground(environment, completed.runId)
+  reclaimInBackground(environment, [completed.runId])
 }
 
 /**
@@ -640,7 +615,7 @@ export async function reconcile(environment: ServiceEnvironment) {
     claimant: selfIdentity(),
   })
 
-  for (const runId of report.derivedDataPending) reclaimInBackground(environment, runId)
+  reclaimInBackground(environment, report.needsReclamation)
 
   for (const runId of report.needsFinalization) {
     await finalizeRecovered(environment, runId)

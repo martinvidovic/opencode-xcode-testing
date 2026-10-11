@@ -1,9 +1,8 @@
 /**
  * Reclaiming isolated DerivedData (issue #161).
  *
- * An isolated build cache is a per-run scratch directory, not evidence — and it
- * is large: around ten gigabytes and hundreds of thousands of files for an
- * ordinary app. Deleting it with `rmSync` held the host's event loop for as
+ * Isolated DerivedData is a per-run directory, not evidence — and it is large:
+ * around ten gigabytes and hundreds of thousands of files for an ordinary app. Deleting it with `rmSync` held the host's event loop for as
  * long as the deletion took, which was longer than the OpenCode CLI waits
  * before declaring the service unresponsive and restarting it. The restart
  * took completed results down with it.
@@ -44,7 +43,7 @@ export type ReclamationEnvironment = {
    * How the tree is deleted. Defaults to the real thing; overridden only so a
    * slow or failing deletion can be produced on demand.
    */
-  remove?: TreeRemover
+  removeDerivedData?: TreeRemover
 }
 
 /**
@@ -87,6 +86,17 @@ export function reclaimIsolatedDerivedData(
   return reclamation
 }
 
+/**
+ * Start reclaiming each run's isolated DerivedData, and return at once.
+ *
+ * What every caller outside this module wants: nothing that hands a result to
+ * anyone may wait on a deletion. A host that exits before it finishes leaves
+ * runs the next reconciliation names again.
+ */
+export function reclaimInBackground(environment: ReclamationEnvironment, runIds: readonly string[]): void {
+  for (const runId of runIds) void reclaimIsolatedDerivedData(environment, runId)
+}
+
 /** Resolves once every reclamation in flight in this process has finished. */
 export async function reclamationsSettled(): Promise<void> {
   while (inFlight.size > 0) await Promise.all(inFlight.values())
@@ -95,11 +105,11 @@ export async function reclamationsSettled(): Promise<void> {
 async function reclaim(environment: ReclamationEnvironment, runId: string): Promise<void> {
   const { storage } = environment
   const record = readRunRecord(storage, runId)
-  if (record === undefined || !needsReclamation(record)) return
+  if (record === undefined || !isReclaimable(record)) return
 
   let failure: { at: string; code: string } | undefined
   try {
-    await (environment.remove ?? removeTree)(
+    await (environment.removeDerivedData ?? removeTree)(
       join(runDirectory(storage, runId), RUN_ARTIFACTS.derivedData),
     )
   } catch (error) {
@@ -110,6 +120,9 @@ async function reclaim(environment: ReclamationEnvironment, runId: string): Prom
   // writing a copy taken before it would undo anything recorded meanwhile.
   const latest = readRunRecord(storage, runId)
   if (latest === undefined) return
+  // Another instance finished the same deletion first. Its success stands; a
+  // failure recorded beside it would describe a tree that is already gone.
+  if (failure !== undefined && latest.derivedDataCleaned === true) return
   const next = { ...latest }
   delete next.derivedDataReclamationFailure
   try {
@@ -126,7 +139,7 @@ async function reclaim(environment: ReclamationEnvironment, runId: string): Prom
 }
 
 /** Whether a run is a completed isolated run whose cache is still there to reclaim. */
-export function needsReclamation(record: RunRecord): boolean {
+export function isReclaimable(record: RunRecord): boolean {
   return (
     record.state === "completed" &&
     record.derivedDataMode === "isolated" &&

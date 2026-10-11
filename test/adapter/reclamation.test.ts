@@ -19,7 +19,7 @@ import { RUN_ARTIFACTS, runDirectory } from "../../src/runner/paths.ts"
 import { reclamationsSettled } from "../../src/runner/reclamation.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { identityFor, loadFixture } from "../interpreter/harness.ts"
-import { withSandbox, type Sandbox } from "../runner/harness.ts"
+import { refusing, withSandbox, type Sandbox } from "../runner/harness.ts"
 
 const STUB_SUPERVISOR = join(import.meta.dir, "..", "runner", "stub", "stub-supervisor.ts")
 
@@ -126,7 +126,7 @@ describe("a completed run whose cache could not be reclaimed", () => {
 
       const result = await runOnce(
         environmentFor(box, {
-          removeDerivedData: () => Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" })),
+          removeDerivedData: refusing("EACCES"),
         }),
       )
       await reclamationsSettled()
@@ -142,7 +142,7 @@ describe("a completed run whose cache could not be reclaimed", () => {
     await withSandbox(async (box) => {
       const result = await runOnce(
         environmentFor(box, {
-          removeDerivedData: () => Promise.reject(Object.assign(new Error("busy"), { code: "EBUSY" })),
+          removeDerivedData: refusing("EBUSY"),
         }),
       )
       await reclamationsSettled()
@@ -161,13 +161,11 @@ describe("a completed run whose cache could not be reclaimed", () => {
 describe("explicit recovery after a failed reclamation", () => {
   test("says what is still held and why, and retries it", async () => {
     await withSandbox(async (box) => {
-      const refusing = environmentFor(box, {
-        removeDerivedData: () => Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" })),
-      })
-      await runOnce(refusing)
+      const denied = environmentFor(box, { removeDerivedData: refusing("EACCES") })
+      await runOnce(denied)
       await reclamationsSettled()
 
-      const outcome = await createTestToolService(refusing).recover()
+      const outcome = await createTestToolService(denied).recover()
       await reclamationsSettled()
 
       expect(outcome.message).toContain("isolated DerivedData")

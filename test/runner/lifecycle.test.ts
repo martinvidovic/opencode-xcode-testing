@@ -267,11 +267,9 @@ describe("isolated DerivedData", () => {
         derivedDataMode: "isolated",
       })
 
-      // Recovery names it and leaves the deletion to the caller (issue #161):
-      // this pass runs synchronously under the root lock, and deleting a
-      // ten-gigabyte tree there would hold the host for as long as it took.
+      // Recovery names it and leaves the deletion to its caller (issue #161).
       const report = recover(box)
-      expect(report.derivedDataPending).toEqual(["run-dd"])
+      expect(report.needsReclamation).toEqual(["run-dd"])
       expect(existsSync(derived)).toBe(true)
 
       await reclaimIsolatedDerivedData({ storage: box.storage, timestamp: () => TIMESTAMP }, "run-dd")
@@ -292,7 +290,7 @@ describe("isolated DerivedData", () => {
       })
 
       const report = recover(box)
-      expect(report.derivedDataPending).toEqual([])
+      expect(report.needsReclamation).toEqual([])
       expect(report.status).toBe("alreadyHealthy")
     })
   })

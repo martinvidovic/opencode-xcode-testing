@@ -17,14 +17,17 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { monotonicNow } from "../../src/domain/clock.ts"
 import { startupPortsFor } from "../../src/adapter/startup-ports.ts"
 import { RECONCILIATION_BUDGET_MS, runStartup } from "../../src/adapter/startup.ts"
-import { createRunDirectory } from "../../src/runner/paths.ts"
+import { noteRootSeen } from "../../src/runner/housekeeping.ts"
+import { createRunDirectory, RUN_ARTIFACTS, runDirectory } from "../../src/runner/paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue } from "../../src/runner/queue.ts"
+import { reclamationsSettled } from "../../src/runner/reclamation.ts"
+import { readRunRecord } from "../../src/runner/state.ts"
 import { seedRun, withSandbox, type Sandbox } from "../runner/harness.ts"
 
 const RUN = "run-after-a-crash"
@@ -156,6 +159,49 @@ describe("the ports the plugin entrypoint actually builds", () => {
 
       expect(outcome.status).toBe("disabled")
       expect(readQueue(box.storage).quarantine?.runId).toBe(RUN)
+    })
+  })
+})
+
+describe("isolated DerivedData a crash left behind (issue #161)", () => {
+  /** A completed isolated run whose cache was never reclaimed. */
+  function leftover(box: Sandbox, containmentRoot: string): string {
+    mkdirSync(join(containmentRoot, ".opencode"), { recursive: true })
+    writeFileSync(join(containmentRoot, ".opencode", "xcode-test.json"), '{ "schemaVersion": 1 }\n')
+    createRunDirectory(box.storage, RUN)
+    const derived = join(runDirectory(box.storage, RUN), RUN_ARTIFACTS.derivedData)
+    mkdirSync(join(derived, "Build"), { recursive: true })
+    writeFileSync(join(derived, "Build", "App.o"), "o")
+    seedRun(box.storage, { runId: RUN, state: "completed", completedAt: TIMESTAMP, derivedDataMode: "isolated" })
+    return derived
+  }
+
+  test("is reclaimed by the startup reconciliation", async () => {
+    await withSandbox(async (box) => {
+      const containmentRoot = join(box.homeDir, "project")
+      const derived = leftover(box, containmentRoot)
+
+      await portsFor(box, containmentRoot).reconcileRoot(monotonicNow() + RECONCILIATION_BUDGET_MS)
+      await reclamationsSettled()
+
+      expect(existsSync(derived)).toBe(false)
+      expect(readRunRecord(box.storage, RUN)?.derivedDataCleaned).toBe(true)
+    })
+  })
+
+  test("is reclaimed by housekeeping, in a root nobody opens again", async () => {
+    await withSandbox(async (box) => {
+      const containmentRoot = join(box.homeDir, "project")
+      const derived = leftover(box, containmentRoot)
+      // Registered as seen, as an earlier session would have left it, and then
+      // never reconciled by a startup of its own.
+      noteRootSeen(box.storage, Date.now())
+
+      await portsFor(box, containmentRoot).runHousekeeping()
+      await reclamationsSettled()
+
+      expect(existsSync(derived)).toBe(false)
+      expect(readRunRecord(box.storage, RUN)?.derivedDataCleaned).toBe(true)
     })
   })
 })

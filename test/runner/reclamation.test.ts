@@ -15,9 +15,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { createRunDirectory, RUN_ARTIFACTS, runDirectory, type Storage } from "../../src/runner/paths.ts"
-import { reclaimIsolatedDerivedData } from "../../src/runner/reclamation.ts"
+import {
+  reclaimIsolatedDerivedData,
+  type ReclamationEnvironment,
+  type TreeRemover,
+} from "../../src/runner/reclamation.ts"
 import { readRunRecord, type RunRecord } from "../../src/runner/state.ts"
-import { seedRun, sleep, withSandbox } from "./harness.ts"
+import { refusing, seedRun, sleep, withSandbox } from "./harness.ts"
 
 const TIMESTAMP = "2026-10-11T12:00:00.000Z"
 
@@ -39,6 +43,14 @@ function seedDerivedData(storage: Storage, runId: string, files: number): string
     for (let file = 0; file < FILES_PER_DIRECTORY; file += 1) writeFileSync(join(leaf, `${file}.o`), "o")
   }
   return derived
+}
+
+function environmentFor(storage: Storage, removeDerivedData?: TreeRemover): ReclamationEnvironment {
+  return {
+    storage,
+    timestamp: () => TIMESTAMP,
+    ...(removeDerivedData === undefined ? {} : { removeDerivedData }),
+  }
 }
 
 function seedCompleted(storage: Storage, runId: string, fields: Partial<RunRecord> = {}): RunRecord {
@@ -83,7 +95,7 @@ describe("reclaiming a large isolated DerivedData tree", () => {
       seedCompleted(box.storage, "run-large")
 
       const lag = await worstTimerLag(() =>
-        reclaimIsolatedDerivedData({ storage: box.storage, timestamp: () => TIMESTAMP }, "run-large"),
+        reclaimIsolatedDerivedData(environmentFor(box.storage), "run-large"),
       )
 
       expect(existsSync(derived)).toBe(false)
@@ -102,7 +114,7 @@ describe("what reclamation is allowed to touch", () => {
         derivedDataMode: "isolated",
       })
 
-      await reclaimIsolatedDerivedData({ storage: box.storage, timestamp: () => TIMESTAMP }, "run-live")
+      await reclaimIsolatedDerivedData(environmentFor(box.storage), "run-live")
 
       expect(existsSync(derived)).toBe(true)
       expect(readRunRecord(box.storage, "run-live")?.derivedDataCleaned).toBeUndefined()
@@ -114,7 +126,7 @@ describe("what reclamation is allowed to touch", () => {
       const derived = seedDerivedData(box.storage, "run-shared", FILES_PER_DIRECTORY)
       seedCompleted(box.storage, "run-shared", { derivedDataMode: "shared" })
 
-      await reclaimIsolatedDerivedData({ storage: box.storage, timestamp: () => TIMESTAMP }, "run-shared")
+      await reclaimIsolatedDerivedData(environmentFor(box.storage), "run-shared")
 
       expect(existsSync(derived)).toBe(true)
       expect(readRunRecord(box.storage, "run-shared")?.derivedDataCleaned).toBeUndefined()
@@ -123,17 +135,13 @@ describe("what reclamation is allowed to touch", () => {
 })
 
 describe("a reclamation that fails", () => {
-  function refusing(code: string) {
-    return () => Promise.reject(Object.assign(new Error(`${code}: /private/path/DerivedData`), { code }))
-  }
-
   test("is recorded on the run rather than thrown, and leaves it retained", async () => {
     await withSandbox(async (box) => {
       seedDerivedData(box.storage, "run-refused", FILES_PER_DIRECTORY)
       seedCompleted(box.storage, "run-refused")
 
       await reclaimIsolatedDerivedData(
-        { storage: box.storage, timestamp: () => TIMESTAMP, remove: refusing("EACCES") },
+        environmentFor(box.storage, refusing("EACCES")),
         "run-refused",
       )
 
@@ -151,10 +159,8 @@ describe("a reclamation that fails", () => {
     await withSandbox(async (box) => {
       const derived = seedDerivedData(box.storage, "run-retried", FILES_PER_DIRECTORY)
       seedCompleted(box.storage, "run-retried")
-      const environment = { storage: box.storage, timestamp: () => TIMESTAMP }
-
-      await reclaimIsolatedDerivedData({ ...environment, remove: refusing("EBUSY") }, "run-retried")
-      await reclaimIsolatedDerivedData(environment, "run-retried")
+      await reclaimIsolatedDerivedData(environmentFor(box.storage, refusing("EBUSY")), "run-retried")
+      await reclaimIsolatedDerivedData(environmentFor(box.storage), "run-retried")
 
       const record = readRunRecord(box.storage, "run-retried")
       expect(existsSync(derived)).toBe(false)

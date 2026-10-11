@@ -134,6 +134,14 @@ export function cancellable(): { cancellation: Cancellation; cancel: () => void 
   }
 }
 
+/**
+ * A DerivedData remover that fails the way the filesystem does — with a code,
+ * and a message naming a machine path that must never reach a record.
+ */
+export function refusing(code: string): (path: string) => Promise<void> {
+  return () => Promise.reject(Object.assign(new Error(`${code}: /private/path/DerivedData`), { code }))
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
