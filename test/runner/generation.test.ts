@@ -169,6 +169,23 @@ describe("the --project override", () => {
 })
 
 describe("the freshness check", () => {
+  test("observes both colon-separated and older schema-version output", () => {
+    for (const separator of [":", ""]) {
+      const observed = observeToolchain((command) => ({
+        status: 0,
+        stdout: command.endsWith("xcodebuild")
+          ? "Xcode 27.0\nBuild version 27A266a\n"
+          : `xcresulttool version 25115, schema version${separator} 0.4.0 (legacy commands format version: 3.60)`,
+      }))
+      expect(observed).toEqual({
+        xcodeVersion: "27.0",
+        xcodeBuild: "27A266a",
+        xcresulttoolVersion: "25115",
+        schemaVersion: "0.4.0",
+      })
+    }
+  })
+
   test("reads the structured provenance every Layer 1 fixture carries", () => {
     const provenance = readFixtureProvenance(join(import.meta.dir, "..", "fixtures", "xcresult"))
     expect(Object.keys(provenance).length).toBeGreaterThan(0)

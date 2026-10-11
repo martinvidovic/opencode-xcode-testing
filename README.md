@@ -28,8 +28,19 @@ being given the ability to clear a quarantine.
 
 ## Requirements
 
-- **macOS with Xcode 26.** The tool reads Result Bundles back with the same
-  toolchain that wrote them, and claims exactly one Xcode major.
+- **macOS with Xcode 26 or 27.** The tool reads Result Bundles back with the same
+  toolchain that wrote them, explicitly requesting schema `0.1.0` even when the
+  tool's default schema is newer. Updates within these majors are accepted only
+  when the pinned reads and critical payload validation succeed; future majors
+  require validation before support is added.
+
+  For installations managed by Xcodes, select the intended Xcode in Xcodes or
+  set `DEVELOPER_DIR` before starting OpenCode. Installing another Xcode alone
+  does not select it. Acceptance gates can also be run per installation:
+
+  ```bash
+  DEVELOPER_DIR=/Applications/Xcode-27.0.0.app/Contents/Developer bun scripts/acceptance-gate.ts
+  ```
 - **Bun on `PATH`.** See below — this is the prerequisite people are most
   likely to be missing.
 - **OpenCode `2.0.25`, and only V2.** This is the one release the tool is
