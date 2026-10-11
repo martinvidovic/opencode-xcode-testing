@@ -26,17 +26,19 @@ import { monotonicNow } from "../domain/clock.ts"
 import { storageFor, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
+import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { ToolchainProbe, ToolchainResolution } from "../runner/toolchain.ts"
 import { outputLimitsFromOptions, resolveBudget } from "./budget.ts"
 import { toolDefinitions, type ToolDefinition } from "./definitions.ts"
 import { DESCRIPTION_FILES } from "./descriptions.ts"
 import { readProjectConfiguration, resolveRootRoles, rootContextFromLocation, type HostLocation } from "./root-roles.ts"
-import type { RuntimeResolution } from "./runtime.ts"
+import type { RuntimeProbe, RuntimeResolution } from "./runtime.ts"
 import { safeFailure } from "./sanitize.ts"
-import { createTestToolService, unavailableService } from "./service.ts"
+import { describeUnavailable, revalidatingService, type Availability, type Unavailable } from "./availability.ts"
+import { createTestToolService } from "./service.ts"
 import { HOUSEKEEPING_ENTRYPOINT, SUPERVISOR_ENTRYPOINT } from "./entrypoints.ts"
 import { startupPortsFor } from "./startup-ports.ts"
-import { hostVersionDiagnostic, runStartup } from "./startup.ts"
+import { hostVersionDiagnostic, probeAgain, runStartup, type ProbeResults } from "./startup.ts"
 import type { ToolDeps } from "./tools.ts"
 
 
@@ -57,6 +59,8 @@ export type SetupOverrides = {
   write?(line: string): void
   /** How toolchain discovery probes. Defaults to spawning the real tools. */
   toolchainProbe?: ToolchainProbe
+  /** How a runtime candidate is probed. Defaults to running a real script. */
+  runtimeProbe?: RuntimeProbe
   /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
   startupDeadlineMs?: number
 }
@@ -92,12 +96,10 @@ async function prepare(
   const homeDir = overrides.homeDir ?? homedir()
   const storage = storageFor(homeDir, containmentRoot, configurationRoot)
 
-  let runtime: RuntimeResolution | undefined
   const configuration: ConfigurationOutcome =
     configurationRoot === undefined ? { status: "absent" } : readProjectConfiguration(configurationRoot)
 
-  const outcome = await runStartup(
-    startupPortsFor({
+  const ports = startupPortsFor({
       ...(configurationRoot === undefined ? {} : { configurationRoot }),
       homeDir,
       storage,
@@ -106,13 +108,11 @@ async function prepare(
         overrides.requiredFiles ?? (() => [SUPERVISOR_ENTRYPOINT, HOUSEKEEPING_ENTRYPOINT, ...DESCRIPTION_FILES]),
       regularFileExists: isRegularFile,
       readHostVersion: async () => host.version,
-      onRuntime: (resolved) => {
-        runtime = resolved
-      },
       ...(overrides.toolchainProbe === undefined ? {} : { toolchainProbe: overrides.toolchainProbe }),
+      ...(overrides.runtimeProbe === undefined ? {} : { runtimeProbe: overrides.runtimeProbe }),
       ...(overrides.startupDeadlineMs === undefined ? {} : { deadlineMs: overrides.startupDeadlineMs }),
-    }),
-  )
+  })
+  const outcome = await runStartup(ports)
 
   if (outcome.status === "disabled") return []
   if (outcome.status === "structuralFailure") {
@@ -135,18 +135,21 @@ async function prepare(
   }
   const budget = resolveBudget(limits)
 
-  const service = serviceFor(
-    {
-      storage,
-      containmentRoot,
-      homeDir,
-      configuration,
-      toolchain: outcome.toolchain,
-      runtime,
-      hostVersion: outcome.hostVersion,
-    },
-    say,
-  )
+  const context: ServiceContext = { storage, containmentRoot, homeDir, configuration, hostVersion: outcome.hostVersion }
+  const atStartup: ProbeResults = {
+    ...(outcome.runtime === undefined ? {} : { runtime: outcome.runtime }),
+    ...(outcome.toolchain === undefined ? {} : { toolchain: outcome.toolchain }),
+  }
+  const initial = availabilityFor(context, atStartup, "at startup")
+  if (initial.status === "unavailable") say(describeUnavailable(initial))
+
+  // The one way back from a transient failure (issue #162): an explicit
+  // recovery probes again what did not answer, and nothing else does.
+  const service = revalidatingService(initial, async () => {
+    const again = availabilityFor(context, await probeAgain(ports, atStartup), "when probed again")
+    if (again.status === "unavailable") say(describeUnavailable(again))
+    return again
+  })
 
   const deps: ToolDeps = {
     service,
@@ -200,49 +203,82 @@ function isRegularFile(path: string): boolean {
   }
 }
 
+/** Everything a working service needs besides what the probes found. */
+type ServiceContext = {
+  storage: Storage
+  containmentRoot: string
+  homeDir: string
+  configuration: ConfigurationOutcome
+  hostVersion: string
+}
+
+/** When the probes ran, which is part of what their failure means. */
+type ProbeOccasion = "at startup" | "when probed again"
+
+type Probed<T> = { ok: true; value: T } | { ok: false; failure: Unavailable }
+
 /**
- * The service, or one that explains why there isn't one.
+ * The working service, or why there is none and whether that could pass.
  *
- * Written as guard clauses so the discriminated unions narrow on their own —
- * a ternary over three outcomes throws away the narrowing and pays for it in
- * assertions.
+ * Guard clauses, so the unions narrow on their own. A permanent failure
+ * outranks a transient one: when Xcode is unusable, a runtime probe that timed
+ * out beside it is not what stands between the caller and a working tool, and
+ * calling the whole thing transient would invite a recovery that cannot help
+ * (issue #162).
  */
-function serviceFor(
-  input: {
-    storage: Storage
-    containmentRoot: string
-    homeDir: string
-    configuration: ConfigurationOutcome
-    /** Absent when discovery did not finish within its startup budget. */
-    toolchain: ToolchainResolution | undefined
-    runtime: RuntimeResolution | undefined
-    hostVersion: string
-  },
-  say: (message: string) => void,
+function availabilityFor(context: ServiceContext, probed: ProbeResults, occasion: ProbeOccasion): Availability {
+  const toolchain = toolchainProbed(probed.toolchain, occasion)
+  const runtime = runtimeProbed(probed.runtime, occasion)
+
+  if (!toolchain.ok && !toolchain.failure.transient) return toolchain.failure
+  if (!runtime.ok && !runtime.failure.transient) return runtime.failure
+  if (!toolchain.ok) return toolchain.failure
+  if (!runtime.ok) return runtime.failure
+  return { status: "available", service: createService(context, toolchain.value, runtime.value) }
+}
+
+function toolchainProbed(toolchain: ToolchainResolution | undefined, occasion: ProbeOccasion): Probed<ToolchainIdentity> {
+  if (toolchain === undefined) {
+    return unavailable(true, `Xcode toolchain discovery did not finish in time ${occasion}.`)
+  }
+  if (toolchain.status !== "resolved") return unavailable(toolchain.timedOut === true, `${toolchain.message}.`)
+  return { ok: true, value: toolchain.identity }
+}
+
+function runtimeProbed(
+  runtime: RuntimeResolution | undefined,
+  occasion: ProbeOccasion,
+): Probed<Extract<RuntimeResolution, { status: "resolved" }>> {
+  if (runtime === undefined) {
+    return unavailable(
+      true,
+      occasion === "at startup"
+        ? "the runtime could not be probed within the startup deadline."
+        : `the runtime could not be probed in time ${occasion}.`,
+    )
+  }
+  if (runtime.status !== "resolved") return unavailable(runtime.timedOut === true, runtimeDiagnostic(runtime))
+  return { ok: true, value: runtime }
+}
+
+function unavailable(transient: boolean, message: string): { ok: false; failure: Unavailable } {
+  return { ok: false, failure: { status: "unavailable", transient, message } }
+}
+
+function createService(
+  input: ServiceContext,
+  toolchain: ToolchainIdentity,
+  runtime: Extract<RuntimeResolution, { status: "resolved" }>,
 ) {
-  const refuse = (message: string) => {
-    say(message)
-    return unavailableService(message)
-  }
-
-  if (input.toolchain === undefined) {
-    return refuse("Xcode toolchain discovery did not finish within the startup deadline")
-  }
-  if (input.toolchain.status !== "resolved") return refuse(input.toolchain.message)
-  if (input.runtime === undefined) {
-    return refuse("the runtime could not be probed within the startup deadline")
-  }
-  if (input.runtime.status !== "resolved") return refuse(runtimeDiagnostic(input.runtime))
-
   return createTestToolService({
     storage: input.storage,
     containmentRoot: input.containmentRoot,
     homeDir: input.homeDir,
     configuration: input.configuration,
-    toolchain: input.toolchain.identity,
+    toolchain,
     runtime: {
-      path: input.runtime.path,
-      ...(input.runtime.version === undefined ? {} : { version: input.runtime.version }),
+      path: runtime.path,
+      ...(runtime.version === undefined ? {} : { version: runtime.version }),
       hostVersion: input.hostVersion,
     },
     supervisorEntrypoint: SUPERVISOR_ENTRYPOINT,

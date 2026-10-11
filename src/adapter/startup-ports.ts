@@ -32,7 +32,12 @@ import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { HOUSEKEEPING_ENTRYPOINT } from "./entrypoints.ts"
 import { bunOnPath, probeRuntimeCandidate } from "./probe.ts"
 import { reconcileRootBounded } from "./reconciliation.ts"
-import { cachedRuntime, rememberRuntime, resolveRuntime, type RuntimeResolution } from "./runtime.ts"
+import {
+  cachedRuntime,
+  rememberRuntime,
+  resolveRuntime,
+  type RuntimeProbe,
+} from "./runtime.ts"
 import type { StartupPorts } from "./startup.ts"
 import { enablementMarkerExists } from "./root-roles.ts"
 
@@ -45,10 +50,10 @@ export type StartupWiring = {
   requiredFiles(): string[]
   regularFileExists(path: string): boolean
   readHostVersion(): Promise<string>
-  /** Told what the probe resolved, since the caller needs it after startup. */
-  onRuntime(runtime: RuntimeResolution): void
   /** How toolchain discovery probes. Defaults to spawning the real tools. */
   toolchainProbe?: ToolchainProbe
+  /** How a runtime candidate is probed. Defaults to running a real script. */
+  runtimeProbe?: RuntimeProbe
   /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
   deadlineMs?: number
 }
@@ -72,10 +77,7 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
       // unusable value a hard error, and a cache answering on its behalf would
       // turn that into a silent fallback to some other binary.
       const cached = configured === undefined ? cachedRuntime(wiring.storage) : undefined
-      if (cached !== undefined) {
-        wiring.onRuntime(cached)
-        return cached
-      }
+      if (cached !== undefined) return cached
 
       const pathCandidate = await bunOnPath()
       const runtime = await resolveRuntime({
@@ -83,14 +85,18 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
         ...(configured === undefined ? {} : { configured }),
         hostExecutable: process.execPath,
         ...(pathCandidate === undefined ? {} : { pathCandidate }),
-        probe: probeRuntimeCandidate,
+        probe: wiring.runtimeProbe ?? probeRuntimeCandidate,
       })
       // Only a discovered runtime is worth remembering; a configured one is
       // deliberately re-probed.
       if (configured === undefined && runtime.status === "resolved") {
-        rememberRuntime(wiring.storage, runtime)
+        try {
+          rememberRuntime(wiring.storage, runtime)
+        } catch {
+          // The cache saves the next start a probe. Failing to write it is
+          // no reason to lose the answer this one paid for (issue #162).
+        }
       }
-      wiring.onRuntime(runtime)
       return runtime
     },
 

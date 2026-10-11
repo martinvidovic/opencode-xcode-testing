@@ -13,20 +13,21 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import type { RuntimeProbeOutcome } from "./runtime.ts"
+
 /** Written, executed, and deleted. Its output is the entire proof. */
 const PROBE_SOURCE = 'const ok: string = "xcode-test-probe"\nconsole.log(ok)\n'
 const PROBE_MARKER = "xcode-test-probe"
 const PROBE_TIMEOUT_MS = 2_000
 
-export async function probeRuntimeCandidate(
-  candidate: string,
-): Promise<{ usable: boolean; version?: string }> {
+export async function probeRuntimeCandidate(candidate: string): Promise<RuntimeProbeOutcome> {
   const directory = mkdtempSync(join(tmpdir(), "xcode-test-probe-"))
   const script = join(directory, "probe.ts")
 
   try {
     writeFileSync(script, PROBE_SOURCE)
     const output = await run(candidate, [script])
+    if (output.timedOut) return { usable: false, timedOut: true }
     if (!output.ok || !output.stdout.includes(PROBE_MARKER)) return { usable: false }
 
     const version = (await run(candidate, ["--version"])).stdout.trim()
@@ -39,22 +40,22 @@ export async function probeRuntimeCandidate(
 }
 
 /** Bounded, and asynchronous so a probe cannot block the startup deadline. */
-function run(command: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
+function run(command: string, args: string[]): Promise<{ ok: boolean; stdout: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] })
     let stdout = ""
     let settled = false
 
-    const finish = (ok: boolean) => {
+    const finish = (ok: boolean, timedOut = false) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      resolve({ ok, stdout })
+      resolve({ ok, stdout, timedOut })
     }
 
     const timer = setTimeout(() => {
       child.kill("SIGKILL")
-      finish(false)
+      finish(false, true)
     }, PROBE_TIMEOUT_MS)
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -73,5 +74,9 @@ function run(command: string, args: string[]): Promise<{ ok: boolean; stdout: st
  * cannot fire until the call has already returned.
  */
 export async function bunOnPath(): Promise<string | undefined> {
-  return (await run("/usr/bin/env", ["bun", "--version"])).ok ? "bun" : undefined
+  const answer = await run("/usr/bin/env", ["bun", "--version"])
+  // A lookup that timed out has not shown that Bun is absent (issue #162).
+  // The candidate is kept, and the real probe of it decides — a timeout
+  // there is reported as a timeout, not as "no Bun was found".
+  return answer.ok || answer.timedOut ? "bun" : undefined
 }

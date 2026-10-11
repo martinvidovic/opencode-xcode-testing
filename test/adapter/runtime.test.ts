@@ -156,3 +156,65 @@ describe("the probe cache", () => {
     expect(cacheIsValid(entry, undefined)).toBe(false)
   })
 })
+
+describe("a probe that did not answer in time (issue #162)", () => {
+  /** Accepts `usable`, times out on `slow`, rejects everything else. */
+  function probeTiming(slow: string[], usable: string[] = []): RuntimeProbe {
+    return async (candidate) => {
+      if (usable.includes(candidate)) return { usable: true, version: "1.4.0" }
+      return slow.includes(candidate) ? { usable: false, timedOut: true } : { usable: false }
+    }
+  }
+
+  test("on a configured runtime is a timeout, not a verdict, and still never a fallback", async () => {
+    const outcome = await resolveRuntime({
+      configurationRoot: CONFIGURATION_ROOT,
+      configured: "/opt/bun/bin/bun",
+      hostExecutable: "/opt/opencode",
+      pathCandidate: "bun",
+      probe: probeTiming(["/opt/bun/bin/bun"], ["bun"]),
+    })
+
+    expect(outcome).toMatchObject({ status: "failed", timedOut: true })
+    if (outcome.status !== "failed") return
+    expect(outcome.message).toContain("did not answer")
+    expect(outcome.probed).toEqual(["/opt/bun/bin/bun"])
+  })
+
+  test("during discovery is a timeout when nothing usable answered", async () => {
+    const outcome = await resolveRuntime({
+      configurationRoot: CONFIGURATION_ROOT,
+      hostExecutable: "/opt/opencode",
+      pathCandidate: "bun",
+      probe: probeTiming(["bun"]),
+    })
+
+    expect(outcome).toMatchObject({ status: "failed", timedOut: true })
+    if (outcome.status !== "failed") return
+    expect(outcome.message).toContain("did not answer")
+  })
+
+  test("is no failure at all when another candidate answered", async () => {
+    const outcome = await resolveRuntime({
+      configurationRoot: CONFIGURATION_ROOT,
+      hostExecutable: "/opt/opencode",
+      pathCandidate: "bun",
+      probe: probeTiming(["/opt/opencode"], ["bun"]),
+    })
+
+    expect(outcome).toMatchObject({ status: "resolved", path: "bun" })
+  })
+
+  test("is not claimed for a discovery where every candidate answered no", async () => {
+    const outcome = await resolveRuntime({
+      configurationRoot: CONFIGURATION_ROOT,
+      hostExecutable: "/opt/opencode",
+      pathCandidate: "bun",
+      probe: probeTiming([]),
+    })
+
+    expect(outcome).toMatchObject({ status: "failed" })
+    if (outcome.status !== "failed") return
+    expect(outcome.timedOut).toBeUndefined()
+  })
+})

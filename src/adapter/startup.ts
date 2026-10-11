@@ -32,6 +32,7 @@
  */
 
 import type { ToolchainResolution } from "../runner/toolchain.ts"
+import type { RuntimeResolution } from "./runtime.ts"
 
 export const STARTUP_DEADLINE_MS = 10_000
 export const RUNTIME_PROBE_BUDGET_MS = 2_000
@@ -62,7 +63,7 @@ export type StartupPorts = {
    * shape of a working one.
    */
   regularFileExists(path: string): boolean
-  probeRuntime(): Promise<unknown>
+  probeRuntime(): Promise<RuntimeResolution>
   /** The host's `ctx.app.version`; a failure still degrades to `unknown`. */
   readHostVersion(): Promise<string>
   /**
@@ -98,7 +99,8 @@ export type StartupOutcome =
       status: "ready"
       hostVersion: string
       hostVersionTested: boolean
-      runtime: unknown
+      /** Absent when the probe did not finish within its budget. */
+      runtime?: RuntimeResolution
       /** Absent when discovery did not finish within its budget. */
       toolchain?: ToolchainResolution
       /** True when the ceiling expired — a defect signal, not a normal state. */
@@ -114,34 +116,14 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   const bounded = async <T>(
     name: string,
     budgetMs: number,
-    start: (limits: { signal: AbortSignal; deadlineMs: number }) => Promise<T>,
+    start: (limits: BudgetLimits) => Promise<T>,
   ): Promise<T | undefined> => {
-    const remaining = Math.min(budgetMs, deadline - ports.now())
-    if (remaining <= 0) {
+    const outcome = await withinBudget(ports, Math.min(budgetMs, deadline - ports.now()), start)
+    if (!outcome.finished) {
       incomplete.push(name)
       return undefined
     }
-
-    // The work is started *here*, after the budget is known and the expiry
-    // timer exists. Taking an already-created promise would mean the caller
-    // had begun it at the call site — and anything synchronous inside it would
-    // already have run to completion before this function was entered.
-    const abandon = new AbortController()
-    const expiry = ports.sleep(remaining).then(() => EXPIRED)
-    const outcome = await Promise.race([
-      (async () => start({ signal: abandon.signal, deadlineMs: ports.now() + remaining }))().catch(
-        () => FAILED,
-      ),
-      expiry,
-    ])
-    if (outcome === EXPIRED || outcome === FAILED) {
-      // No longer waited for, so no longer wanted: whatever it started is
-      // stopped rather than left to finish behind the return.
-      abandon.abort()
-      incomplete.push(name)
-      return undefined
-    }
-    return outcome as T
+    return outcome.value
   }
 
   // Gate one. "This is not an Xcode project" is a normal state, not a
@@ -196,7 +178,7 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     status: "ready",
     hostVersion: version,
     hostVersionTested: isTestedHostVersion(version),
-    runtime,
+    ...(runtime === undefined ? {} : { runtime }),
     ...(toolchain === undefined ? {} : { toolchain }),
     deadlineExpired: ports.now() >= deadline,
     incomplete: incomplete.sort(),
@@ -205,6 +187,76 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
 
 const EXPIRED = Symbol("expired")
 const FAILED = Symbol("failed")
+
+/**
+ * What the two startup probes found. Absent means a probe did not finish
+ * within its budget — which says nothing about what it would have found.
+ */
+export type ProbeResults = { runtime?: RuntimeResolution; toolchain?: ToolchainResolution }
+
+/**
+ * Run again whichever startup probe did not resolve, under the budget startup
+ * gave it, and keep whichever did (issue #162).
+ *
+ * What answered is kept rather than re-earned: probing a working toolchain a
+ * second time can only add a chance of a fresh timeout.
+ */
+export async function probeAgain(
+  ports: Pick<StartupPorts, "probeRuntime" | "resolveToolchain" | "now" | "sleep">,
+  previous: ProbeResults,
+): Promise<ProbeResults> {
+  const again = async <T extends { status: string }>(
+    kept: T | undefined,
+    budgetMs: number,
+    start: (limits: BudgetLimits) => Promise<T>,
+  ): Promise<T | undefined> => {
+    if (kept?.status === "resolved") return kept
+    const outcome = await withinBudget(ports, budgetMs, start)
+    return outcome.finished ? outcome.value : undefined
+  }
+
+  const [runtime, toolchain] = await Promise.all([
+    again(previous.runtime, RUNTIME_PROBE_BUDGET_MS, () => ports.probeRuntime()),
+    again(previous.toolchain, TOOLCHAIN_BUDGET_MS, ({ signal }) => ports.resolveToolchain(signal)),
+  ])
+  return { ...(runtime === undefined ? {} : { runtime }), ...(toolchain === undefined ? {} : { toolchain }) }
+}
+
+/** What a budgeted item is handed: when it is abandoned, and by when. */
+export type BudgetLimits = { signal: AbortSignal; deadlineMs: number }
+
+/**
+ * Run one item within `budgetMs`, abandoning it if it does not finish.
+ *
+ * Exported because startup is not the only caller: revalidating a probe that
+ * timed out (issue #162) runs the same items under the same budgets, and a
+ * second implementation of "bounded" would be a second thing to get wrong.
+ */
+export async function withinBudget<T>(
+  clock: { now(): number; sleep(ms: number): Promise<void> },
+  budgetMs: number,
+  start: (limits: BudgetLimits) => Promise<T>,
+): Promise<{ finished: true; value: T } | { finished: false }> {
+  if (budgetMs <= 0) return { finished: false }
+
+  // The work is started *here*, after the budget is known and the expiry
+  // timer exists. Taking an already-created promise would mean the caller
+  // had begun it at the call site — and anything synchronous inside it would
+  // already have run to completion before this function was entered.
+  const abandon = new AbortController()
+  const expiry = clock.sleep(budgetMs).then(() => EXPIRED)
+  const outcome = await Promise.race([
+    (async () => start({ signal: abandon.signal, deadlineMs: clock.now() + budgetMs }))().catch(() => FAILED),
+    expiry,
+  ])
+  if (outcome === EXPIRED || outcome === FAILED) {
+    // No longer waited for, so no longer wanted: whatever it started is
+    // stopped rather than left to finish behind the return.
+    abandon.abort()
+    return { finished: false }
+  }
+  return { finished: true, value: outcome as T }
+}
 
 export function isTestedHostVersion(version: string): boolean {
   return (TESTED_HOST_VERSIONS as readonly string[]).includes(version)

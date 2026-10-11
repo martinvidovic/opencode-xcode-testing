@@ -28,7 +28,14 @@ export type RuntimeSource = "configuration" | "host" | "path"
  * synchronous probe blocks the loop, so the deadline it is supposed to be
  * bounded by cannot fire until after it has already finished.
  */
-export type RuntimeProbe = (candidate: string) => Promise<{ usable: boolean; version?: string }>
+export type RuntimeProbe = (candidate: string) => Promise<RuntimeProbeOutcome>
+
+/**
+ * What one probe observed. `timedOut` marks a candidate that never answered,
+ * which says nothing about whether it works (issue #162) — unlike one that
+ * answered and could not run the script.
+ */
+export type RuntimeProbeOutcome = { usable: boolean; version?: string; timedOut?: true }
 
 export type RuntimeResolution =
   | { status: "resolved"; path: string; source: RuntimeSource; version?: string }
@@ -38,6 +45,12 @@ export type RuntimeResolution =
       message: string
       /** What was tried, in order, so the diagnostic names the actual attempts. */
       probed: string[]
+      /**
+       * Set when the failure is a probe that did not answer in time rather
+       * than an answer (issue #162). Probing again may then succeed; for any
+       * other failure it gives the same answer.
+       */
+      timedOut?: true
     }
 
 export type RuntimeInput = {
@@ -69,6 +82,18 @@ export async function resolveRuntime(input: RuntimeInput): Promise<RuntimeResolu
         ...(result.version === undefined ? {} : { version: result.version }),
       }
     }
+    // Set but silent is not yet known to be unusable — and still never a
+    // fallback: discovery answering in its place is the degradation an
+    // explicit setting exists to refuse.
+    if (result.timedOut === true) {
+      return {
+        status: "failed",
+        reason: "runnerFailure",
+        message: "the configured runtime did not answer its probe in time.",
+        probed,
+        timedOut: true,
+      }
+    }
     // Set but unusable is a hard error, never a fallback.
     return {
       status: "failed",
@@ -79,16 +104,30 @@ export async function resolveRuntime(input: RuntimeInput): Promise<RuntimeResolu
     }
   }
 
+  let anyTimedOut = false
   for (const candidate of [input.hostExecutable, input.pathCandidate]) {
     if (candidate === undefined) continue
     probed.push(candidate)
     const result = await input.probe(candidate)
+    if (result.timedOut === true) anyTimedOut = true
     if (!result.usable) continue
     return {
       status: "resolved",
       path: candidate,
       source: candidate === input.hostExecutable ? "host" : "path",
       ...(result.version === undefined ? {} : { version: result.version }),
+    }
+  }
+
+  // A candidate that never answered might have been the one. Saying "none was
+  // found" would send a caller off to install a Bun they already have.
+  if (anyTimedOut) {
+    return {
+      status: "failed",
+      reason: "runnerFailure",
+      message: "a Bun runtime candidate did not answer its probe in time, and none that answered was usable.",
+      probed,
+      timedOut: true,
     }
   }
 

@@ -10,6 +10,13 @@ Call this when xcode_test reports that the execution slot is quarantined. It
 takes no arguments: recovery is idempotent, bounded, and always scoped to this
 project. It never interrupts a run that is genuinely still active.
 
+Call it too when xcode_test reports that the tool could not start because a
+probe did not answer in time and calls that transient. Recovery then probes the
+runtime and Xcode toolchain again, once, within the startup budgets; if they
+answer, the tool is available from then on. Nothing is retried on its own, and a
+failure that is not a timeout (an invalid configured runtime, no Bun, an
+unusable Xcode) is reported as such rather than probed again.
+
 It returns one of:
 
   recovered         work was reconciled and the slot is usable again

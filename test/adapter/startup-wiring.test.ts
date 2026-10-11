@@ -16,7 +16,7 @@ import { resolveBudget } from "../../src/adapter/budget.ts"
 import { cachedRuntime, cacheIsValid, rememberRuntime } from "../../src/adapter/runtime.ts"
 import { renderTestToolResult } from "../../src/adapter/output.ts"
 import { FAILED_EXIT, interpretFixture } from "../interpreter/harness.ts"
-import { unavailableService } from "../../src/adapter/service.ts"
+import { revalidatingService } from "../../src/adapter/availability.ts"
 import type { ResultProvenance } from "../../src/domain/result.ts"
 import { readProjectConfiguration } from "../../src/adapter/root-roles.ts"
 import { resolveTestRun } from "../../src/runner/resolution.ts"
@@ -139,11 +139,18 @@ describe("per-root storage", () => {
   })
 })
 
+/** A family that could not start, for a reason probing again would not change. */
+function unavailable(message: string) {
+  return revalidatingService({ status: "unavailable", transient: false, message }, () => {
+    throw new Error("a permanent failure is never probed again")
+  })
+}
+
 describe("an unavailable Test Tool family", () => {
   test("still answers, with the diagnostic naming what is missing", async () => {
     // Registering nothing would read exactly like a project that never opted
     // in, which is the one thing it must not look like.
-    const service = unavailableService(
+    const service = unavailable(
       "no usable Bun runtime was found. Install Bun so it is on PATH, or set `runtime`.",
     )
     const result = await service.start({ requestedScope: { kind: "all" } }, { onState: () => {} })
@@ -154,7 +161,7 @@ describe("an unavailable Test Tool family", () => {
   })
 
   test("answers inspection and recovery too, rather than throwing", async () => {
-    const service = unavailableService("the toolchain could not be resolved")
+    const service = unavailable("the toolchain could not be resolved")
 
     expect(await service.inspect({ runId: "any", facet: "tests" })).toMatchObject({
       status: "invalid",

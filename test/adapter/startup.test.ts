@@ -34,7 +34,7 @@ function ports(overrides: Partial<StartupPorts> = {}, trace: Trace = []): Startu
     },
     probeRuntime: async () => {
       trace.push("probe")
-      return { status: "resolved" }
+      return { status: "resolved", path: "/opt/bun", source: "path" }
     },
     readHostVersion: async () => {
       trace.push("version")

@@ -20,7 +20,7 @@ The capability is three separately-deniable tools:
 | --- | --- |
 | `xcode_test` | Run a Test Run against an explicit Requested Scope. |
 | `xcode_test_inspect` | Read deeper into a finished Test Run, without rerunning it. |
-| `xcode_test_recover` | Clear a stuck execution slot. Takes no arguments. |
+| `xcode_test_recover` | Clear a stuck execution slot, or probe the runtime and Xcode again after a startup timeout. Takes no arguments. |
 
 Three IDs rather than one multiplexed tool, because that is what makes exact
 allowlisting meaningful: an agent can be given the ability to run tests without

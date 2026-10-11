@@ -19,6 +19,7 @@ import { join } from "node:path"
 
 import { TOOL_IDS } from "../../src/adapter/descriptions.ts"
 import { prepareTools, type HostHandles } from "../../src/adapter/setup.ts"
+import type { ToolchainProbe } from "../../src/runner/toolchain.ts"
 
 type Sandbox = { root: string; home: string; lines: string[]; dispose(): void }
 
@@ -161,6 +162,149 @@ describe("a toolchain probe that never answers (issue #153)", () => {
       // no Xcode tools at all.
       expect(tools.map((tool) => tool.name)).toEqual([...TOOL_IDS])
       expect(box.lines.join("\n")).toContain("toolchain discovery did not finish")
+    })
+  })
+})
+
+/**
+ * A healthy Xcode 27, answered without one: a developer directory under the
+ * sandbox whose `xcresulttool` exists so it can be digested, and probes that
+ * answer the way the real tools do. Or a machine with no Xcode selected.
+ */
+function scriptedXcode(box: Sandbox, selected = true): ToolchainProbe {
+  const developerDirectory = join(box.home, "Xcode.app", "Contents", "Developer")
+  mkdirSync(join(developerDirectory, "usr", "bin"), { recursive: true })
+  writeFileSync(join(developerDirectory, "usr", "bin", "xcresulttool"), "binary")
+  return async (command) => {
+    if (command.endsWith("xcode-select")) {
+      return selected ? { status: 0, stdout: `${developerDirectory}\n` } : { status: 2, stdout: "" }
+    }
+    if (command.endsWith("xcodebuild")) return { status: 0, stdout: "Xcode 27.0\nBuild version 27A266a\n" }
+    return { status: 0, stdout: "xcresulttool version 24000, format version 3.53 (current), schema version: 0.1.0\n" }
+  }
+}
+
+function textOf(result: { content: ReadonlyArray<{ text: string }> }): string {
+  return result.content.map((part) => part.text).join("\n")
+}
+
+async function recoverWith(tools: Awaited<ReturnType<typeof prepareTools>>): Promise<string> {
+  const recover = tools.find((tool) => tool.name === "xcode_test_recover")
+  if (recover === undefined) throw new Error("no recovery tool")
+  return textOf(await recover.execute({}, {}))
+}
+
+describe("a runtime probe that times out at startup (issue #162)", () => {
+  /** Hangs the first time it is asked about any candidate, then answers. */
+  function hangingOnce() {
+    let calls = 0
+    let startupDone = false
+    return {
+      settle: () => {
+        startupDone = true
+      },
+      calls: () => calls,
+      probe: async () => {
+        calls += 1
+        if (!startupDone) return new Promise<never>(() => {})
+        return { usable: true, version: "1.4.2" }
+      },
+    }
+  }
+
+  test("is reported as transient, with the way back named", async () => {
+    await within(true, async (box) => {
+      const runtime = hangingOnce()
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        startupDeadlineMs: 400,
+        runtimeProbe: runtime.probe,
+        toolchainProbe: scriptedXcode(box),
+      })
+
+      expect(tools.map((tool) => tool.name)).toEqual([...TOOL_IDS])
+      expect(box.lines.join("\n")).toContain("could not be probed within the startup deadline")
+      expect(box.lines.join("\n")).toContain("xcode_test_recover")
+    })
+  })
+
+  test("is probed again by xcode_test_recover, which makes the tool available", async () => {
+    await within(true, async (box) => {
+      const runtime = hangingOnce()
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        startupDeadlineMs: 400,
+        runtimeProbe: runtime.probe,
+        toolchainProbe: scriptedXcode(box),
+      })
+      runtime.settle()
+
+      const first = await recoverWith(tools)
+      const probesAfterFirst = runtime.calls()
+      const second = await recoverWith(tools)
+
+      expect(first).toContain("probed again")
+      expect(first).not.toContain("Recovery: failed")
+      // Available now, so the second call is ordinary recovery and probes
+      // nothing: the runtime answer is kept, not re-earned on every call.
+      expect(second).not.toContain("probed again")
+      expect(runtime.calls()).toBe(probesAfterFirst)
+    })
+  })
+})
+
+describe("a startup failure that is not a timeout (issue #162)", () => {
+  test("of an explicitly configured runtime is permanent, and recovery says so without probing", async () => {
+    await within(true, async (box) => {
+      writeFileSync(
+        join(box.root, ".opencode", "xcode-test.json"),
+        JSON.stringify({ schemaVersion: 1, runtime: "/nonexistent/bun" }),
+      )
+      const probed: string[] = []
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        toolchainProbe: scriptedXcode(box),
+        runtimeProbe: async (candidate) => {
+          probed.push(candidate)
+          return { usable: false }
+        },
+      })
+
+      const recovered = await recoverWith(tools)
+
+      expect(box.lines.join("\n")).toContain("configured runtime could not execute a TypeScript file")
+      expect(box.lines.join("\n")).not.toContain("xcode_test_recover")
+      expect(recovered).toContain("Recovery: failed")
+      expect(recovered).toContain("not a timeout")
+      // Probed once at startup, never again — and never anything but the
+      // configured path, which is what refusing a fallback means.
+      expect(probed).toEqual(["/nonexistent/bun"])
+    })
+  })
+
+  test("outranks a timeout beside it, since probing again cannot help", async () => {
+    await within(true, async (box) => {
+      let runtimeProbes = 0
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        startupDeadlineMs: 400,
+        toolchainProbe: scriptedXcode(box, false),
+        runtimeProbe: () => {
+          runtimeProbes += 1
+          return new Promise<never>(() => {})
+        },
+      })
+      const probesAtStartup = runtimeProbes
+
+      const recovered = await recoverWith(tools)
+
+      expect(box.lines.join("\n")).toContain("no Xcode developer directory is selected")
+      expect(recovered).toContain("not a timeout")
+      expect(runtimeProbes).toBe(probesAtStartup)
     })
   })
 })
