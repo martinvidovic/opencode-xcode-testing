@@ -21,6 +21,7 @@ import {
   type AdmissionEnvironment,
 } from "../../src/runner/queue.ts"
 import { reconcileRoot } from "../../src/runner/recovery.ts"
+import { reclaimIsolatedDerivedData } from "../../src/runner/reclamation.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
 import { fakeProbe, seedRun, withSandbox, type Sandbox } from "./harness.ts"
 
@@ -254,7 +255,7 @@ describe("recovery and live finalization", () => {
 
 describe("isolated DerivedData", () => {
   test("is reconciled for a completed run that crashed before cleanup", async () => {
-    await withSandbox((box) => {
+    await withSandbox(async (box) => {
       createRunDirectory(box.storage, "run-dd")
       const derived = join(runDirectory(box.storage, "run-dd"), "DerivedData")
       mkdirSync(derived, { recursive: true })
@@ -266,10 +267,33 @@ describe("isolated DerivedData", () => {
         derivedDataMode: "isolated",
       })
 
+      // Recovery names it and leaves the deletion to the caller (issue #161):
+      // this pass runs synchronously under the root lock, and deleting a
+      // ten-gigabyte tree there would hold the host for as long as it took.
       const report = recover(box)
-      expect(report.derivedDataCleaned).toEqual(["run-dd"])
+      expect(report.derivedDataPending).toEqual(["run-dd"])
+      expect(existsSync(derived)).toBe(true)
+
+      await reclaimIsolatedDerivedData({ storage: box.storage, timestamp: () => TIMESTAMP }, "run-dd")
       expect(existsSync(derived)).toBe(false)
       expect(readRunRecord(box.storage, "run-dd")?.derivedDataCleaned).toBe(true)
+    })
+  })
+
+  test("is not reported again once it has been reclaimed", async () => {
+    await withSandbox((box) => {
+      createRunDirectory(box.storage, "run-clean")
+      seedRun(box.storage, {
+        runId: "run-clean",
+        state: "completed",
+        completedAt: TIMESTAMP,
+        derivedDataMode: "isolated",
+        derivedDataCleaned: true,
+      })
+
+      const report = recover(box)
+      expect(report.derivedDataPending).toEqual([])
+      expect(report.status).toBe("alreadyHealthy")
     })
   })
 
