@@ -138,3 +138,29 @@ describe("a startup failure", () => {
     })
   })
 })
+
+describe("a toolchain probe that never answers (issue #153)", () => {
+  test("does not hold setup past the startup deadline", async () => {
+    await within(true, async (box) => {
+      const deadlineMs = 400
+      const started = performance.now()
+
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        startupDeadlineMs: deadlineMs,
+        // Hangs, and ignores being abandoned: the worst probe there is. What
+        // bounds setup has to be startup's deadline, not the probe's manners.
+        toolchainProbe: () => new Promise(() => {}),
+      })
+
+      // A small fixed margin over the deadline: the bounded items are raced
+      // against it, then setup builds its definitions and returns.
+      expect(performance.now() - started).toBeLessThan(deadlineMs + 1_000)
+      // Still registered, so a caller is told what is wrong instead of finding
+      // no Xcode tools at all.
+      expect(tools.map((tool) => tool.name)).toEqual([...TOOL_IDS])
+      expect(box.lines.join("\n")).toContain("toolchain discovery did not finish")
+    })
+  })
+})

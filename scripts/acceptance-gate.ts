@@ -140,7 +140,7 @@ export async function main(argv: string[], observed: Observations): Promise<numb
   // sweep is one pass at the end.
   const roots = new DrivenRoots()
 
-  const toolchain = resolveToolchain()
+  const toolchain = await resolveToolchain()
   if (toolchain.status !== "resolved") return finish("failed", toolchain.message)
 
   observed.toolchain = {

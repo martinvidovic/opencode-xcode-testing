@@ -7,9 +7,15 @@
  * identity compares the developer directory and the resolved toolchain rather
  * than the shim — and includes a digest of the `xcresulttool` binary, because
  * an installation replaced in place keeps its path and its version number.
+ *
+ * Every probe is asynchronous and bounded (issue #153). They used to run
+ * through `spawnSync` with no timeout, so a hung `xcrun` or `xcodebuild` held
+ * plugin setup — and the host's event loop — for as long as it chose. A probe
+ * now answers, times out, or is abandoned with the discovery that asked for it,
+ * and in the last two cases its process is killed rather than left behind.
  */
 
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -24,36 +30,102 @@ export type ToolchainResolution =
   | { status: "resolved"; identity: ToolchainIdentity }
   | { status: "failed"; message: string }
 
-export type ToolchainProbe = (command: string, args: string[], env?: Record<string, string>) => {
-  status: number | null
-  stdout: string
-}
+/**
+ * What one probe observed. `timedOut` is set only when the probe was killed
+ * for not answering, so "it answered with a failure" and "it never answered"
+ * stay distinguishable.
+ */
+export type ProbeOutcome = { status: number | null; stdout: string; timedOut?: true }
 
-const systemProbe: ToolchainProbe = (command, args, env) => {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
-  })
-  return { status: result.status, stdout: `${result.stdout ?? ""}${result.stderr ?? ""}` }
+export type ToolchainProbe = (
+  command: string,
+  args: string[],
+  env?: Record<string, string>,
+) => Promise<ProbeOutcome>
+
+/**
+ * How long one probe may take on its own. `xcodebuild -version` is the slow
+ * one, and a cold first run after a reboot has been seen to take seconds; a
+ * probe that has not answered in this long is not going to.
+ */
+export const PROBE_TIMEOUT_MS = 8_000
+
+/**
+ * Probe by spawning the command, killing it at `timeoutMs` or when `signal`
+ * aborts.
+ *
+ * `SIGKILL` rather than a polite signal: these are read-only version queries,
+ * there is nothing for them to clean up, and a process that ignored the
+ * deadline has no claim on a grace period.
+ */
+export function spawnProbe(options: { timeoutMs?: number; signal?: AbortSignal } = {}): ToolchainProbe {
+  return (command, args, env) =>
+    new Promise((resolve) => {
+      let output = ""
+      let timedOut = false
+      let settled = false
+      const finish = (outcome: ProbeOutcome) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        options.signal?.removeEventListener("abort", abandon)
+        resolve(outcome)
+      }
+
+      const child = spawn(command, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+      })
+      child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")))
+      child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")))
+
+      const kill = () => {
+        try {
+          child.kill("SIGKILL")
+        } catch {
+          // Already gone, which is what killing it was for.
+        }
+      }
+      const abandon = () => kill()
+      const timer = setTimeout(() => {
+        timedOut = true
+        kill()
+      }, options.timeoutMs ?? PROBE_TIMEOUT_MS)
+      if (options.signal?.aborted === true) kill()
+      else options.signal?.addEventListener("abort", abandon, { once: true })
+
+      child.on("error", () => finish({ status: null, stdout: output }))
+      // `close`, not `exit`: it waits for the output streams, so a probe that
+      // answers and exits at once is never read as having said nothing.
+      child.on("close", (status) =>
+        finish(timedOut ? { status: null, stdout: output, timedOut: true } : { status, stdout: output }),
+      )
+    })
 }
 
 /**
  * Resolve every identity fact in one pass. A missing fact fails the whole
  * resolution rather than producing a partial identity — a half-known toolchain
  * cannot be compared against anything later.
+ *
+ * `signal` abandons discovery: whatever probe is running is killed, and no
+ * further one is started.
  */
-export function resolveToolchain(
-  options: { probe?: ToolchainProbe; digest?: (path: string) => string } = {},
-): ToolchainResolution {
-  const probe = options.probe ?? systemProbe
+export async function resolveToolchain(
+  options: { probe?: ToolchainProbe; digest?: (path: string) => string; signal?: AbortSignal } = {},
+): Promise<ToolchainResolution> {
+  const probe =
+    options.probe ?? spawnProbe(options.signal === undefined ? {} : { signal: options.signal })
 
-  const selected = probe(XCODE_SELECT, ["-p"])
+  const selected = await probe(XCODE_SELECT, ["-p"])
+  if (selected.timedOut === true) return didNotAnswer("xcode-select")
   if (selected.status !== 0) {
     return { status: "failed", message: "no Xcode developer directory is selected" }
   }
   const developerDirectory = selected.stdout.trim()
 
-  const version = probe(XCODEBUILD, ["-version"], { DEVELOPER_DIR: developerDirectory })
+  const version = await probe(XCODEBUILD, ["-version"], { DEVELOPER_DIR: developerDirectory })
+  if (version.timedOut === true) return didNotAnswer("xcodebuild")
   if (version.status !== 0) {
     return { status: "failed", message: "xcodebuild could not report its version" }
   }
@@ -64,7 +136,8 @@ export function resolveToolchain(
   }
 
   const xcresulttoolPath = join(developerDirectory, "usr", "bin", "xcresulttool")
-  const tool = probe(XCRUN, ["xcresulttool", "version"], { DEVELOPER_DIR: developerDirectory })
+  const tool = await probe(XCRUN, ["xcresulttool", "version"], { DEVELOPER_DIR: developerDirectory })
+  if (tool.timedOut === true) return didNotAnswer("xcresulttool")
   if (tool.status !== 0) {
     return { status: "failed", message: "xcresulttool could not report its version" }
   }
@@ -90,6 +163,13 @@ export function resolveToolchain(
       xcresulttoolDigest: digest,
       schemaVersion,
     },
+  }
+}
+
+function didNotAnswer(tool: string): ToolchainResolution {
+  return {
+    status: "failed",
+    message: `${tool} did not answer within ${PROBE_TIMEOUT_MS / 1000} seconds and was stopped`,
   }
 }
 

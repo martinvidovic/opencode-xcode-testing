@@ -17,14 +17,14 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { monotonicNow } from "../../src/domain/clock.ts"
 import { startupPortsFor } from "../../src/adapter/startup-ports.ts"
-import { RECONCILIATION_BUDGET_MS, runStartup } from "../../src/adapter/startup.ts"
-import { noteRootSeen } from "../../src/runner/housekeeping.ts"
-import { createRunDirectory, RUN_ARTIFACTS, runDirectory } from "../../src/runner/paths.ts"
+import { HOUSEKEEPING_BUDGET_MS, RECONCILIATION_BUDGET_MS, runStartup } from "../../src/adapter/startup.ts"
+import { noteRootSeen, readRegistry, writeRegistry } from "../../src/runner/housekeeping.ts"
+import { createRunDirectory, prepareStorage, RUN_ARTIFACTS, runDirectory, storageFor } from "../../src/runner/paths.ts"
 import { QUARANTINE_REASON, readQueue, writeQueue } from "../../src/runner/queue.ts"
 import { reclamationsSettled } from "../../src/runner/reclamation.ts"
 import { readRunRecord } from "../../src/runner/state.ts"
@@ -197,11 +197,67 @@ describe("isolated DerivedData a crash left behind (issue #161)", () => {
       // never reconciled by a startup of its own.
       noteRootSeen(box.storage, Date.now())
 
-      await portsFor(box, containmentRoot).runHousekeeping()
-      await reclamationsSettled()
+      // Off the main thread (#153), so this process's own registry of
+      // reclamations never sees it: the pass is over when its worker is.
+      await portsFor(box, containmentRoot).runHousekeeping(monotonicNow() + HOUSEKEEPING_BUDGET_MS)
 
       expect(existsSync(derived)).toBe(false)
       expect(readRunRecord(box.storage, RUN)?.derivedDataCleaned).toBe(true)
+    })
+  })
+})
+
+describe("housekeeping as production runs it (issue #153)", () => {
+  /** The worst gap between ticks of a 10 ms timer while `work` runs. */
+  async function worstTimerLag(work: () => Promise<unknown>): Promise<number> {
+    let worst = 0
+    let last = performance.now()
+    const timer = setInterval(() => {
+      const now = performance.now()
+      worst = Math.max(worst, now - last - 10)
+      last = now
+    }, 10)
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await work()
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    } finally {
+      clearInterval(timer)
+    }
+    return worst
+  }
+
+  test("runs off the host's event loop, however long its filesystem work takes", async () => {
+    await withSandbox(async (box) => {
+      // A root nobody has opened in a long while, holding enough files that
+      // collecting it synchronously stalls a thread for around a second.
+      const stale = storageFor(box.homeDir, "/workspace/abandoned")
+      prepareStorage(stale)
+      for (let directory = 0; directory < 150; directory += 1) {
+        const leaf = join(stale.runsDir, `run-${String(directory).padStart(4, "0")}`, "Objects")
+        mkdirSync(leaf, { recursive: true })
+        for (let file = 0; file < 200; file += 1) writeFileSync(join(leaf, `${file}.o`), "o")
+      }
+      const longAgo = Date.now() - 90 * 24 * 60 * 60 * 1000
+      writeRegistry(box.storage, { schemaVersion: 1, roots: { [stale.rootKey]: { lastSeenAtMs: longAgo } } })
+      utimesSync(stale.rootDir, longAgo / 1000, longAgo / 1000)
+
+      const ports = portsFor(box, join(box.homeDir, "project"))
+      const lag = await worstTimerLag(() => ports.runHousekeeping(monotonicNow() + 60_000))
+
+      expect(existsSync(stale.rootDir)).toBe(false)
+      expect(readRegistry(box.storage).roots[stale.rootKey]).toBeUndefined()
+      expect(lag).toBeLessThan(250)
+    })
+  }, 60_000)
+
+  test("stops at the deadline it is handed, leaving the rest for the next pass", async () => {
+    await withSandbox(async (box) => {
+      noteRootSeen(box.storage, Date.now())
+
+      await portsFor(box, join(box.homeDir, "project")).runHousekeeping(monotonicNow() - 1)
+
+      expect(readRegistry(box.storage).pendingRoots).toEqual([box.storage.rootKey])
     })
   })
 })

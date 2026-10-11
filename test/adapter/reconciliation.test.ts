@@ -107,6 +107,7 @@ describe("the deadline startup hands to reconciliation", () => {
       reconcileRoot: async (deadlineMs: number) => {
         handed = deadlineMs
       },
+      resolveToolchain: async () => ({ status: "failed", message: "not under test" }),
       runHousekeeping: async () => {},
       now: () => (clock += 1),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

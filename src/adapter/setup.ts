@@ -28,7 +28,7 @@ import { monotonicNow } from "../domain/clock.ts"
 import { storageFor, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
-import { resolveToolchain } from "../runner/toolchain.ts"
+import type { ToolchainProbe, ToolchainResolution } from "../runner/toolchain.ts"
 import { outputLimitsFromOptions, resolveBudget } from "./budget.ts"
 import { toolDefinitions, type ToolDefinition } from "./definitions.ts"
 import { DESCRIPTION_FILES } from "./descriptions.ts"
@@ -36,7 +36,7 @@ import { readProjectConfiguration, resolveRootRoles, rootContextFromLocation, ty
 import type { RuntimeResolution } from "./runtime.ts"
 import { safeFailure } from "./sanitize.ts"
 import { createTestToolService, unavailableService } from "./service.ts"
-import { startupPortsFor } from "./startup-ports.ts"
+import { HOUSEKEEPING_ENTRYPOINT, startupPortsFor } from "./startup-ports.ts"
 import { hostVersionDiagnostic, runStartup } from "./startup.ts"
 import type { ToolDeps } from "./tools.ts"
 
@@ -58,6 +58,10 @@ export type SetupOverrides = {
   requiredFiles?(): string[]
   /** One diagnostic line, already prefixed. Defaults to stderr. */
   write?(line: string): void
+  /** How toolchain discovery probes. Defaults to spawning the real tools. */
+  toolchainProbe?: ToolchainProbe
+  /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
+  startupDeadlineMs?: number
 }
 
 /**
@@ -101,12 +105,15 @@ async function prepare(
       homeDir,
       storage,
       configuration,
-      requiredFiles: overrides.requiredFiles ?? (() => [SUPERVISOR_ENTRYPOINT, ...DESCRIPTION_FILES]),
+      requiredFiles:
+        overrides.requiredFiles ?? (() => [SUPERVISOR_ENTRYPOINT, HOUSEKEEPING_ENTRYPOINT, ...DESCRIPTION_FILES]),
       regularFileExists: isRegularFile,
       readHostVersion: async () => host.version,
       onRuntime: (resolved) => {
         runtime = resolved
       },
+      ...(overrides.toolchainProbe === undefined ? {} : { toolchainProbe: overrides.toolchainProbe }),
+      ...(overrides.startupDeadlineMs === undefined ? {} : { deadlineMs: overrides.startupDeadlineMs }),
     }),
   )
 
@@ -137,7 +144,7 @@ async function prepare(
       containmentRoot,
       homeDir,
       configuration,
-      toolchain: resolveToolchain(),
+      toolchain: outcome.toolchain,
       runtime,
       hostVersion: outcome.hostVersion,
     },
@@ -209,7 +216,8 @@ function serviceFor(
     containmentRoot: string
     homeDir: string
     configuration: ConfigurationOutcome
-    toolchain: ReturnType<typeof resolveToolchain>
+    /** Absent when discovery did not finish within its startup budget. */
+    toolchain: ToolchainResolution | undefined
     runtime: RuntimeResolution | undefined
     hostVersion: string
   },
@@ -220,6 +228,9 @@ function serviceFor(
     return unavailableService(message)
   }
 
+  if (input.toolchain === undefined) {
+    return refuse("Xcode toolchain discovery did not finish within the startup deadline")
+  }
   if (input.toolchain.status !== "resolved") return refuse(input.toolchain.message)
   if (input.runtime === undefined) {
     return refuse("the runtime could not be probed within the startup deadline")
