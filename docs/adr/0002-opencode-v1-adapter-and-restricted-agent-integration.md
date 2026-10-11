@@ -319,6 +319,18 @@ per `ctx.directory` instance, so a worktree with two session directories pays tw
 > transient failure beside it, and is never probed again: that is the "no silent fallback" rule
 > above, applied to recovery.
 
+> **Amended (issue #164): which Xcode is chosen.** The project configuration gains a second
+> machine-local field beside `runtime`: `developerDirectory`, an absolute path to a full Xcode's
+> `Contents/Developer` (relative paths are refused — they would be relative to wherever OpenCode
+> started). Toolchain discovery chooses, first match wins: that field; a `DEVELOPER_DIR` OpenCode
+> inherited, read explicitly rather than left to `xcode-select -p` echoing it; then
+> `xcode-select -p`, asked without `DEVELOPER_DIR`. An unusable choice fails naming the setting
+> that made it and never falls back to the next — the `runtime` rule, applied to the toolchain —
+> and nothing is discovered at all while the configuration is invalid. The resolved directory is
+> frozen into #8's toolchain identity as before, so execution and every Result Bundle read share
+> it. Setup also refuses an Xcode outside the supported majors as a permanent failure, instead of
+> letting a Test Run discover that its results can only be refused.
+
 ### Language, topology, and runtime resolution
 
 **TypeScript throughout.** The adapter runs in-process under the Bun-hosted CLI; #3's supervisor is

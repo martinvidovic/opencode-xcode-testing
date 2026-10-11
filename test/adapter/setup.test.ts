@@ -385,8 +385,51 @@ describe("the Xcode developer directory (issue #164)", () => {
 
       // Before a Test Run is spent finding out: an unsupported Xcode's results
       // could only ever be refused after the run.
-      expect(box.lines.join("\n")).toContain("Xcode 15.4 is not supported")
+      const said = box.lines.join("\n")
+      expect(said).toContain("Xcode 15.4 is not supported")
+      expect(said).toContain("the configured developerDirectory")
       expect(await recoverWith(tools)).toContain("not a timeout")
+    })
+  })
+
+  test("is never discovered from elsewhere while the configuration is invalid", async () => {
+    await within(true, async (box) => {
+      const xcode = xcodeAt(box)
+      configure(box, { developerDirectory: "Xcode-27.app/Contents/Developer" })
+
+      await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        environment: { DEVELOPER_DIR: xcode.developerDirectory },
+        toolchainProbe: xcode.probe,
+      })
+
+      // Discovering from DEVELOPER_DIR here would make a typo in the setting
+      // meant to choose the Xcode invisible behind one that worked.
+      expect(xcode.ran).toEqual([])
+      expect(box.lines.join("\n")).toContain("xcode-test.json")
+    })
+  })
+
+  test("is the configured one again when a transient failure is probed again", async () => {
+    await within(true, async (box) => {
+      const xcode = xcodeAt(box)
+      configure(box, { developerDirectory: xcode.developerDirectory })
+      let startupOver = false
+      const hangingUntilRecovery: ToolchainProbe = (command, args, env) =>
+        startupOver ? xcode.probe(command, args, env) : new Promise<never>(() => {})
+
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        startupDeadlineMs: 400,
+        environment: {},
+        toolchainProbe: hangingUntilRecovery,
+      })
+      startupOver = true
+
+      expect(await recoverWith(tools)).toContain("probed again")
+      expect(xcode.ran).not.toContain("xcode-select")
     })
   })
 })

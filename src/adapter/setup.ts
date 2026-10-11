@@ -28,7 +28,7 @@ import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import { isSupportedXcodeVersion, SUPPORTED_XCODE_MAJORS } from "../interpreter/schema.ts"
-import type { ToolchainProbe, ToolchainResolution } from "../runner/toolchain.ts"
+import { SELECTIONS, type ToolchainProbe, type ToolchainResolution } from "../runner/toolchain.ts"
 import { outputLimitsFromOptions, resolveBudget } from "./budget.ts"
 import { toolDefinitions, type ToolDefinition } from "./definitions.ts"
 import { DESCRIPTION_FILES } from "./descriptions.ts"
@@ -250,9 +250,10 @@ function toolchainProbed(toolchain: ToolchainResolution | undefined, occasion: P
   // Xcode's results can only ever be refused, so a run against it is a run
   // spent finding out what is already known.
   if (!isSupportedXcodeVersion(toolchain.identity.xcodeVersion)) {
+    const { name, remedy } = SELECTIONS[toolchain.selectedBy]
     return unavailable(
       false,
-      `Xcode ${toolchain.identity.xcodeVersion} is not supported by this Test Tool, which supports Xcode ${SUPPORTED_XCODE_MAJORS.join(" and ")}. Select a supported Xcode with developerDirectory in .opencode/xcode-test.json or DEVELOPER_DIR.`,
+      `Xcode ${toolchain.identity.xcodeVersion} is not supported by this Test Tool, which supports Xcode ${SUPPORTED_XCODE_MAJORS.join(" and ")}. It was chosen by ${name}. To use a supported one, ${remedy}.`,
     )
   }
   return { ok: true, value: toolchain.identity }

@@ -182,7 +182,16 @@ describe("an explicit Xcode developer directory (issue #164)", () => {
   test("is refused when it is not one, rather than resolved against anything", () => {
     // Relative would mean relative to whichever directory OpenCode started in,
     // which is not a statement about an Xcode installation.
-    for (const developerDirectory of [17, "", "  ", "Xcode.app/Contents/Developer", "/Applications/\u0000Xcode.app"]) {
+    for (const developerDirectory of [
+      17,
+      "",
+      "  ",
+      "Xcode.app/Contents/Developer",
+      "~/Applications/Xcode.app/Contents/Developer",
+      "/Applications/\u0000Xcode.app",
+      "/Applications/Xcode.app/Contents/Developer\n",
+      "/Applications/Xcode.app/Contents/Developer ",
+    ]) {
       expect(invalidMessage({ schemaVersion: 1, developerDirectory })).toContain("developerDirectory")
     }
   })

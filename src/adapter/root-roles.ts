@@ -225,9 +225,12 @@ function fieldProblems(record: Record<string, unknown>): string[] {
   // Machine-local too, but absolute only (issue #164): a relative path would be
   // relative to wherever OpenCode started, which says nothing about an Xcode.
   check("developerDirectory", (value) =>
-    typeof value === "string" && value.trim().length > 0 && isAbsolute(value) && !value.includes("\u0000")
+    typeof value === "string" &&
+    isAbsolute(value) &&
+    value === value.trim() &&
+    !/[\u0000-\u001f\u007f]/.test(value)
       ? undefined
-      : "must be an absolute path to an Xcode installation's Contents/Developer",
+      : "must be an absolute path to an Xcode installation's Contents/Developer, with no surrounding whitespace (a leading ~ is not expanded)",
   )
 
   return problems

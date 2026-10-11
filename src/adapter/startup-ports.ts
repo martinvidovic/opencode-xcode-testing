@@ -104,7 +104,16 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
 
     // The configured directory travels with every discovery — startup's and
     // a later revalidation's alike — so neither can fall back from it.
-    resolveToolchain: (signal) => {
+    resolveToolchain: async (signal) => {
+      // Nothing is discovered from elsewhere while the setting meant to choose
+      // the Xcode cannot be read: a typo in it would hide behind a
+      // DEVELOPER_DIR or a system selection that happened to work.
+      if (wiring.configuration.status === "invalid") {
+        return {
+          status: "failed",
+          message: `.opencode/xcode-test.json is invalid, so no Xcode was selected: ${wiring.configuration.message}`,
+        }
+      }
       const configured =
         wiring.configuration.status === "loaded" ? wiring.configuration.configuration.developerDirectory : undefined
       return resolveToolchain({

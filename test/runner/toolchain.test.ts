@@ -11,6 +11,9 @@
 
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
   resolveToolchain,
@@ -131,6 +134,7 @@ describe("a probe that answers", () => {
         xcresulttoolDigest: "digest",
         schemaVersion: "0.1.0",
       },
+      selectedBy: "system",
     })
   })
 
@@ -255,5 +259,75 @@ describe("which developer directory is used (issue #164)", () => {
     expect(resolution.status).toBe("failed")
     if (resolution.status !== "failed") return
     expect(resolution.message).toContain("xcresulttool")
+  })
+})
+
+describe("a selection that cannot be trusted as given (review of #164)", () => {
+  const XCODE = "/Applications/Xcode.app/Contents/Developer"
+
+  test("refuses an inherited DEVELOPER_DIR that is not an absolute path", async () => {
+    const ran: string[] = []
+    const resolution = await resolveToolchain({
+      environment: { DEVELOPER_DIR: "Xcode.app/Contents/Developer" },
+      probe: async (command) => {
+        ran.push(command)
+        return { status: 0, stdout: "" }
+      },
+      digest: () => "digest",
+    })
+
+    expect(resolution.status).toBe("failed")
+    if (resolution.status !== "failed") return
+    expect(resolution.message).toContain("DEVELOPER_DIR is not an absolute path")
+    // And no fallback to the system selection in its place.
+    expect(ran).toEqual([])
+  })
+
+  test("asks the system selection without an inherited DEVELOPER_DIR it would echo back", async () => {
+    const asked: Array<Readonly<Record<string, string | undefined>> | undefined> = []
+    await resolveToolchain({
+      environment: { DEVELOPER_DIR: "" },
+      probe: async (command, _args, env) => {
+        if (command.endsWith("xcode-select")) asked.push(env)
+        return { status: 1, stdout: "" }
+      },
+      digest: () => "digest",
+    })
+
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toHaveProperty("DEVELOPER_DIR", undefined)
+  })
+
+  test("fails as a mismatch when the selected directory does not hold the xcresulttool that answered", async () => {
+    // The real digest, over a directory that has no xcresulttool in it: xcrun
+    // answered from somewhere else.
+    const empty = mkdtempSync(join(tmpdir(), "xcode-test-mismatch-"))
+    try {
+      const resolution = await resolveToolchain({
+        developerDirectory: empty,
+        environment: {},
+        probe: async (command) =>
+          command.endsWith("xcodebuild")
+            ? { status: 0, stdout: "Xcode 27.0\nBuild version 27A266a\n" }
+            : { status: 0, stdout: "xcresulttool version 25115, schema version: 0.4.0\n" },
+      })
+
+      expect(resolution.status).toBe("failed")
+      if (resolution.status !== "failed") return
+      expect(resolution.message).toContain("not in the selected directory")
+      expect(resolution.message).not.toContain(empty)
+    } finally {
+      rmSync(empty, { recursive: true, force: true })
+    }
+  })
+
+  test("records which setting chose the directory it resolved", async () => {
+    const resolution = await resolveToolchain({
+      environment: { DEVELOPER_DIR: XCODE },
+      probe: scripted(),
+      digest: () => "digest",
+    })
+
+    expect(resolution).toMatchObject({ status: "resolved", selectedBy: "environment" })
   })
 })
