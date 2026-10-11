@@ -44,6 +44,12 @@ export type ProjectConfiguration = {
   timeoutSeconds?: number
   /** Machine-local per ADR 0002. A relative value resolves against the configuration root. */
   runtime?: string
+  /**
+   * Machine-local, absolute: a full Xcode installation's `Contents/Developer`
+   * (issue #164). Takes precedence over an inherited `DEVELOPER_DIR` and the
+   * system selection, and is never fallen back from.
+   */
+  developerDirectory?: string
   /** Explicit Xcode test locale; omitted values preserve scheme defaults. */
   testLanguage?: string
   testRegion?: string

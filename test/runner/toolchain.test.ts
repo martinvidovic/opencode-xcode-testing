@@ -90,6 +90,7 @@ describe("a probe that never exits", () => {
     abandon.abort()
 
     await resolveToolchain({
+      environment: {},
       signal: abandon.signal,
       probe: async (command) => {
         started.push(command)
@@ -103,6 +104,7 @@ describe("a probe that never exits", () => {
 
   test("fails discovery with a reason naming what did not answer", async () => {
     const resolution = await resolveToolchain({
+      environment: {},
       probe: scripted({ [XCODEBUILD]: { status: null, stdout: "", timedOut: true } }),
       digest: () => "digest",
     })
@@ -116,7 +118,7 @@ describe("a probe that never exits", () => {
 
 describe("a probe that answers", () => {
   test("is read into a resolved identity", async () => {
-    const resolution = await resolveToolchain({ probe: scripted(), digest: () => "digest" })
+    const resolution = await resolveToolchain({ environment: {}, probe: scripted(), digest: () => "digest" })
 
     expect(resolution).toEqual({
       status: "resolved",
@@ -136,5 +138,122 @@ describe("a probe that answers", () => {
     const outcome = await spawnProbe({ timeoutMs: 5_000 })("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"])
 
     expect(outcome).toEqual({ status: 3, stdout: "out\nerr\n" })
+  })
+})
+
+describe("which developer directory is used (issue #164)", () => {
+  const XCODE = "/Applications/Xcode.app/Contents/Developer"
+  const OTHER = "/Applications/Xcode-beta.app/Contents/Developer"
+  const COMMAND_LINE_TOOLS = "/Library/Developer/CommandLineTools"
+
+  /** Answers only for `usable`; records what ran, under which DEVELOPER_DIR. */
+  function machine(usable: string[], ran: string[]): ToolchainProbe {
+    return async (command, _args, env) => {
+      ran.push(`${command.split("/").pop()}${env?.DEVELOPER_DIR === undefined ? "" : ` @ ${env.DEVELOPER_DIR}`}`)
+      if (command.endsWith("xcode-select")) return { status: 0, stdout: `${COMMAND_LINE_TOOLS}\n` }
+      if (env?.DEVELOPER_DIR === undefined || !usable.includes(env.DEVELOPER_DIR)) {
+        return { status: 1, stdout: "xcode-select: error: tool 'xcodebuild' requires Xcode" }
+      }
+      return command.endsWith("xcodebuild")
+        ? { status: 0, stdout: "Xcode 27.0\nBuild version 27A266a\n" }
+        : { status: 0, stdout: "xcresulttool version 25115, schema version: 0.4.0\n" }
+    }
+  }
+
+  test("is the configured one, without consulting the system selection", async () => {
+    const ran: string[] = []
+
+    const resolution = await resolveToolchain({
+      developerDirectory: XCODE,
+      environment: {},
+      probe: machine([XCODE], ran),
+      digest: () => "digest",
+    })
+
+    expect(resolution).toMatchObject({ status: "resolved", identity: { developerDirectory: XCODE } })
+    expect(ran).toEqual([`xcodebuild @ ${XCODE}`, `xcrun @ ${XCODE}`])
+  })
+
+  test("is the configured one even when the environment names another", async () => {
+    const ran: string[] = []
+
+    const resolution = await resolveToolchain({
+      developerDirectory: XCODE,
+      environment: { DEVELOPER_DIR: OTHER },
+      probe: machine([XCODE, OTHER], ran),
+      digest: () => "digest",
+    })
+
+    expect(resolution).toMatchObject({ status: "resolved", identity: { developerDirectory: XCODE } })
+  })
+
+  test("fails closed when the configured one is unusable, naming it and falling back to nothing", async () => {
+    const ran: string[] = []
+
+    const resolution = await resolveToolchain({
+      developerDirectory: COMMAND_LINE_TOOLS,
+      environment: { DEVELOPER_DIR: XCODE },
+      probe: machine([XCODE], ran),
+      digest: () => "digest",
+    })
+
+    expect(resolution.status).toBe("failed")
+    if (resolution.status !== "failed") return
+    expect(resolution.message).toContain("the configured developerDirectory")
+    expect(resolution.message).toContain("full Xcode")
+    expect(resolution.message).not.toContain(COMMAND_LINE_TOOLS)
+    expect(ran).toEqual([`xcodebuild @ ${COMMAND_LINE_TOOLS}`])
+  })
+
+  test("is an inherited DEVELOPER_DIR when nothing is configured", async () => {
+    const ran: string[] = []
+
+    const resolution = await resolveToolchain({
+      environment: { DEVELOPER_DIR: XCODE },
+      probe: machine([XCODE], ran),
+      digest: () => "digest",
+    })
+
+    expect(resolution).toMatchObject({ status: "resolved", identity: { developerDirectory: XCODE } })
+    expect(ran).toEqual([`xcodebuild @ ${XCODE}`, `xcrun @ ${XCODE}`])
+  })
+
+  test("names an unusable inherited DEVELOPER_DIR as the thing to fix", async () => {
+    const resolution = await resolveToolchain({
+      environment: { DEVELOPER_DIR: COMMAND_LINE_TOOLS },
+      probe: machine([XCODE], []),
+      digest: () => "digest",
+    })
+
+    expect(resolution.status).toBe("failed")
+    if (resolution.status !== "failed") return
+    expect(resolution.message).toContain("DEVELOPER_DIR")
+  })
+
+  test("is the system selection when neither is set", async () => {
+    const ran: string[] = []
+
+    const resolution = await resolveToolchain({ environment: {}, probe: machine([XCODE], ran), digest: () => "digest" })
+
+    expect(resolution.status).toBe("failed")
+    if (resolution.status !== "failed") return
+    expect(resolution.message).toContain("system")
+    expect(ran).toEqual(["xcode-select", `xcodebuild @ ${COMMAND_LINE_TOOLS}`])
+  })
+
+  test("fails when the selected directory does not hold the xcresulttool it answered for", async () => {
+    // xcrun can answer from somewhere other than the directory it was given;
+    // the digest is taken where results will be read from, and finding
+    // nothing there is a toolchain that does not match itself.
+    const resolution = await resolveToolchain({
+      developerDirectory: XCODE,
+      environment: {},
+      probe: machine([XCODE], []),
+      digest: () => "",
+    })
+
+    expect(resolution.status).toBe("failed")
+    if (resolution.status !== "failed") return
+    expect(resolution.message).toContain("xcresulttool")
   })
 })

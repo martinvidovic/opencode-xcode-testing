@@ -168,3 +168,22 @@ describe("a nested object with an extra key", () => {
     ).toContain("arch")
   })
 })
+
+describe("an explicit Xcode developer directory (issue #164)", () => {
+  test("loads when it is an absolute path", () => {
+    const developerDirectory = "/Applications/Xcode.app/Contents/Developer"
+
+    expect(read({ schemaVersion: 1, developerDirectory })).toEqual({
+      status: "loaded",
+      configuration: { schemaVersion: 1, developerDirectory },
+    })
+  })
+
+  test("is refused when it is not one, rather than resolved against anything", () => {
+    // Relative would mean relative to whichever directory OpenCode started in,
+    // which is not a statement about an Xcode installation.
+    for (const developerDirectory of [17, "", "  ", "Xcode.app/Contents/Developer", "/Applications/\u0000Xcode.app"]) {
+      expect(invalidMessage({ schemaVersion: 1, developerDirectory })).toContain("developerDirectory")
+    }
+  })
+})

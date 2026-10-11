@@ -122,15 +122,59 @@ export function spawnProbe(options: { timeoutMs?: number; signal?: AbortSignal }
 }
 
 /**
+ * Where the developer directory came from (issue #164), in precedence order.
+ *
+ * - **configuration** — `developerDirectory` in the project configuration. It
+ *   is used as given, and an unusable one is a hard error: falling back to
+ *   whatever else is installed would test against an Xcode nobody chose.
+ * - **environment** — a `DEVELOPER_DIR` the OpenCode service inherited, which
+ *   is how a toolchain wrapper selects an Xcode for a shell. Read explicitly
+ *   rather than left to `xcode-select -p`, which happens to honour it, so the
+ *   precedence is this file's decision and not a side effect.
+ * - **system** — `xcode-select -p`, the machine-wide selection.
+ *
+ * Whichever it is, the directory is frozen into the identity, and execution
+ * and every later `xcresulttool` read run under that same `DEVELOPER_DIR`.
+ */
+export type DeveloperDirectorySource = "configuration" | "environment" | "system"
+
+/**
+ * How a selection is named in a failure. Never the path: it is machine-local,
+ * and what a caller can act on is which setting to change.
+ */
+const SELECTED_BY: Record<DeveloperDirectorySource, string> = {
+  configuration: "the configured developerDirectory",
+  environment: "the DEVELOPER_DIR this OpenCode inherited",
+  system: "the system Xcode selection (xcode-select -p)",
+}
+
+/** What to do about a selection that is not a usable full Xcode. */
+const REMEDY: Record<DeveloperDirectorySource, string> = {
+  configuration:
+    "it must name a full Xcode installation's Contents/Developer, not Command Line Tools. Correct or remove developerDirectory in .opencode/xcode-test.json.",
+  environment:
+    "it must name a full Xcode installation's Contents/Developer, not Command Line Tools. Correct DEVELOPER_DIR where OpenCode is started, or set developerDirectory in .opencode/xcode-test.json.",
+  system:
+    "a full Xcode is needed, not Command Line Tools. Set developerDirectory in .opencode/xcode-test.json, or start OpenCode with DEVELOPER_DIR set; the system selection is never changed for you.",
+}
+
+/**
  * Resolve every identity fact in one pass. A missing fact fails the whole
  * resolution rather than producing a partial identity — a half-known toolchain
  * cannot be compared against anything later.
  *
  * `signal` abandons discovery: whatever probe is running is killed, and no
- * further one is started.
+ * further one is started. `environment` is where an inherited `DEVELOPER_DIR`
+ * is read from, and defaults to this process's.
  */
 export async function resolveToolchain(
-  options: { probe?: ToolchainProbe; digest?: (path: string) => string; signal?: AbortSignal } = {},
+  options: {
+    developerDirectory?: string
+    environment?: Readonly<Record<string, string | undefined>>
+    probe?: ToolchainProbe
+    digest?: (path: string) => string
+    signal?: AbortSignal
+  } = {},
 ): Promise<ToolchainResolution> {
   const unguarded =
     options.probe ?? spawnProbe(options.signal === undefined ? {} : { signal: options.signal })
@@ -139,40 +183,38 @@ export async function resolveToolchain(
   const probe: ToolchainProbe = (command, args, env) =>
     options.signal?.aborted === true ? Promise.resolve({ status: null, stdout: "" }) : unguarded(command, args, env)
 
-  const selected = await probe(XCODE_SELECT, ["-p"])
-  if (selected.timedOut === true) return didNotAnswer("xcode-select")
-  if (selected.status !== 0) {
-    return { status: "failed", message: "no Xcode developer directory is selected" }
-  }
-  const developerDirectory = selected.stdout.trim()
+  const selection = await selectDeveloperDirectory(options, probe)
+  if (selection.status === "failed") return selection
+  const { developerDirectory, source } = selection
+  const failed = (problem: string, remedy = ""): ToolchainResolution => ({
+    status: "failed",
+    message: `${problem} for ${SELECTED_BY[source]}${remedy === "" ? "" : `: ${remedy}`}`,
+  })
 
   const version = await probe(XCODEBUILD, ["-version"], { DEVELOPER_DIR: developerDirectory })
-  if (version.timedOut === true) return didNotAnswer("xcodebuild")
-  if (version.status !== 0) {
-    return { status: "failed", message: "xcodebuild could not report its version" }
-  }
+  if (version.timedOut === true) return didNotAnswer("xcodebuild", source)
+  if (version.status !== 0) return failed("xcodebuild could not report its version", REMEDY[source])
   const xcodeVersion = /Xcode\s+([0-9][0-9.]*)/.exec(version.stdout)?.[1]
   const xcodeBuild = /Build version\s+(\S+)/.exec(version.stdout)?.[1]
   if (xcodeVersion === undefined || xcodeBuild === undefined) {
-    return { status: "failed", message: "xcodebuild's version output could not be read" }
+    return failed("xcodebuild's version output could not be read")
   }
 
   const xcresulttoolPath = join(developerDirectory, "usr", "bin", "xcresulttool")
   const tool = await probe(XCRUN, ["xcresulttool", "version"], { DEVELOPER_DIR: developerDirectory })
-  if (tool.timedOut === true) return didNotAnswer("xcresulttool")
-  if (tool.status !== 0) {
-    return { status: "failed", message: "xcresulttool could not report its version" }
-  }
+  if (tool.timedOut === true) return didNotAnswer("xcresulttool", source)
+  if (tool.status !== 0) return failed("xcresulttool could not report its version", REMEDY[source])
   const xcresulttoolVersion = /version\s+(\d+)/i.exec(tool.stdout)?.[1]
   const schemaVersion = /schema\s+version:?\s+([0-9.]+)/i.exec(tool.stdout)?.[1]
   if (xcresulttoolVersion === undefined || schemaVersion === undefined) {
-    return { status: "failed", message: "xcresulttool's version output could not be read" }
+    return failed("xcresulttool's version output could not be read")
   }
 
+  // Taken where results will be read from. `xcrun` can answer from elsewhere,
+  // and a directory that does not hold the tool that answered for it is a
+  // toolchain that does not match itself.
   const digest = (options.digest ?? fileDigest)(xcresulttoolPath)
-  if (digest === "") {
-    return { status: "failed", message: "the xcresulttool binary could not be digested" }
-  }
+  if (digest === "") return failed("the xcresulttool binary could not be found and digested")
 
   return {
     status: "resolved",
@@ -188,8 +230,33 @@ export async function resolveToolchain(
   }
 }
 
-function didNotAnswer(tool: string): ToolchainResolution {
-  return { status: "failed", message: `${tool} did not answer in time and was stopped`, timedOut: true }
+async function selectDeveloperDirectory(
+  options: { developerDirectory?: string; environment?: Readonly<Record<string, string | undefined>> },
+  probe: ToolchainProbe,
+): Promise<{ status: "selected"; developerDirectory: string; source: DeveloperDirectorySource } | Extract<ToolchainResolution, { status: "failed" }>> {
+  if (options.developerDirectory !== undefined) {
+    return { status: "selected", developerDirectory: options.developerDirectory, source: "configuration" }
+  }
+  const inherited = (options.environment ?? process.env)["DEVELOPER_DIR"]?.trim()
+  if (inherited !== undefined && inherited !== "") {
+    return { status: "selected", developerDirectory: inherited, source: "environment" }
+  }
+
+  const selected = await probe(XCODE_SELECT, ["-p"])
+  if (selected.timedOut === true) return didNotAnswer("xcode-select", "system")
+  if (selected.status !== 0) return { status: "failed", message: "no Xcode developer directory is selected" }
+  return { status: "selected", developerDirectory: selected.stdout.trim(), source: "system" }
+}
+
+function didNotAnswer(
+  tool: string,
+  source: DeveloperDirectorySource,
+): Extract<ToolchainResolution, { status: "failed" }> {
+  return {
+    status: "failed",
+    message: `${tool} did not answer in time and was stopped, for ${SELECTED_BY[source]}`,
+    timedOut: true,
+  }
 }
 
 export function fileDigest(path: string): string {

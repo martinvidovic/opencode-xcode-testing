@@ -220,6 +220,7 @@ describe("a runtime probe that times out at startup (issue #162)", () => {
         write: (line) => box.lines.push(line),
         startupDeadlineMs: 400,
         runtimeProbe: runtime.probe,
+        environment: {},
         toolchainProbe: scriptedXcode(box),
       })
 
@@ -237,6 +238,7 @@ describe("a runtime probe that times out at startup (issue #162)", () => {
         write: (line) => box.lines.push(line),
         startupDeadlineMs: 400,
         runtimeProbe: runtime.probe,
+        environment: {},
         toolchainProbe: scriptedXcode(box),
       })
       runtime.settle()
@@ -266,6 +268,7 @@ describe("a startup failure that is not a timeout (issue #162)", () => {
       const tools = await prepareTools(host(box.root), {
         homeDir: box.home,
         write: (line) => box.lines.push(line),
+        environment: {},
         toolchainProbe: scriptedXcode(box),
         runtimeProbe: async (candidate) => {
           probed.push(candidate)
@@ -292,6 +295,7 @@ describe("a startup failure that is not a timeout (issue #162)", () => {
         homeDir: box.home,
         write: (line) => box.lines.push(line),
         startupDeadlineMs: 400,
+        environment: {},
         toolchainProbe: scriptedXcode(box, false),
         runtimeProbe: () => {
           runtimeProbes += 1
@@ -305,6 +309,84 @@ describe("a startup failure that is not a timeout (issue #162)", () => {
       expect(box.lines.join("\n")).toContain("no Xcode developer directory is selected")
       expect(recovered).toContain("not a timeout")
       expect(runtimeProbes).toBe(probesAtStartup)
+    })
+  })
+})
+
+describe("the Xcode developer directory (issue #164)", () => {
+  /** A full Xcode under the sandbox, answering as `version` does, only when asked for by DEVELOPER_DIR. */
+  function xcodeAt(box: Sandbox, version = "27.0") {
+    const developerDirectory = join(box.home, "Xcode-27.app", "Contents", "Developer")
+    mkdirSync(join(developerDirectory, "usr", "bin"), { recursive: true })
+    writeFileSync(join(developerDirectory, "usr", "bin", "xcresulttool"), "binary")
+    const ran: string[] = []
+    const probe: ToolchainProbe = async (command, _args, env) => {
+      ran.push(command.split("/").pop() ?? command)
+      if (command.endsWith("xcode-select")) return { status: 0, stdout: "/Library/Developer/CommandLineTools\n" }
+      if (env?.DEVELOPER_DIR !== developerDirectory) return { status: 1, stdout: "requires Xcode" }
+      if (command.endsWith("xcodebuild")) return { status: 0, stdout: `Xcode ${version}\nBuild version 27A266a\n` }
+      return { status: 0, stdout: "xcresulttool version 25115, schema version: 0.4.0\n" }
+    }
+    return { developerDirectory, probe, ran }
+  }
+
+  function configure(box: Sandbox, configuration: Record<string, unknown>) {
+    writeFileSync(join(box.root, ".opencode", "xcode-test.json"), JSON.stringify({ schemaVersion: 1, ...configuration }))
+  }
+
+  test("is the configured one, with the system selection never consulted", async () => {
+    await within(true, async (box) => {
+      const xcode = xcodeAt(box)
+      configure(box, { developerDirectory: xcode.developerDirectory })
+
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        environment: {},
+        toolchainProbe: xcode.probe,
+      })
+
+      expect(await recoverWith(tools)).not.toContain("Recovery: failed")
+      expect(box.lines.join("\n")).not.toContain("xcodebuild")
+      expect(xcode.ran).not.toContain("xcode-select")
+    })
+  })
+
+  test("defaults to Command Line Tools here, and says how to choose a full Xcode", async () => {
+    await within(true, async (box) => {
+      const xcode = xcodeAt(box)
+
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        environment: {},
+        toolchainProbe: xcode.probe,
+      })
+
+      const said = box.lines.join("\n")
+      expect(said).toContain("system Xcode selection")
+      expect(said).toContain("developerDirectory")
+      expect(said).toContain("DEVELOPER_DIR")
+      expect(await recoverWith(tools)).toContain("not a timeout")
+    })
+  })
+
+  test("is refused at setup when its Xcode is one this tool does not support", async () => {
+    await within(true, async (box) => {
+      const xcode = xcodeAt(box, "15.4")
+      configure(box, { developerDirectory: xcode.developerDirectory })
+
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        environment: {},
+        toolchainProbe: xcode.probe,
+      })
+
+      // Before a Test Run is spent finding out: an unsupported Xcode's results
+      // could only ever be refused after the run.
+      expect(box.lines.join("\n")).toContain("Xcode 15.4 is not supported")
+      expect(await recoverWith(tools)).toContain("not a timeout")
     })
   })
 })
