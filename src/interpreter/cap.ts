@@ -82,8 +82,10 @@ export type CappedPage<T> = {
  *
  * `RESPONSE_ENVELOPE_BYTES` is the room reserved for everything else the
  * response carries: the status, the facet tag, the truncation state, a cursor.
+ * `capBytes` is the domain's response cap unless the caller renders into a
+ * smaller budget of its own (issue #163).
  */
-export function capRecords<T>(records: T[]): CappedPage<T> {
+export function capRecords<T>(records: T[], capBytes: number = RESPONSE_BYTE_CAP): CappedPage<T> {
   let used = RESPONSE_ENVELOPE_BYTES
   const kept: T[] = []
   let fieldTruncated = false
@@ -95,7 +97,7 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
     const size = responseBytes(record) + 1
     const first = kept.length === 0
 
-    if (used + size <= RESPONSE_BYTE_CAP) {
+    if (used + size <= capBytes) {
       used += size
       kept.push(record)
       continue
@@ -109,7 +111,7 @@ export function capRecords<T>(records: T[]): CappedPage<T> {
     // would leave the caller at this position forever. So it is made to fit —
     // by shortening what can be shortened, and failing that by keeping only
     // what a caller acts on.
-    const shrunk = shrink(record, RESPONSE_BYTE_CAP - used - 1)
+    const shrunk = shrink(record, capBytes - used - 1)
     if (shrunk.record !== undefined) {
       kept.push(shrunk.record)
       fieldTruncated = shrunk.shortened

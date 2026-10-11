@@ -439,23 +439,54 @@ const NOT_FAILING: ReadonlySet<TestStatus> = new Set(["skipped", "expectedFailur
 
 /**
  * The test-failure diagnostics a caller should read as failures: every one
- * except those belonging to a test that did not fail. The summary and the
- * `failures` facet both answer from this, so they cannot disagree.
+ * except a message node of a test that did not fail. The summary, the
+ * `failures` facet and every test's `failureCount` answer from this, so they
+ * cannot disagree.
+ *
+ * Only the test's *own* message nodes are set aside. A failure the bundle's
+ * summary supplied is attributed to a test by method name alone, which can
+ * land on a skipped test of the same name in another suite — and that failure
+ * is real, and is nobody's skip reason. `inspectionAvailable` is false for
+ * exactly those (see `buildTestFailures`).
  */
 export function reportedFailures(index: NormalizedIndex): DiagnosticSummary[] {
   const notFailing = new Set(
     index.occurrences.filter((occurrence) => NOT_FAILING.has(occurrence.status)).map((occurrence) => occurrence.id),
   )
-  return index.testFailures.filter((entry) => entry.testId === undefined || !notFailing.has(entry.testId))
+  return index.testFailures.filter(
+    (entry) => !entry.inspectionAvailable || entry.testId === undefined || !notFailing.has(entry.testId),
+  )
 }
 
-/** Every failed test once, in index order, with how many failures it had. */
-export function failedTestsOf(index: NormalizedIndex): FailedTest[] {
-  const failuresByTest = new Map<string, number>()
-  for (const entry of index.testFailures) {
-    if (entry.testId !== undefined) failuresByTest.set(entry.testId, (failuresByTest.get(entry.testId) ?? 0) + 1)
+/** How many reported failures each occurrence has, by occurrence id. */
+export function failureCountsByTest(index: NormalizedIndex): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const entry of reportedFailures(index)) {
+    if (entry.testId !== undefined) counts.set(entry.testId, (counts.get(entry.testId) ?? 0) + 1)
   }
-  return index.occurrences
-    .filter((occurrence) => occurrence.status === "failed")
-    .map((occurrence) => ({ identity: occurrence.identity, failureCount: failuresByTest.get(occurrence.id) ?? 0 }))
+  return counts
+}
+
+/**
+ * Every failed test once, in index order, with how many failures it had.
+ *
+ * Once by canonical identity, not once per occurrence: a test that failed on
+ * two devices is one test a caller has to fix, and two identical lines would
+ * read as a duplicate rather than as two devices. Its failures are summed.
+ */
+export function failedTestsOf(index: NormalizedIndex): FailedTest[] {
+  const counts = failureCountsByTest(index)
+  const byIdentity = new Map<string, FailedTest>()
+  for (const occurrence of index.occurrences) {
+    if (occurrence.status !== "failed") continue
+    const failureCount = counts.get(occurrence.id) ?? 0
+    const existing = byIdentity.get(occurrence.identity.canonical)
+    byIdentity.set(
+      occurrence.identity.canonical,
+      existing === undefined
+        ? { identity: occurrence.identity, failureCount }
+        : { ...existing, failureCount: existing.failureCount + failureCount },
+    )
+  }
+  return [...byIdentity.values()]
 }

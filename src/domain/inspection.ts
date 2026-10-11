@@ -69,6 +69,15 @@ export type InspectRunRequest = {
    * is not one.
    */
   status?: TestStatus
+  /**
+   * The room a page will be rendered into, set by the adapter from its output
+   * budget and never from tool arguments (issue #163). A page capped only
+   * against the domain's response cap could be larger than the adapter can
+   * send, and its records were then shed whole — under a status that still
+   * said `available`, and with no cursor to find them. Capped here instead, a
+   * page always fits, and its cursor starts where it stopped.
+   */
+  pageBudget?: { bytes: number; records: number }
 }
 
 /** Which kind of thing an inspection could not find. Never leaks membership. */

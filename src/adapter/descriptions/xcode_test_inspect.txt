@@ -20,8 +20,8 @@ This never runs tests and never accepts a path. It reads the evidence that was
 retained when the run finished, so the answer is the same every time.
 
 Pages default to 20 records and accept at most 100. A response that has more
-carries a cursor; pass it back to continue. A cursor belongs to one run and one
-facet and cannot be reused across either. Pass diagnosticId or testId instead of
+carries a cursor; pass it back to continue. A cursor belongs to one run, one
+facet and one status filter, and cannot be reused across any of them. Pass diagnosticId or testId instead of
 a cursor to focus on a single record — identifiers and cursors cannot be
 combined.
 

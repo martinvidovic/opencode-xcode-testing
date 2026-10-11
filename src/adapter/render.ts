@@ -355,7 +355,7 @@ function failedTestLines(failed: FailedTest[], capped: CappedSection): string[] 
   return [
     section("failed tests", capped),
     ...failed.map((entry) =>
-      indent(1, entry.failureCount > 1 ? `${entry.identity.canonical}  (${entry.failureCount} failures)` : entry.identity.canonical),
+      indent(1, entry.failureCount > 1 ? `${entry.identity.canonical}  (${count(entry.failureCount, "failure")})` : entry.identity.canonical),
     ),
     ...(capped.truncated ? [indent(1, "the rest: xcode_test_inspect facet tests, status failed")] : []),
   ]

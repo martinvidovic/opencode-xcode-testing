@@ -273,3 +273,77 @@ export function recordsOf(page: unknown): Array<{ id: string }> {
   }
   return view.records
 }
+
+/**
+ * A run of one suite: passing tests, failed tests that each fail some number
+ * of assertions, and skipped tests whose reason arrives as a message node the
+ * way a failure's does (issue #163). Built over the `test-failed` fixture, so
+ * everything but the hierarchy is what a real bundle carries, and nothing has
+ * to be committed for a shape that is only interesting at scale.
+ */
+export function interpretTestHierarchy(shape: {
+  suite: string
+  passing: number
+  failing: Array<[string, number]>
+  skipped: string[]
+}): Promise<InterpretedRun> {
+  const testCase = (name: string, result: string, children: unknown[] = []) => ({
+    nodeType: "Test Case",
+    name,
+    nodeIdentifier: `${shape.suite}/${name}`,
+    result,
+    durationInSeconds: 0.01,
+    nodeIdentifierURL: `test://com.apple.xcode/App/AppTests/${shape.suite}/${name.replace(/\(\)$/, "")}`,
+    ...(children.length === 0 ? {} : { children }),
+  })
+  const message = (text: string, line: number) => ({
+    nodeType: "Failure Message",
+    name: text,
+    children: [
+      {
+        nodeType: "Source Code Reference",
+        name: `file:///workspace/Sources/App/Service.swift#StartingLineNumber=${line}&StartingColumnNumber=9`,
+      },
+    ],
+  })
+
+  const cases = [
+    ...Array.from({ length: shape.passing }, (_, index) => testCase(`testPasses${index}()`, "Passed")),
+    ...shape.failing.map(([name, assertions], index) =>
+      testCase(
+        name,
+        "Failed",
+        Array.from({ length: assertions }, (_, assertion) =>
+          message(`XCTAssertEqual failed in assertion ${assertion}`, 100 + index * 10 + assertion),
+        ),
+      ),
+    ),
+    ...shape.skipped.map((name, index) => testCase(name, "Skipped", [message(`Test skipped - reason ${index}`, 5_000 + index)])),
+  ]
+
+  const fixture = loadFixture("test-failed")
+  const tests = structuredClone(fixture.payloads["get test-results tests"]) as {
+    testNodes: Array<{ children: Array<{ children: unknown[] }> }>
+  }
+  const bundle = tests.testNodes[0]?.children[0]
+  if (bundle === undefined) throw new Error("the base fixture has no test bundle")
+  bundle.children = [{ nodeType: "Test Suite", name: shape.suite, children: cases }]
+
+  return interpretFixture("test-failed", {
+    request: { execution: FAILED_EXIT },
+    reader: {
+      payloads: {
+        "get test-results tests": tests,
+        "get test-results summary": {
+          result: "Failed",
+          totalTestCount: cases.length,
+          passedTests: shape.passing,
+          failedTests: shape.failing.length,
+          skippedTests: shape.skipped.length,
+          expectedFailures: 0,
+          testFailures: [],
+        },
+      },
+    },
+  })
+}

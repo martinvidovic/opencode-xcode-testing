@@ -131,7 +131,8 @@ export const inspectInputSchema: JsonSchema = object(
     status: {
       type: "string",
       enum: [...TEST_STATUSES],
-      description: "Tests facet only: just the tests with this status. Use failed to list every failed test.",
+      description:
+        "Tests facet only: just the tests with this status. Use failed to list every failed test. Cannot be combined with diagnosticId or testId.",
     },
   },
   ["runId", "facet"],

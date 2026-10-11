@@ -421,7 +421,8 @@ export async function executeInspect(
   _context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
-  const request = toInspectRunRequest(args)
+  const budget = await budgetFor(deps)
+  const request: InspectRunRequest = { ...toInspectRunRequest(args), pageBudget: pageBudgetFor(budget) }
 
   // The last boundary (issue #77). Everything below reads a filesystem that
   // another process, a full volume, or a permission change can alter between
@@ -434,11 +435,11 @@ export async function executeInspect(
   // and the domain outcome stays an ordinary tool response.
   try {
     const response = await deps.service.inspect(request)
-    return serialize(renderInspection(request, response), await budgetFor(deps)).text
+    return serialize(renderInspection(request, response), budget).text
   } catch (error) {
     const annotation = `the retained evidence could not be read: ${safeFailure(error)}`
     try {
-      return serialize(renderInspection(request, contained(annotation)), await budgetFor(deps)).text
+      return serialize(renderInspection(request, contained(annotation)), budget).text
     } catch {
       // The last resort, and it has to be one: a boundary whose handler can
       // itself throw is not a boundary. Rendering and fitting are ordinary
@@ -448,6 +449,24 @@ export async function executeInspect(
     }
   }
 }
+
+/**
+ * Room for a page's records inside the budget its response is rendered into
+ * (issue #163).
+ *
+ * The page reserves its own envelope; this keeps back what rendering adds on
+ * top — the header line, an annotation, the cursor line, and the indentation
+ * of each record line — so a page that fits here fits once it is text.
+ */
+export function pageBudgetFor(budget: Budget): { bytes: number; records: number } {
+  return {
+    bytes: Math.max(PAGE_RENDER_OVERHEAD_BYTES, budget.maxBytes - PAGE_RENDER_OVERHEAD_BYTES),
+    records: Math.max(1, budget.maxLines - PAGE_RENDER_OVERHEAD_LINES),
+  }
+}
+
+const PAGE_RENDER_OVERHEAD_BYTES = 512
+const PAGE_RENDER_OVERHEAD_LINES = 16
 
 /**
  * What an unexpected defect looks like to a caller.

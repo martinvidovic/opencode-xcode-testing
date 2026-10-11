@@ -17,7 +17,8 @@ import { describe, expect, test } from "bun:test"
 import type { InspectRunRequest, TestRecord } from "../../src/domain/inspection.ts"
 import type { InterpretedRun } from "../../src/interpreter/interpret.ts"
 import { inspectIndex } from "../../src/interpreter/paging.ts"
-import { CONTAINMENT_ROOT, FAILED_EXIT, interpretFixture, loadFixture } from "./harness.ts"
+import { failedTestsOf, reportedFailures, type NormalizedIndex } from "../../src/interpreter/index-model.ts"
+import { CONTAINMENT_ROOT, interpretTestHierarchy, syntheticIndex } from "./harness.ts"
 
 const SECRET = Buffer.alloc(32, 11)
 const PASSING = 300
@@ -35,71 +36,9 @@ const FAILING: Array<[string, number]> = [
 ]
 const SKIPPED = ["testRunsOnlyOnDevice()", "testNeedsNetwork()", "testRequiresCamera()", "testBetaFeature()"]
 
-function testCase(name: string, result: string, children: unknown[] = []) {
-  return {
-    nodeType: "Test Case",
-    name,
-    nodeIdentifier: `ServiceTests/${name}`,
-    result,
-    durationInSeconds: 0.01,
-    nodeIdentifierURL: `test://com.apple.xcode/App/AppTests/ServiceTests/${name.replace(/\(\)$/, "")}`,
-    ...(children.length === 0 ? {} : { children }),
-  }
-}
-
-function message(text: string, line: number) {
-  return {
-    nodeType: "Failure Message",
-    name: text,
-    children: [
-      {
-        nodeType: "Source Code Reference",
-        name: `file:///workspace/Sources/App/Service.swift#StartingLineNumber=${line}&StartingColumnNumber=9`,
-      },
-    ],
-  }
-}
-
 /** The reported shape, as a Result Bundle a reader can serve. */
-async function manyTestsFewFailures(): Promise<InterpretedRun> {
-  const fixture = loadFixture("test-failed")
-  const cases = [
-    ...Array.from({ length: PASSING }, (_, index) => testCase(`testPasses${index}()`, "Passed")),
-    ...FAILING.map(([name, assertions], index) =>
-      testCase(
-        name,
-        "Failed",
-        Array.from({ length: assertions }, (_, assertion) =>
-          message(`XCTAssertEqual failed in assertion ${assertion}`, 100 + index * 10 + assertion),
-        ),
-      ),
-    ),
-    ...SKIPPED.map((name, index) => testCase(name, "Skipped", [message(`Test skipped - reason ${index}`, 500 + index)])),
-  ]
-  const tests = structuredClone(fixture.payloads["get test-results tests"]) as {
-    testNodes: Array<{ children: Array<{ children: unknown[] }> }>
-  }
-  const bundle = tests.testNodes[0]?.children[0]
-  if (bundle === undefined) throw new Error("the base fixture has no test bundle")
-  bundle.children = [{ nodeType: "Test Suite", name: "ServiceTests", children: cases }]
-
-  return interpretFixture("test-failed", {
-    request: { execution: FAILED_EXIT },
-    reader: {
-      payloads: {
-        "get test-results tests": tests,
-        "get test-results summary": {
-          result: "Failed",
-          totalTestCount: cases.length,
-          passedTests: PASSING,
-          failedTests: FAILING.length,
-          skippedTests: SKIPPED.length,
-          expectedFailures: 0,
-          testFailures: [],
-        },
-      },
-    },
-  })
+function manyTestsFewFailures(): Promise<InterpretedRun> {
+  return interpretTestHierarchy({ suite: "ServiceTests", passing: PASSING, failing: FAILING, skipped: SKIPPED })
 }
 
 function inspectTests(run: InterpretedRun, request: Partial<InspectRunRequest>) {
@@ -208,5 +147,63 @@ describe("a skipped test's reason", () => {
     const response = inspectTests(run, { testId: skipped.id })
 
     expect(JSON.stringify(response)).toContain("Test skipped - reason")
+  })
+})
+
+describe("one count of a test's failures, wherever it is read (review of #163)", () => {
+  test("a skipped test's record counts no failures, its reason being none", async () => {
+    const run = await manyTestsFewFailures()
+
+    const skipped = recordsIn(inspectTests(run, { status: "skipped", limit: 100 }))
+
+    expect(skipped.map((record) => record.failureCount)).toEqual(SKIPPED.map(() => 0))
+  })
+
+  test("the tests facet and the summary agree on every failed test's count", async () => {
+    const run = await manyTestsFewFailures()
+
+    const facet = recordsIn(inspectTests(run, { status: "failed", limit: 100 })).map((record) => [
+      record.identity.canonical,
+      record.failureCount,
+    ])
+    const summary = run.summary.diagnostics.failedTests.map((entry) => [entry.identity.canonical, entry.failureCount])
+
+    expect(facet).toEqual(summary)
+  })
+})
+
+describe("the failed-test list, built from the index (review of #163)", () => {
+  const identity = (test: string) => ({ bundle: "AppTests", suite: "Suite", test, canonical: `AppTests/Suite/${test}` })
+  const occurrence = (id: string, test: string, status: "failed" | "skipped") =>
+    ({ id, identity: identity(test), status, failures: [], attempts: [], position: id }) as unknown as NormalizedIndex["occurrences"][number]
+  const failure = (id: string, testId: string, fromOccurrence = true) => ({
+    id,
+    kind: "testFailure" as const,
+    message: `failure ${id}`,
+    testId,
+    inspectionAvailable: fromOccurrence,
+  })
+
+  test("names a test that failed on two devices once, with both devices' failures", () => {
+    const index = syntheticIndex({
+      occurrences: [occurrence("o1", "testA()", "failed"), occurrence("o2", "testA()", "failed")],
+      testFailures: [failure("f1", "o1"), failure("f2", "o2")],
+    })
+
+    expect(failedTestsOf(index).map((entry) => [entry.identity.canonical, entry.failureCount])).toEqual([
+      ["AppTests/Suite/testA()", 2],
+    ])
+  })
+
+  test("never hides a failure the summary attributed to a skipped test by name alone", () => {
+    // The bundle's own summary names a failing test by method name only, and
+    // the match can land on a skipped test of the same name in another suite.
+    // That failure is real, and it is not the skipped test's reason.
+    const index = syntheticIndex({
+      occurrences: [occurrence("o1", "testA()", "skipped")],
+      testFailures: [failure("own", "o1"), failure("supplemental", "o1", false)],
+    })
+
+    expect(reportedFailures(index).map((entry) => entry.id)).toEqual(["supplemental"])
   })
 })
