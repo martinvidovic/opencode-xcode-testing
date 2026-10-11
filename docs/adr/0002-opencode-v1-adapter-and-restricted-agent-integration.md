@@ -308,6 +308,17 @@ per `ctx.directory` instance, so a worktree with two session directories pays tw
 > With toolchain discovery concurrent with the rest, the expected worst case is the longest item
 > (near 8 seconds on a cold `xcodebuild -version`); the 10-second ceiling still stands.
 
+> **Amended (issue #162): a startup probe that timed out is not a verdict.** "Retried next start"
+> left a plugin instance refusing every call for its whole life after one slow moment. Startup
+> failures are now classified. A probe or discovery that did not answer in time — including a
+> budget that expired — is **transient**, and the refusal names the way back: an explicit
+> `xcode_test_recover` probes what did not answer again, once per call, under the same budgets,
+> and the tool becomes available if it now answers. Concurrent recoveries share one attempt;
+> nothing is retried on its own. Anything that answered — an explicitly configured runtime that
+> cannot run TypeScript, no Bun anywhere, an unusable Xcode — is **permanent**, outranks a
+> transient failure beside it, and is never probed again: that is the "no silent fallback" rule
+> above, applied to recovery.
+
 ### Language, topology, and runtime resolution
 
 **TypeScript throughout.** The adapter runs in-process under the Bun-hosted CLI; #3's supervisor is

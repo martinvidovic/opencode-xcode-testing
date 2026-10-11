@@ -42,7 +42,7 @@ export type Availability =
       message: string
     }
 
-type Unavailable = Extract<Availability, { status: "unavailable" }>
+export type Unavailable = Extract<Availability, { status: "unavailable" }>
 
 /**
  * A service that is the working one when setup produced it, and otherwise
@@ -87,7 +87,7 @@ export function revalidatingService(
 
     inspect(request) {
       if (state.status === "available") return state.service.inspect(request)
-      return Promise.resolve({ status: "invalid", message: refusalMessage(state) })
+      return Promise.resolve({ status: "invalid", message: describeUnavailable(state) })
     },
 
     async recover(): Promise<RecoverResult> {
@@ -96,9 +96,7 @@ export function revalidatingService(
 
       const next = await revalidateOnce()
       if (next.status === "unavailable") {
-        return next.transient
-          ? { status: "failed", message: `${next.message} It still did not answer. ${RETRY_HINT}` }
-          : permanent(next)
+        return next.transient ? { status: "failed", message: `${next.message} ${RETRY_HINT}` } : permanent(next)
       }
 
       const recovered = await next.service.recover()
@@ -121,7 +119,8 @@ const TIMED_OUT_AGAIN: Unavailable = {
   message: "the runtime and Xcode toolchain could not be probed again.",
 }
 
-function refusalMessage(state: Unavailable): string {
+/** What failed, and — for a failure that may pass — the way back. */
+export function describeUnavailable(state: Unavailable): string {
   return state.transient ? `${state.message} ${RECOVER_HINT}` : state.message
 }
 
@@ -131,7 +130,7 @@ function refusal(state: Unavailable): TestToolResult {
     outcome: "infrastructureFailed",
     phase: "resolving",
     reason: "runnerFailure",
-    message: refusalMessage(state),
+    message: describeUnavailable(state),
   }
 }
 

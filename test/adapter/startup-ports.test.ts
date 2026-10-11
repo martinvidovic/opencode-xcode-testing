@@ -67,7 +67,6 @@ function portsFor(box: Sandbox, configurationRoot: string) {
     requiredFiles: () => [],
     regularFileExists: () => true,
     readHostVersion: async () => "2.0.25",
-    onRuntime: () => {},
   })
 }
 

@@ -74,5 +74,9 @@ function run(command: string, args: string[]): Promise<{ ok: boolean; stdout: st
  * cannot fire until the call has already returned.
  */
 export async function bunOnPath(): Promise<string | undefined> {
-  return (await run("/usr/bin/env", ["bun", "--version"])).ok ? "bun" : undefined
+  const answer = await run("/usr/bin/env", ["bun", "--version"])
+  // A lookup that timed out has not shown that Bun is absent (issue #162).
+  // The candidate is kept, and the real probe of it decides — a timeout
+  // there is reported as a timeout, not as "no Bun was found".
+  return answer.ok || answer.timedOut ? "bun" : undefined
 }

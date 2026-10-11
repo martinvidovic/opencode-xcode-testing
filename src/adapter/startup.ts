@@ -32,6 +32,7 @@
  */
 
 import type { ToolchainResolution } from "../runner/toolchain.ts"
+import type { RuntimeResolution } from "./runtime.ts"
 
 export const STARTUP_DEADLINE_MS = 10_000
 export const RUNTIME_PROBE_BUDGET_MS = 2_000
@@ -62,7 +63,7 @@ export type StartupPorts = {
    * shape of a working one.
    */
   regularFileExists(path: string): boolean
-  probeRuntime(): Promise<unknown>
+  probeRuntime(): Promise<RuntimeResolution>
   /** The host's `ctx.app.version`; a failure still degrades to `unknown`. */
   readHostVersion(): Promise<string>
   /**
@@ -98,7 +99,8 @@ export type StartupOutcome =
       status: "ready"
       hostVersion: string
       hostVersionTested: boolean
-      runtime: unknown
+      /** Absent when the probe did not finish within its budget. */
+      runtime?: RuntimeResolution
       /** Absent when discovery did not finish within its budget. */
       toolchain?: ToolchainResolution
       /** True when the ceiling expired — a defect signal, not a normal state. */
@@ -176,7 +178,7 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
     status: "ready",
     hostVersion: version,
     hostVersionTested: isTestedHostVersion(version),
-    runtime,
+    ...(runtime === undefined ? {} : { runtime }),
     ...(toolchain === undefined ? {} : { toolchain }),
     deadlineExpired: ports.now() >= deadline,
     incomplete: incomplete.sort(),
@@ -185,6 +187,40 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
 
 const EXPIRED = Symbol("expired")
 const FAILED = Symbol("failed")
+
+/**
+ * What the two startup probes found. Absent means a probe did not finish
+ * within its budget — which says nothing about what it would have found.
+ */
+export type ProbeResults = { runtime?: RuntimeResolution; toolchain?: ToolchainResolution }
+
+/**
+ * Run again whichever startup probe did not resolve, under the budget startup
+ * gave it, and keep whichever did (issue #162).
+ *
+ * What answered is kept rather than re-earned: probing a working toolchain a
+ * second time can only add a chance of a fresh timeout.
+ */
+export async function probeAgain(
+  ports: Pick<StartupPorts, "probeRuntime" | "resolveToolchain" | "now" | "sleep">,
+  previous: ProbeResults,
+): Promise<ProbeResults> {
+  const again = async <T extends { status: string }>(
+    kept: T | undefined,
+    budgetMs: number,
+    start: (limits: BudgetLimits) => Promise<T>,
+  ): Promise<T | undefined> => {
+    if (kept?.status === "resolved") return kept
+    const outcome = await withinBudget(ports, budgetMs, start)
+    return outcome.finished ? outcome.value : undefined
+  }
+
+  const [runtime, toolchain] = await Promise.all([
+    again(previous.runtime, RUNTIME_PROBE_BUDGET_MS, () => ports.probeRuntime()),
+    again(previous.toolchain, TOOLCHAIN_BUDGET_MS, ({ signal }) => ports.resolveToolchain(signal)),
+  ])
+  return { ...(runtime === undefined ? {} : { runtime }), ...(toolchain === undefined ? {} : { toolchain }) }
+}
 
 /** What a budgeted item is handed: when it is abandoned, and by when. */
 export type BudgetLimits = { signal: AbortSignal; deadlineMs: number }
