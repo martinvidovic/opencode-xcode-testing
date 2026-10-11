@@ -114,34 +114,14 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
   const bounded = async <T>(
     name: string,
     budgetMs: number,
-    start: (limits: { signal: AbortSignal; deadlineMs: number }) => Promise<T>,
+    start: (limits: BudgetLimits) => Promise<T>,
   ): Promise<T | undefined> => {
-    const remaining = Math.min(budgetMs, deadline - ports.now())
-    if (remaining <= 0) {
+    const outcome = await withinBudget(ports, Math.min(budgetMs, deadline - ports.now()), start)
+    if (!outcome.finished) {
       incomplete.push(name)
       return undefined
     }
-
-    // The work is started *here*, after the budget is known and the expiry
-    // timer exists. Taking an already-created promise would mean the caller
-    // had begun it at the call site — and anything synchronous inside it would
-    // already have run to completion before this function was entered.
-    const abandon = new AbortController()
-    const expiry = ports.sleep(remaining).then(() => EXPIRED)
-    const outcome = await Promise.race([
-      (async () => start({ signal: abandon.signal, deadlineMs: ports.now() + remaining }))().catch(
-        () => FAILED,
-      ),
-      expiry,
-    ])
-    if (outcome === EXPIRED || outcome === FAILED) {
-      // No longer waited for, so no longer wanted: whatever it started is
-      // stopped rather than left to finish behind the return.
-      abandon.abort()
-      incomplete.push(name)
-      return undefined
-    }
-    return outcome as T
+    return outcome.value
   }
 
   // Gate one. "This is not an Xcode project" is a normal state, not a
@@ -205,6 +185,42 @@ export async function runStartup(ports: StartupPorts): Promise<StartupOutcome> {
 
 const EXPIRED = Symbol("expired")
 const FAILED = Symbol("failed")
+
+/** What a budgeted item is handed: when it is abandoned, and by when. */
+export type BudgetLimits = { signal: AbortSignal; deadlineMs: number }
+
+/**
+ * Run one item within `budgetMs`, abandoning it if it does not finish.
+ *
+ * Exported because startup is not the only caller: revalidating a probe that
+ * timed out (issue #162) runs the same items under the same budgets, and a
+ * second implementation of "bounded" would be a second thing to get wrong.
+ */
+export async function withinBudget<T>(
+  clock: { now(): number; sleep(ms: number): Promise<void> },
+  budgetMs: number,
+  start: (limits: BudgetLimits) => Promise<T>,
+): Promise<{ finished: true; value: T } | { finished: false }> {
+  if (budgetMs <= 0) return { finished: false }
+
+  // The work is started *here*, after the budget is known and the expiry
+  // timer exists. Taking an already-created promise would mean the caller
+  // had begun it at the call site — and anything synchronous inside it would
+  // already have run to completion before this function was entered.
+  const abandon = new AbortController()
+  const expiry = clock.sleep(budgetMs).then(() => EXPIRED)
+  const outcome = await Promise.race([
+    (async () => start({ signal: abandon.signal, deadlineMs: clock.now() + budgetMs }))().catch(() => FAILED),
+    expiry,
+  ])
+  if (outcome === EXPIRED || outcome === FAILED) {
+    // No longer waited for, so no longer wanted: whatever it started is
+    // stopped rather than left to finish behind the return.
+    abandon.abort()
+    return { finished: false }
+  }
+  return { finished: true, value: outcome as T }
+}
 
 export function isTestedHostVersion(version: string): boolean {
   return (TESTED_HOST_VERSIONS as readonly string[]).includes(version)

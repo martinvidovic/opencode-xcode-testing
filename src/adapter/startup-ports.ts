@@ -32,7 +32,13 @@ import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { HOUSEKEEPING_ENTRYPOINT } from "./entrypoints.ts"
 import { bunOnPath, probeRuntimeCandidate } from "./probe.ts"
 import { reconcileRootBounded } from "./reconciliation.ts"
-import { cachedRuntime, rememberRuntime, resolveRuntime, type RuntimeResolution } from "./runtime.ts"
+import {
+  cachedRuntime,
+  rememberRuntime,
+  resolveRuntime,
+  type RuntimeProbe,
+  type RuntimeResolution,
+} from "./runtime.ts"
 import type { StartupPorts } from "./startup.ts"
 import { enablementMarkerExists } from "./root-roles.ts"
 
@@ -49,6 +55,8 @@ export type StartupWiring = {
   onRuntime(runtime: RuntimeResolution): void
   /** How toolchain discovery probes. Defaults to spawning the real tools. */
   toolchainProbe?: ToolchainProbe
+  /** How a runtime candidate is probed. Defaults to running a real script. */
+  runtimeProbe?: RuntimeProbe
   /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
   deadlineMs?: number
 }
@@ -83,7 +91,7 @@ export function startupPortsFor(wiring: StartupWiring): StartupPorts {
         ...(configured === undefined ? {} : { configured }),
         hostExecutable: process.execPath,
         ...(pathCandidate === undefined ? {} : { pathCandidate }),
-        probe: probeRuntimeCandidate,
+        probe: wiring.runtimeProbe ?? probeRuntimeCandidate,
       })
       // Only a discovered runtime is worth remembering; a configured one is
       // deliberately re-probed.

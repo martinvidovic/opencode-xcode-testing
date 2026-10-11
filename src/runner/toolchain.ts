@@ -28,7 +28,11 @@ export const XCODEBUILD = "/usr/bin/xcodebuild"
 
 export type ToolchainResolution =
   | { status: "resolved"; identity: ToolchainIdentity }
-  | { status: "failed"; message: string }
+  /**
+   * `timedOut` marks a probe that never answered (issue #162): probing again
+   * may succeed. Any other failure is an answer, and gives the same one again.
+   */
+  | { status: "failed"; message: string; timedOut?: true }
 
 /**
  * What one probe observed. `timedOut` is set only when the probe was killed
@@ -185,7 +189,7 @@ export async function resolveToolchain(
 }
 
 function didNotAnswer(tool: string): ToolchainResolution {
-  return { status: "failed", message: `${tool} did not answer in time and was stopped` }
+  return { status: "failed", message: `${tool} did not answer in time and was stopped`, timedOut: true }
 }
 
 export function fileDigest(path: string): string {

@@ -26,17 +26,25 @@ import { monotonicNow } from "../domain/clock.ts"
 import { storageFor, type Storage } from "../runner/paths.ts"
 import type { ConfigurationOutcome } from "../runner/resolution.ts"
 import { loadCursorSecret } from "../runner/secrets.ts"
+import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { ToolchainProbe, ToolchainResolution } from "../runner/toolchain.ts"
 import { outputLimitsFromOptions, resolveBudget } from "./budget.ts"
 import { toolDefinitions, type ToolDefinition } from "./definitions.ts"
 import { DESCRIPTION_FILES } from "./descriptions.ts"
 import { readProjectConfiguration, resolveRootRoles, rootContextFromLocation, type HostLocation } from "./root-roles.ts"
-import type { RuntimeResolution } from "./runtime.ts"
+import type { RuntimeProbe, RuntimeResolution } from "./runtime.ts"
 import { safeFailure } from "./sanitize.ts"
-import { createTestToolService, unavailableService } from "./service.ts"
+import { revalidatingService, type Availability } from "./availability.ts"
+import { createTestToolService } from "./service.ts"
 import { HOUSEKEEPING_ENTRYPOINT, SUPERVISOR_ENTRYPOINT } from "./entrypoints.ts"
 import { startupPortsFor } from "./startup-ports.ts"
-import { hostVersionDiagnostic, runStartup } from "./startup.ts"
+import {
+  hostVersionDiagnostic,
+  runStartup,
+  RUNTIME_PROBE_BUDGET_MS,
+  TOOLCHAIN_BUDGET_MS,
+  withinBudget,
+} from "./startup.ts"
 import type { ToolDeps } from "./tools.ts"
 
 
@@ -57,6 +65,8 @@ export type SetupOverrides = {
   write?(line: string): void
   /** How toolchain discovery probes. Defaults to spawning the real tools. */
   toolchainProbe?: ToolchainProbe
+  /** How a runtime candidate is probed. Defaults to running a real script. */
+  runtimeProbe?: RuntimeProbe
   /** The startup ceiling. Defaults to `STARTUP_DEADLINE_MS`. */
   startupDeadlineMs?: number
 }
@@ -96,8 +106,7 @@ async function prepare(
   const configuration: ConfigurationOutcome =
     configurationRoot === undefined ? { status: "absent" } : readProjectConfiguration(configurationRoot)
 
-  const outcome = await runStartup(
-    startupPortsFor({
+  const ports = startupPortsFor({
       ...(configurationRoot === undefined ? {} : { configurationRoot }),
       homeDir,
       storage,
@@ -110,9 +119,10 @@ async function prepare(
         runtime = resolved
       },
       ...(overrides.toolchainProbe === undefined ? {} : { toolchainProbe: overrides.toolchainProbe }),
+      ...(overrides.runtimeProbe === undefined ? {} : { runtimeProbe: overrides.runtimeProbe }),
       ...(overrides.startupDeadlineMs === undefined ? {} : { deadlineMs: overrides.startupDeadlineMs }),
-    }),
-  )
+  })
+  const outcome = await runStartup(ports)
 
   if (outcome.status === "disabled") return []
   if (outcome.status === "structuralFailure") {
@@ -135,18 +145,33 @@ async function prepare(
   }
   const budget = resolveBudget(limits)
 
-  const service = serviceFor(
-    {
-      storage,
-      containmentRoot,
-      homeDir,
-      configuration,
-      toolchain: outcome.toolchain,
-      runtime,
-      hostVersion: outcome.hostVersion,
-    },
-    say,
-  )
+  const availabilityOf = (probed: Probed) =>
+    availabilityFor({ storage, containmentRoot, homeDir, configuration, hostVersion: outcome.hostVersion, ...probed })
+
+  const atStartup: Probed = { toolchain: outcome.toolchain, runtime }
+  const initial = availabilityOf(atStartup)
+  if (initial.status === "unavailable") say(refusalLine(initial))
+
+  // The one way back from a transient failure (issue #162): what did not
+  // answer is probed again, under the budgets startup gave it, when an
+  // explicit recovery asks — and what did answer is kept, not re-earned.
+  const service = revalidatingService(initial, async () => {
+    const [runtimeAgain, toolchainAgain] = await Promise.all([
+      atStartup.runtime?.status === "resolved"
+        ? atStartup.runtime
+        : withinBudget(ports, RUNTIME_PROBE_BUDGET_MS, () => ports.probeRuntime()).then((outcome) =>
+            outcome.finished ? (outcome.value as RuntimeResolution) : undefined,
+          ),
+      atStartup.toolchain?.status === "resolved"
+        ? atStartup.toolchain
+        : withinBudget(ports, TOOLCHAIN_BUDGET_MS, ({ signal }) => ports.resolveToolchain(signal)).then(
+            (outcome) => (outcome.finished ? outcome.value : undefined),
+          ),
+    ])
+    const again = availabilityOf({ runtime: runtimeAgain, toolchain: toolchainAgain })
+    if (again.status === "unavailable") say(refusalLine(again))
+    return again
+  })
 
   const deps: ToolDeps = {
     service,
@@ -200,49 +225,79 @@ function isRegularFile(path: string): boolean {
   }
 }
 
+/** What startup — or a later revalidation — found. Absent means it did not finish in time. */
+type Probed = {
+  toolchain: ToolchainResolution | undefined
+  runtime: RuntimeResolution | undefined
+}
+
 /**
- * The service, or one that explains why there isn't one.
+ * The working service, or why there is none and whether that could pass.
  *
- * Written as guard clauses so the discriminated unions narrow on their own —
- * a ternary over three outcomes throws away the narrowing and pays for it in
- * assertions.
+ * A permanent failure outranks a transient one: when Xcode is unusable, a
+ * runtime probe that timed out beside it is not the thing standing between
+ * the caller and a working tool, and calling the whole thing transient would
+ * invite a recovery that cannot help (issue #162).
  */
-function serviceFor(
+function availabilityFor(
+  input: Probed & {
+    storage: Storage
+    containmentRoot: string
+    homeDir: string
+    configuration: ConfigurationOutcome
+    hostVersion: string
+  },
+): Availability {
+  const failures: Array<{ transient: boolean; message: string }> = []
+  const { toolchain, runtime } = input
+
+  if (toolchain === undefined) {
+    failures.push({ transient: true, message: "Xcode toolchain discovery did not finish within the startup deadline." })
+  } else if (toolchain.status !== "resolved") {
+    failures.push({ transient: toolchain.timedOut === true, message: `${toolchain.message}.` })
+  }
+  if (runtime === undefined) {
+    failures.push({ transient: true, message: "the runtime could not be probed within the startup deadline." })
+  } else if (runtime.status !== "resolved") {
+    failures.push({ transient: runtime.timedOut === true, message: runtimeDiagnostic(runtime) })
+  }
+
+  const decisive = failures.find((failure) => !failure.transient) ?? failures[0]
+  if (decisive !== undefined) return { status: "unavailable", ...decisive }
+  if (toolchain?.status !== "resolved" || runtime?.status !== "resolved") {
+    throw new Error("unreachable: every unresolved probe is a recorded failure")
+  }
+
+  return { status: "available", service: createService(input, toolchain.identity, runtime) }
+}
+
+/** The diagnostic line for an unavailable tool: what failed, and what to do. */
+function refusalLine(availability: Extract<Availability, { status: "unavailable" }>): string {
+  return availability.transient
+    ? `${availability.message} This looks transient: call xcode_test_recover to probe again.`
+    : availability.message
+}
+
+function createService(
   input: {
     storage: Storage
     containmentRoot: string
     homeDir: string
     configuration: ConfigurationOutcome
-    /** Absent when discovery did not finish within its startup budget. */
-    toolchain: ToolchainResolution | undefined
-    runtime: RuntimeResolution | undefined
     hostVersion: string
   },
-  say: (message: string) => void,
+  toolchain: ToolchainIdentity,
+  runtime: Extract<RuntimeResolution, { status: "resolved" }>,
 ) {
-  const refuse = (message: string) => {
-    say(message)
-    return unavailableService(message)
-  }
-
-  if (input.toolchain === undefined) {
-    return refuse("Xcode toolchain discovery did not finish within the startup deadline")
-  }
-  if (input.toolchain.status !== "resolved") return refuse(input.toolchain.message)
-  if (input.runtime === undefined) {
-    return refuse("the runtime could not be probed within the startup deadline")
-  }
-  if (input.runtime.status !== "resolved") return refuse(runtimeDiagnostic(input.runtime))
-
   return createTestToolService({
     storage: input.storage,
     containmentRoot: input.containmentRoot,
     homeDir: input.homeDir,
     configuration: input.configuration,
-    toolchain: input.toolchain.identity,
+    toolchain,
     runtime: {
-      path: input.runtime.path,
-      ...(input.runtime.version === undefined ? {} : { version: input.runtime.version }),
+      path: runtime.path,
+      ...(runtime.version === undefined ? {} : { version: runtime.version }),
       hostVersion: input.hostVersion,
     },
     supervisorEntrypoint: SUPERVISOR_ENTRYPOINT,

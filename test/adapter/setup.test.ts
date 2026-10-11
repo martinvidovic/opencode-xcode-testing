@@ -164,3 +164,68 @@ describe("a toolchain probe that never answers (issue #153)", () => {
     })
   })
 })
+
+describe("a runtime probe that times out at startup (issue #162)", () => {
+  /** Hangs the first time it is asked about any candidate, then answers. */
+  function hangingOnce() {
+    let calls = 0
+    let startupDone = false
+    return {
+      settle: () => {
+        startupDone = true
+      },
+      calls: () => calls,
+      probe: async () => {
+        calls += 1
+        if (!startupDone) return new Promise<never>(() => {})
+        return { usable: true, version: "1.4.2" }
+      },
+    }
+  }
+
+  function textOf(result: { content: ReadonlyArray<{ text: string }> }): string {
+    return result.content.map((part) => part.text).join("\n")
+  }
+
+  test("is reported as transient, with the way back named", async () => {
+    await within(true, async (box) => {
+      const runtime = hangingOnce()
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        startupDeadlineMs: 400,
+        runtimeProbe: runtime.probe,
+      })
+
+      expect(tools.map((tool) => tool.name)).toEqual([...TOOL_IDS])
+      expect(box.lines.join("\n")).toContain("could not be probed within the startup deadline")
+      expect(box.lines.join("\n")).toContain("xcode_test_recover")
+    })
+  })
+
+  test("is probed again by xcode_test_recover, which makes the tool available", async () => {
+    await within(true, async (box) => {
+      const runtime = hangingOnce()
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        startupDeadlineMs: 400,
+        runtimeProbe: runtime.probe,
+      })
+      runtime.settle()
+      const recover = tools.find((tool) => tool.name === "xcode_test_recover")
+      if (recover === undefined) throw new Error("no recovery tool")
+
+      const first = textOf(await recover.execute({}, {}))
+      const probesAfterFirst = runtime.calls()
+      const second = textOf(await recover.execute({}, {}))
+
+      expect(first).toContain("probed again")
+      expect(first).not.toContain("Recovery: failed")
+      // Available now, so the second call is ordinary recovery and probes
+      // nothing: the runtime answer is kept, not re-earned on every call.
+      expect(second).not.toContain("probed again")
+      expect(runtime.calls()).toBe(probesAfterFirst)
+    })
+  })
+})

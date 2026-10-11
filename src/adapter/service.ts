@@ -33,7 +33,7 @@ import { isRecord } from "../domain/json.ts"
 import { acquireReadLease } from "../runner/leases.ts"
 import type { ResolvedTestRun, TestRunRequest } from "../domain/request.ts"
 import type { ResultProvenance, TestRunSummary, TestToolResult } from "../domain/result.ts"
-import { NO_DIAGNOSTICS, SCHEMA_VERSION, unobservedEnvelope } from "../domain/result.ts"
+import { NO_DIAGNOSTICS, unobservedEnvelope } from "../domain/result.ts"
 import { normalizeRequestedScope, requestedScopeDigest } from "../domain/scope.ts"
 import type { ToolchainIdentity } from "../domain/toolchain.ts"
 import type { InspectionResponse, InspectRunRequest } from "../domain/inspection.ts"
@@ -161,34 +161,6 @@ function readerFor(environment: ServiceEnvironment, bundlePath: string): Xcresul
     environment.xcresultToolFor?.(bundlePath) ??
     createXcresultTool({ identity: environment.toolchain, bundlePath })
   )
-}
-
-/**
- * A Test Tool family that cannot run anything, and says so.
- *
- * Registering nothing would be worse: the tools simply would not appear, and
- * "no Xcode tools in this session" is indistinguishable from a project that
- * never opted in. A family that registers and returns the diagnostic naming
- * what is missing is the difference between a puzzle and an instruction.
- */
-export function unavailableService(message: string): TestToolService {
-  const refuse = (): TestToolResult => ({
-    schemaVersion: SCHEMA_VERSION,
-    outcome: "infrastructureFailed",
-    phase: "resolving",
-    reason: "runnerFailure",
-    message,
-  })
-
-  return {
-    start() {
-      // Admission never happens, and never throwing for a domain outcome means
-      // it does not reject either — the result carries the whole answer.
-      return { admitted: new Promise<never>(() => {}), result: Promise.resolve(refuse()) }
-    },
-    inspect: () => Promise.resolve({ status: "invalid", message }),
-    recover: () => Promise.resolve({ status: "failed", message }),
-  }
 }
 
 export function createTestToolService(environment: ServiceEnvironment): TestToolService {
