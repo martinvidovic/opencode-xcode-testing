@@ -26,11 +26,13 @@ import {
   RESPONSE_ENVELOPE_BYTES,
 } from "../domain/limits.ts"
 import type { ScopeAttestation } from "../domain/scope.ts"
+import { TEST_STATUSES, type TestStatus } from "../domain/evidence.ts"
+import { oneOf } from "../domain/json.ts"
 import { CURSOR_ORDERING_VERSION, decodeCursor, encodeCursor } from "./cursor.ts"
 import { capRecords, LOCATION_FIELDS, responseBytes } from "./cap.ts"
 import { focusedDiagnostic, focusedTest, type LazyOutcome } from "./focus.ts"
 import { chunkLog, logWindow, type ChunkedLog, type LogWindow } from "./log.ts"
-import type { NormalizedIndex } from "./index-model.ts"
+import { failureCountsByTest, reportedFailures, type NormalizedIndex } from "./index-model.ts"
 
 /** One page of a structured facet, tagged so a caller cannot confuse two facets. */
 /**
@@ -89,8 +91,8 @@ export function inspectIndex(
   const position = resolveCursor(index, request, secret)
   if (position.ok === false) return position.response
 
-  const limit = request.limit ?? INSPECTION_PAGE_DEFAULT
-  return page(index, request.facet, position.value, limit, secret)
+  const limit = Math.min(request.limit ?? INSPECTION_PAGE_DEFAULT, request.pageBudget?.records ?? Infinity)
+  return page(index, request.facet, position.value, limit, secret, request.status, request.pageBudget?.bytes)
 }
 
 /**
@@ -111,6 +113,15 @@ function validateRequest(
   }
   if (request.cursor !== undefined && (request.diagnosticId ?? request.testId) !== undefined) {
     return invalid("identifiers and cursors cannot be combined")
+  }
+  if (request.status !== undefined) {
+    if (request.facet !== "tests") return invalid("status filters the tests facet only")
+    if ((request.diagnosticId ?? request.testId) !== undefined) {
+      return invalid("status narrows a page, and cannot be combined with an identifier")
+    }
+    if (!oneOf(request.status, TEST_STATUSES)) {
+      return invalid(`status must be one of ${TEST_STATUSES.join(", ")}`)
+    }
   }
   if (request.limit !== undefined) {
     if (!Number.isInteger(request.limit) || request.limit < 1) {
@@ -249,6 +260,7 @@ function nextCursor(
   index: NormalizedIndex,
   facet: InspectionFacet,
   position: number | undefined,
+  status?: TestStatus,
 ): string | undefined {
   if (position === undefined) return undefined
   return encodeCursor(secret, {
@@ -256,6 +268,7 @@ function nextCursor(
     facet,
     orderingVersion: CURSOR_ORDERING_VERSION,
     position,
+    ...(status === undefined ? {} : { status }),
   })
 }
 
@@ -265,15 +278,17 @@ function page(
   position: number,
   limit: number,
   secret: Buffer,
+  status?: TestStatus,
+  budgetBytes?: number,
 ): InspectionResponse<FacetPage> {
-  const all = recordsFor(index, facet)
-  const asked = all.slice(position, position + limit)
+  const all = recordsFor(index, facet, status)
+  const asked = all.slice(position, position + Math.max(1, limit))
 
   // The cap is applied before the cursor is issued, not after the page is
   // built: a cursor that pointed past records the response had to drop would
   // skip evidence silently, which is the one paging failure a caller cannot
   // detect from the outside.
-  const capped = capRecords(asked)
+  const capped = capRecords(asked, Math.min(RESPONSE_BYTE_CAP, budgetBytes ?? RESPONSE_BYTE_CAP))
   const slice = capped.records
 
   // By what the page *accounted for*, not by what it returned. A record too
@@ -284,7 +299,7 @@ function page(
   const nextPosition = position + capped.consumed
   const hasMore = nextPosition < all.length
 
-  const cursor = nextCursor(secret, index, facet, hasMore ? nextPosition : undefined)
+  const cursor = nextCursor(secret, index, facet, hasMore ? nextPosition : undefined, status)
 
   // `responseTruncated` and `collectionTruncated` mean different things and
   // both can be true: the first says the cap cut this page, the second says
@@ -338,26 +353,38 @@ function page(
 function recordsFor(
   index: NormalizedIndex,
   facet: "scope" | "failures" | "buildErrors" | "tests",
+  status?: TestStatus,
 ): Array<ScopeAttestation | DiagnosticSummary | TestRecord> {
   switch (facet) {
     case "scope":
       return index.attestations
     case "failures":
-      return index.testFailures
+      // What the summary counts as failures, so the two cannot disagree.
+      return reportedFailures(index)
     case "buildErrors":
       return index.buildErrors
-    case "tests":
-      return index.occurrences.map(toTestRecord)
+    case "tests": {
+      // Filtered before paging, so the completeness the page reports is the
+      // filter's: an `available` page of failed tests with no cursor is every
+      // failed test there is (issue #163). Counted from what the summary
+      // counts, not from the raw message nodes: those include a skipped test's
+      // reason and every retry's repeat of the same assertion, and the two
+      // would disagree about the same test.
+      const counts = failureCountsByTest(index)
+      return index.occurrences
+        .filter((occurrence) => status === undefined || occurrence.status === status)
+        .map((occurrence) => toTestRecord(occurrence, counts.get(occurrence.id) ?? 0))
+    }
   }
 }
 
-export function toTestRecord(occurrence: NormalizedIndex["occurrences"][number]): TestRecord {
+export function toTestRecord(occurrence: NormalizedIndex["occurrences"][number], failureCount: number): TestRecord {
   return {
     id: occurrence.id,
     identity: occurrence.identity,
     status: occurrence.status,
     ...(occurrence.durationMs === undefined ? {} : { durationMs: occurrence.durationMs }),
-    failureCount: occurrence.failures.length,
+    failureCount,
   }
 }
 
@@ -619,6 +646,9 @@ function resolveCursor(
   }
   if (decoded.payload.orderingVersion !== CURSOR_ORDERING_VERSION) {
     return { ok: false, response: invalid("the cursor uses an unsupported ordering version") }
+  }
+  if (decoded.payload.status !== request.status) {
+    return { ok: false, response: invalid("the cursor belongs to a different status filter") }
   }
   return { ok: true, value: decoded.payload.position }
 }

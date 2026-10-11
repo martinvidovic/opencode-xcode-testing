@@ -138,8 +138,18 @@ export type TestRunEnvelope = {
   provenance?: ResultProvenance
 }
 
+/**
+ * One failed test, named once however many assertions it failed (issue #163).
+ * `failureCount` is its test-failure diagnostics, so a test failing three
+ * assertions is one failed test with three failures, not three failed tests.
+ */
+export type FailedTest = { identity: TestIdentity; failureCount: number }
+
 /** Diagnostics carried in the compact summary, each a capped section. */
 export type SummaryDiagnostics = {
+  /** The failed tests, by canonical identity — what a failure report lists. */
+  failedTests: FailedTest[]
+  failedTestSection: CappedSection
   testFailures: DiagnosticSummary[]
   testFailureSection: CappedSection
   buildErrors: DiagnosticSummary[]
@@ -209,6 +219,8 @@ export type TestToolResult =
 
 /** No diagnostics were retained, and the sections say so rather than lying by omission. */
 export const NO_DIAGNOSTICS: SummaryDiagnostics = {
+  failedTests: [],
+  failedTestSection: { total: 0, shown: 0, truncated: false },
   testFailures: [],
   testFailureSection: { total: 0, shown: 0, truncated: false },
   buildErrors: [],
