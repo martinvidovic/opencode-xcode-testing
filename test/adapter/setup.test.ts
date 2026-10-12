@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -408,6 +408,50 @@ describe("the Xcode developer directory (issue #164)", () => {
       // meant to choose the Xcode invisible behind one that worked.
       expect(xcode.ran).toEqual([])
       expect(box.lines.join("\n")).toContain("xcode-test.json")
+    })
+  })
+
+  test("is never discovered from elsewhere while the configuration cannot be read", async () => {
+    await within(true, async (box) => {
+      const xcode = xcodeAt(box)
+      chmodSync(join(box.root, ".opencode", "xcode-test.json"), 0o000)
+
+      await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        environment: { DEVELOPER_DIR: xcode.developerDirectory },
+        toolchainProbe: xcode.probe,
+      })
+
+      // An unreadable file is a configuration, not the lack of one (issue #152).
+      const said = box.lines.join("\n")
+      expect(xcode.ran).toEqual([])
+      expect(said).toContain("could not be read (EACCES)")
+      expect(said).not.toContain(box.root)
+    })
+  })
+
+  test("is never discovered from elsewhere while a directory stands where the configuration should be", async () => {
+    await within(true, async (box) => {
+      const xcode = xcodeAt(box)
+      const path = join(box.root, ".opencode", "xcode-test.json")
+      rmSync(path)
+      mkdirSync(path)
+
+      const tools = await prepareTools(host(box.root), {
+        homeDir: box.home,
+        write: (line) => box.lines.push(line),
+        environment: { DEVELOPER_DIR: xcode.developerDirectory },
+        toolchainProbe: xcode.probe,
+      })
+
+      // Enabled, so the model is told why nothing can run, rather than a
+      // project whose configuration is broken looking like no project at all.
+      const said = box.lines.join("\n")
+      expect(tools).toHaveLength(3)
+      expect(xcode.ran).toEqual([])
+      expect(said).toContain("could not be read (EISDIR)")
+      expect(said).not.toContain(box.root)
     })
   })
 

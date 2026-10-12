@@ -108,13 +108,31 @@ export function configurationPath(configurationRoot: string): string {
   return join(configurationRoot, CONFIG_DIRECTORY, CONFIG_FILENAME)
 }
 
-/** The file's presence is the per-project enablement marker (ADR 0002). */
+/**
+ * The file's presence is the per-project enablement marker (ADR 0002).
+ *
+ * Presence, not readability: anything at that path marks the project, and
+ * `readProjectConfiguration` then reports what it cannot read as invalid.
+ */
 export function enablementMarkerExists(configurationRoot: string): boolean {
   try {
-    return statSync(configurationPath(configurationRoot)).isFile()
-  } catch {
-    return false
+    statSync(configurationPath(configurationRoot))
+    return true
+  } catch (error) {
+    return !meansAbsent(error)
   }
+}
+
+/**
+ * The configuration is not there, as opposed to there and unreadable (issue
+ * #152). Only the first may fall through to discovery and defaults: the second
+ * is a configuration nobody can understand, and treating it as absent would
+ * run against settings it may contradict — or, during discovery, against an
+ * ancestor's configuration instead.
+ */
+function meansAbsent(error: unknown): boolean {
+  const code = errorCode(error)
+  return code === "ENOENT" || code === "ENOTDIR"
 }
 
 export type ConfigurationResult =
@@ -136,10 +154,10 @@ const KNOWN_FIELDS = new Set([
 ])
 
 /**
- * A present but invalid configuration is never ignored. Malformed JSON, an
- * unsupported schema version and an unknown field are all hard errors — a
- * typo'd key that silently does nothing is how a project ends up testing
- * something other than what its configuration says.
+ * A present but invalid configuration is never ignored. A file that cannot be
+ * read, malformed JSON, an unsupported schema version and an unknown field are
+ * all hard errors — a typo'd key that silently does nothing is how a project
+ * ends up testing something other than what its configuration says.
  */
 export function readProjectConfiguration(configurationRoot: string): ConfigurationResult {
   const path = configurationPath(configurationRoot)
@@ -147,8 +165,9 @@ export function readProjectConfiguration(configurationRoot: string): Configurati
   let raw: string
   try {
     raw = readFileSync(path, "utf8")
-  } catch {
-    return { status: "absent" }
+  } catch (error) {
+    if (meansAbsent(error)) return { status: "absent" }
+    return { status: "invalid", message: `the project configuration could not be read (${errorCode(error)})` }
   }
 
   let parsed: unknown
@@ -189,6 +208,15 @@ export function readProjectConfiguration(configurationRoot: string): Configurati
   // Every field has now been checked against the contract, so this is a
   // narrowing rather than an assertion about something unexamined.
   return { status: "loaded", configuration: record as ProjectConfiguration }
+}
+
+/**
+ * A read error's code, which names what went wrong and no path. Anything that
+ * does not look like an errno code is reported as `unknown` rather than echoed.
+ */
+function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | undefined)?.code
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,31}$/.test(code) ? code : "unknown"
 }
 
 /**
