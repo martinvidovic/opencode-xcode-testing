@@ -76,7 +76,7 @@ The durable per-run metadata the runner writes as a Test Run progresses — its 
 _Avoid_: Run state file, metadata blob
 
 **Shared Build Cache**:
-The `DerivedData` tree the tool keeps for one Xcode container so the next build does not start cold. Regenerable by definition, keyed by an opaque hash like every other tool-managed directory, and counted against the byte targets it used to sit quietly beside. Reclaimed only after eviction has done what it can, because a warm start is worth less than evidence nobody can rebuild.
+The `DerivedData` tree the tool keeps for one Xcode container so the next build does not start cold. Regenerable by definition, keyed by an opaque hash like every other tool-managed directory, and counted against the byte targets it used to sit quietly beside. Reclaimed before evidence is evicted, so the byte targets give back regenerable bytes first: a warm start is worth less than evidence nobody can rebuild.
 _Avoid_: Build artifacts, intermediates, scratch
 
 **Stale Root**:

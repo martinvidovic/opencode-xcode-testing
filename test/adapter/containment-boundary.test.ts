@@ -260,8 +260,15 @@ describe("a failure in the rendering of the failure", () => {
       ARGS,
       CONTEXT,
       deps(failsAfterAdmission(new Error("boom")), {
-        budget: () => {
-          throw new Error("the budget could not be resolved either")
+        // A budget that throws as soon as rendering reads it, so the failure
+        // summary itself cannot be rendered.
+        budget: {
+          get maxLines(): number {
+            throw new Error("the budget could not be read either")
+          },
+          get maxBytes(): number {
+            throw new Error("the budget could not be read either")
+          },
         },
       }),
     )

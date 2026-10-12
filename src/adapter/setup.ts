@@ -157,7 +157,7 @@ async function prepare(
 
   const deps: ToolDeps = {
     service,
-    budget: async () => budget,
+    budget,
     now: monotonicNow,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     timestamp: () => new Date().toISOString(),

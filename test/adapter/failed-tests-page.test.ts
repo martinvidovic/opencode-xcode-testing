@@ -63,7 +63,7 @@ describe("every failed test, read through the tool", () => {
       const maxBytes = 5 * 1024
       const deps: ToolDeps = {
         service: createTestToolService(environmentFor(box)),
-        budget: async () => ({ maxLines: 400, maxBytes }),
+        budget: { maxLines: 400, maxBytes },
         now: () => 0,
         sleep: () => Promise.resolve(),
         timestamp: () => "2026-10-11T12:00:00.000Z",

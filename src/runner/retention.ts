@@ -477,10 +477,9 @@ function coordinationState(storage: Storage): { slotHeld: boolean; quarantined: 
 /**
  * Reclaim shared build caches, and report what is left (issue #96).
  *
- * Run **after** eviction, and only against what eviction could not bring
- * inside the target — evidence is what a caller asked for, and a cache is a
- * speed-up. Reclaiming the cache first would trade something nobody can
- * regenerate for something `xcodebuild` rebuilds on demand.
+ * Runs **before** eviction, against the run bytes still on disk, and eviction
+ * then plans against what is left — `runRetention` says why that order is the
+ * design.
  *
  * Age applies on its own, the way it does to runs: a cache for a container
  * nobody has built in a fortnight is buying a warm start nobody is waiting

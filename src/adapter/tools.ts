@@ -111,13 +111,11 @@ export type ToolContext = {
 export type ToolDeps = {
   service: TestToolService
   /**
-   * The effective output budget, resolved on first use.
-   *
-   * A function rather than a value because it depends on a host call the
-   * plugin factory must not make: asking the host anything while it is still
-   * bootstrapping the plugin deadlocks it.
+   * The effective output budget, resolved once during setup from the plugin
+   * options the V2 host hands the factory. Omitted, the conservative default
+   * applies.
    */
-  budget?: () => Promise<Budget>
+  budget?: Budget
   /** Monotonic, for the abort wait and for elapsed metadata. */
   now(): number
   sleep(ms: number): Promise<void>
@@ -127,26 +125,9 @@ export type ToolDeps = {
 
 // --- xcode_test -----------------------------------------------------------
 
-/**
- * The budget for this call, defaulting when the host told us nothing.
- *
- * And defaulting when it could not be asked. Reading a host's configured
- * limits is a call into somebody else's code, and a throw from it would take
- * down a response that was otherwise finished — a tool that failed to answer
- * because it could not find out how long its answer was allowed to be. The
- * default is conservative, so falling back to it can only make a response
- * smaller (issue #77).
- *
- * Guarded here rather than at each call site, so there is one rule instead of
- * three and no caller can forget it.
- */
-async function budgetFor(deps: ToolDeps): Promise<Budget> {
-  if (deps.budget === undefined) return DEFAULT_BUDGET
-  try {
-    return await deps.budget()
-  } catch {
-    return DEFAULT_BUDGET
-  }
+/** The budget for this call, defaulting when the host told us nothing. */
+function budgetFor(deps: ToolDeps): Budget {
+  return deps.budget ?? DEFAULT_BUDGET
 }
 
 /**
@@ -237,7 +218,7 @@ async function containedFailure(
         )
 
   try {
-    const budget = await budgetFor(deps)
+    const budget = budgetFor(deps)
     const result: TestToolResult =
       admitted === undefined || boundary.request === undefined
         ? {
@@ -311,7 +292,7 @@ async function runTest(
 ): Promise<string> {
   const request = toTestRunRequest(args)
   boundary.request = request
-  const budget = await budgetFor(deps)
+  const budget = budgetFor(deps)
   const startedAt = boundary.startedAt
 
   const publish = (state: ProtocolState, runId?: string) =>
@@ -421,7 +402,7 @@ export async function executeInspect(
   _context: ToolContext,
   deps: ToolDeps,
 ): Promise<string> {
-  const budget = await budgetFor(deps)
+  const budget = budgetFor(deps)
   const request: InspectRunRequest = { ...toInspectRunRequest(args), pageBudget: pageBudgetFor(budget) }
 
   // The last boundary (issue #77). Everything below reads a filesystem that
@@ -713,7 +694,7 @@ export async function executeRecover(
       block(PRIORITY.envelope, `Recovery: ${outcome.status}`),
       block(PRIORITY.reason, ...(outcome.message === undefined ? [] : ["", outcome.message])),
     ],
-    await budgetFor(deps),
+    budgetFor(deps),
   ).text
 }
 
