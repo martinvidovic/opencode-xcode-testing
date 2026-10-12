@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -169,14 +170,19 @@ describe("the --project override", () => {
 })
 
 describe("the freshness check", () => {
+  /** A toolchain that answers, each tool with the given output. */
+  function answering(xcodebuild: string, xcresulttool: string) {
+    return (command: string) => ({ status: 0, stdout: command.endsWith("xcodebuild") ? xcodebuild : xcresulttool })
+  }
+
   test("observes both colon-separated and older schema-version output", () => {
     for (const separator of [":", ""]) {
-      const observed = observeToolchain((command) => ({
-        status: 0,
-        stdout: command.endsWith("xcodebuild")
-          ? "Xcode 27.0\nBuild version 27A266a\n"
-          : `xcresulttool version 25115, schema version${separator} 0.4.0 (legacy commands format version: 3.60)`,
-      }))
+      const observed = observeToolchain(
+        answering(
+          "Xcode 27.0\nBuild version 27A266a\n",
+          `xcresulttool version 25115, schema version${separator} 0.4.0 (legacy commands format version: 3.60)`,
+        ),
+      )
       expect(observed).toEqual({
         xcodeVersion: "27.0",
         xcodeBuild: "27A266a",
@@ -235,7 +241,76 @@ describe("the freshness check", () => {
   test("says so plainly when no toolchain can be observed", () => {
     const report = compare({ unavailable: "xcodebuild is not available on this machine" }, {})
     expect(report.status).toBe("unavailable")
+    expect(report.missingFacts).toEqual(["schemaVersion", "xcodeBuild", "xcodeVersion", "xcresulttoolVersion"])
     expect(render(report)).toContain("unavailable")
+  })
+
+  describe("without every fact it compares (issue #154)", () => {
+    const PROVENANCE = {
+      passed: { xcodeVersion: "26.4.1", xcodeBuild: "17E202", xcresulttoolVersion: "24757", schemaVersion: "0.1.0" },
+    }
+
+    test("is not fresh when xcodebuild's version output cannot be parsed", () => {
+      const observed = observeToolchain(
+        answering("something Xcode never printed\n", "xcresulttool version 24757, schema version: 0.1.0\n"),
+      )
+      const report = compare(observed, PROVENANCE)
+
+      // Nothing that was observed disagrees — but nothing about Xcode was
+      // observed at all, and "fresh" would say it had been.
+      expect(report.status).toBe("incomplete")
+      expect(report.missingFacts).toEqual(["xcodeBuild", "xcodeVersion"])
+      expect(render(report)).toContain("xcodeBuild, xcodeVersion")
+    })
+
+    test("is not fresh when xcresulttool's version output cannot be parsed", () => {
+      const observed = observeToolchain(answering("Xcode 26.4.1\nBuild version 17E202\n", "unrecognized\n"))
+      const report = compare(observed, PROVENANCE)
+
+      expect(report.status).toBe("incomplete")
+      expect(report.missingFacts).toEqual(["schemaVersion", "xcresulttoolVersion"])
+      expect(render(report)).toContain("schemaVersion, xcresulttoolVersion")
+    })
+
+    test("is not fresh when there were no fixtures to check", () => {
+      const observed = observeToolchain(
+        answering("Xcode 26.4.1\nBuild version 17E202\n", "xcresulttool version 24757, schema version: 0.1.0\n"),
+      )
+      const report = compare(observed, {})
+
+      expect(report.status).toBe("incomplete")
+      expect(report.fixturesChecked).toBe(0)
+      expect(report.missingFacts).toEqual([])
+      expect(render(report)).toContain("no fixtures were checked")
+    })
+
+    test("still exits successfully, as ADR 0001 requires of a non-fatal check", () => {
+      // Run for real against no fixtures at all: whatever this machine's
+      // toolchain says, a comparison of nothing is never `fresh`.
+      const empty = mkdtempSync(join(tmpdir(), "xcode-test-no-fixtures-"))
+      try {
+        const script = join(import.meta.dir, "..", "..", "scripts", "freshness-check.ts")
+        const run = spawnSync(process.execPath, [script, "--no-build", "--json", "--fixtures", empty], {
+          encoding: "utf8",
+        })
+
+        expect(run.status).toBe(0)
+        expect(["incomplete", "unavailable"]).toContain(JSON.parse(run.stdout).status)
+      } finally {
+        rmSync(empty, { recursive: true, force: true })
+      }
+    })
+
+    test("still reports drift it did observe, and names what it could not", () => {
+      const observed = observeToolchain(
+        answering("Xcode 27.0\nBuild version 27A266a\n", "unrecognized\n"),
+      )
+      const report = compare(observed, PROVENANCE)
+
+      expect(report.status).toBe("drifted")
+      expect(report.missingFacts).toEqual(["schemaVersion", "xcresulttoolVersion"])
+      expect(render(report)).toContain("schemaVersion, xcresulttoolVersion")
+    })
   })
 
   test("never fails the suite over drift — it only reports", () => {
