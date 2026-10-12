@@ -1,15 +1,24 @@
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { LAYERS, lintImports, type ImportViolation } from "./import-lint.ts"
 
-const REPO_SRC = join(import.meta.dir, "..", "..", "src")
+const REPO = join(import.meta.dir, "..", "..")
+const REPO_SRC = join(REPO, "src")
+/**
+ * Every root entrypoint shipped beside `src` — `server.ts` today, and whatever
+ * else the host may resolve a plugin directory to tomorrow (issue #157).
+ */
+const ROOT_ENTRYPOINTS = readdirSync(REPO)
+  .filter((entry) => entry.endsWith(".ts"))
+  .map((entry) => join(REPO, entry))
 
 describe("the shipped source tree", () => {
-  test("satisfies the import lint", () => {
-    expect(lintImports(REPO_SRC)).toEqual([])
+  test("satisfies the import lint, root entrypoint included", () => {
+    expect(ROOT_ENTRYPOINTS).toContain(join(REPO, "server.ts"))
+    expect(lintImports(REPO_SRC, { entrypoints: ROOT_ENTRYPOINTS })).toEqual([])
   })
 })
 
@@ -97,6 +106,77 @@ describe("the import lint", () => {
     expect(rulesFor({ "runner/a.ts": `export const here = import.meta.url\n` })).toEqual([])
   })
 
+  test("rejects a forbidden import the formatter split across lines, at the specifier's line", () => {
+    // The shape a long import list is formatted into, and the one a pattern
+    // that stops at a newline never inspected (issue #157).
+    const violations = lint({
+      "runner/a.ts": `import {\n  x,\n  y,\n} from "../interpreter/b.ts"\n`,
+      "interpreter/b.ts": `export const x = 1\nexport const y = 2\n`,
+    })
+    expect(violations).toEqual([
+      expect.objectContaining({ file: "runner/a.ts", line: 4, rule: "crossLayer", specifier: "../interpreter/b.ts" }),
+    ])
+  })
+
+  test("rejects forbidden multiline type imports and re-exports of every form", () => {
+    const tree = {
+      "domain/a.ts": [
+        `import type {\n  X,\n} from "../runner/b.ts"`,
+        `export {\n  y,\n} from "../runner/b.ts"`,
+        `export * from "../adapter/c.ts"`,
+        `export * as all from\n  "../adapter/c.ts"`,
+        `import "zod"`,
+        "",
+      ].join("\n"),
+      "runner/b.ts": `export type X = number\nexport const y = 1\n`,
+      "adapter/c.ts": `export const z = 1\n`,
+    }
+    expect(lint(tree).map(({ line, rule }) => `${line} ${rule}`)).toEqual([
+      "3 crossLayer",
+      "6 crossLayer",
+      "7 crossLayer",
+      "9 crossLayer",
+      "10 forbiddenPackage",
+    ])
+  })
+
+  test("does not mistake an import written in a comment or a string for one", () => {
+    const tree = {
+      "domain/a.ts": `// import { x } from "../runner/b.ts"\nexport const s = 'import "zod"'\n`,
+      "runner/b.ts": `export const x = 1\n`,
+    }
+    expect(rulesFor(tree)).toEqual([])
+  })
+
+  test("rejects a file that does not parse, rather than trusting what the parser recovered", () => {
+    // Recovered into an object literal, this import is invisible to the walk.
+    const tree = {
+      "domain/a.ts": `const s = {\nimport { y } from "../runner/b.ts"\n`,
+      "runner/b.ts": `export const y = 1\n`,
+    }
+    expect(rulesFor(tree)).toContain("unparseable")
+  })
+
+  test("lints a root entrypoint, which may reach only the adapter", () => {
+    const tree = {
+      "adapter/plugin.ts": `export default 1\n`,
+      "runner/b.ts": `export const x = 1\n`,
+    }
+    const entrypoint = [
+      `export { default } from "./src/adapter/plugin.ts"`,
+      `export {\n  x,\n} from "./src/runner/b.ts"`,
+      `import "./test/helper.ts"`,
+      `import "@opencode/plugin"`,
+      "",
+    ].join("\n")
+
+    expect(lint(tree, entrypoint).map(({ file, line, rule }) => `${file}:${line} ${rule}`)).toEqual([
+      "server.ts:4 crossLayer",
+      "server.ts:5 outsideSourceTree",
+      "server.ts:6 hostPackageOutsideAdapter",
+    ])
+  })
+
   test("reports the file and line of each violation", () => {
     const violations = lint({ "domain/a.ts": `export const x = 1\n\nimport "left-pad"\n` })
     expect(violations).toEqual([
@@ -105,14 +185,18 @@ describe("the import lint", () => {
   })
 })
 
-function lint(files: Record<string, string>): ImportViolation[] {
-  const root = mkdtempSync(join(tmpdir(), "xcode-test-import-lint-"))
+/** Lint `files` as a `src` tree, with `entrypoint` as the `server.ts` beside it. */
+function lint(files: Record<string, string>, entrypoint?: string): ImportViolation[] {
+  const checkout = mkdtempSync(join(tmpdir(), "xcode-test-import-lint-"))
+  const root = join(checkout, "src")
   try {
     for (const layer of LAYERS) mkdirSync(join(root, layer), { recursive: true })
     for (const [path, contents] of Object.entries(files)) writeFileSync(join(root, path), contents)
-    return lintImports(root)
+    if (entrypoint === undefined) return lintImports(root)
+    writeFileSync(join(checkout, "server.ts"), entrypoint)
+    return lintImports(root, { entrypoints: [join(checkout, "server.ts")] })
   } finally {
-    rmSync(root, { recursive: true, force: true })
+    rmSync(checkout, { recursive: true, force: true })
   }
 }
 

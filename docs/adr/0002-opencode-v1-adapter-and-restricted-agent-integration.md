@@ -408,6 +408,13 @@ the allowlist and the one-way direction. It **rejects dynamic `import()` and `re
 in `src/` rather than analyzing them — Bun executes CommonJS-style `require` in TypeScript files,
 so ignoring either would leave the lint exactly as unsound as permitting it.
 
+> **Amended (issue #157): parsed, and the root entrypoint included.** Static specifiers are found
+> with the pinned TypeScript parser (`ts.createSourceFile`, syntax only, no type checking) rather
+> than a pattern that stopped at a newline and so never saw a multiline import or re-export. A file
+> with a syntax error is itself a violation, since what the parser recovers into may hide an import.
+> Every root entrypoint the host may load, `server.ts` today, is linted beside `src/` under the same
+> package allowlist and dynamic-load rejection, and may reach only the adapter.
+
 Renderer goldens live in `test/golden/*.txt`, one per fixture-outcome pair, regenerated only under
 an explicit `UPDATE_GOLDENS=1`. ADR 0001's hygiene lint **extends to cover goldens**: they render
 real diagnostics and are precisely where a private path would leak into a public repo. A golden
