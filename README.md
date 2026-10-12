@@ -196,7 +196,8 @@ Xcode tools in front of a model working on a Rust service.
 
 This file is the enablement marker *and* the project configuration.
 `schemaVersion: 1` is required, and a file without it, or with any other
-version, is rejected. Every other field is optional:
+version, is rejected. So is one that is there but cannot be read: an unreadable
+configuration is never treated as a missing one. Every other field is optional:
 
 ```json
 {

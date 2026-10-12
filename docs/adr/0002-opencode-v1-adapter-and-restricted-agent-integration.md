@@ -503,6 +503,12 @@ from the original contract is not misled.
    housekeeping still runs regardless of the marker, so abandoned or de-marked roots remain
    covered; only root-local reconciliation is gated on enablement.
 
+   > **Amended (issue #152): presence, not readability.** Anything at the configuration path is the
+   > marker — a directory, or a path whose status cannot be read for any reason but its absence —
+   > and a file that is there but cannot be read is an *invalid* configuration, never an absent one.
+   > Only `ENOENT` and `ENOTDIR` mean absent. Otherwise discovery would walk past an unreadable
+   > configuration to an ancestor's, or resolution would fall through to defaults it may contradict.
+
 ## Deferral closure (ADR 0001)
 
 Both of ADR 0001's open deferrals are closed here.

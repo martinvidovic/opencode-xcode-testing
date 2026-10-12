@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -181,6 +181,23 @@ describe("the enablement marker", () => {
     })
   })
 
+  test("is anything at that path, so discovery never walks past an unreadable one", () => {
+    // A directory where the file should be is a configuration nobody can read,
+    // not a missing one: skipping it would pick up the ancestor's file instead
+    // (issue #152).
+    withProject((root) => {
+      const module = join(root, "Modules", "App")
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      mkdirSync(configurationPath(module), { recursive: true })
+      expect(enablementMarkerExists(module)).toBe(true)
+      expect(resolveRootRoles({ worktree: root, directory: module })).toEqual({
+        status: "resolved",
+        containmentRoot: realpathSync(root),
+        configurationRoot: realpathSync(module),
+      })
+    })
+  })
+
   test("does not search above containment", () => {
     withProject((root) => {
       const containment = join(root, "containment")
@@ -254,6 +271,39 @@ describe("the project configuration", () => {
       expect(outcome.status).toBe("invalid")
       if (outcome.status !== "invalid") return
       expect(outcome.message).toContain("schemeName")
+    })
+  })
+
+  test("rejects a file that is there but cannot be read, rather than treating it as absent", () => {
+    // Falling through to discovery here would run against defaults the
+    // project's own configuration may say otherwise about (issue #152).
+    withProject((root) => {
+      writeConfiguration(root, '{ "schemaVersion": 1 }')
+      chmodSync(configurationPath(root), 0o000)
+      const outcome = readProjectConfiguration(root)
+      chmodSync(configurationPath(root), 0o600)
+      expect(outcome.status).toBe("invalid")
+      if (outcome.status !== "invalid") return
+      expect(outcome.message).toContain("EACCES")
+      expect(outcome.message).not.toContain(root)
+    })
+  })
+
+  test("rejects a directory where the file should be", () => {
+    withProject((root) => {
+      mkdirSync(configurationPath(root), { recursive: true })
+      const outcome = readProjectConfiguration(root)
+      expect(outcome.status).toBe("invalid")
+      if (outcome.status !== "invalid") return
+      expect(outcome.message).toContain("EISDIR")
+      expect(outcome.message).not.toContain(root)
+    })
+  })
+
+  test("is absent when a parent of the file is not a directory", () => {
+    withProject((root) => {
+      writeFileSync(join(root, ".opencode"), "")
+      expect(readProjectConfiguration(root)).toEqual({ status: "absent" })
     })
   })
 

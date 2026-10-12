@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -175,6 +175,32 @@ describe("a resolvable request", () => {
     // resolved away, so the invocation never depends on it afterwards.
     expect(outcome.containerAbsolutePath).not.toContain("link")
     expect(outcome.containerAbsolutePath).toContain("nested")
+  })
+
+  test("rejects the Test Run when the configuration is there but cannot be read", () => {
+    // Read as absent, discovery would find Example.xcodeproj and the run would
+    // proceed against defaults the unreadable file may contradict (issue #152).
+    const repo = repository((containmentRoot) => {
+      mkdirSync(join(containmentRoot, ".opencode"), { recursive: true })
+      writeFileSync(configurationPath(containmentRoot), '{ "schemaVersion": 1, "scheme": "Other" }')
+      chmodSync(configurationPath(containmentRoot), 0o000)
+    })
+    const configuration = readProjectConfiguration(repo.root)
+    const outcome = resolveTestRun(
+      {
+        requestedScope: { kind: "all" },
+        destination: { kind: "named", platform: "iOS Simulator", name: "iPhone 17" },
+      },
+      { containmentRoot: repo.root, configuration },
+    )
+    const root = repo.root
+    repo.dispose()
+    if (outcome.status !== "rejected") throw new Error("expected a rejection")
+
+    expect(outcome.result.errors).toEqual([
+      { field: "configuration", code: "invalid", message: "the project configuration could not be read (EACCES)" },
+    ])
+    expect(JSON.stringify(outcome.result)).not.toContain(root)
   })
 
   test("resolves a module configuration's project from the containment root", () => {
