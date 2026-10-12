@@ -443,7 +443,10 @@ bun scripts/freshness-check.ts
 
 The freshness check is **non-fatal by design**. Drift means the fixtures are
 stale, not that the tool is wrong, and a check that broke the build on a routine
-Xcode update would be switched off within a week.
+Xcode update would be switched off within a week. It reports `fresh` only when
+every toolchain fact was observed and compared against at least one fixture.
+Without drift it otherwise reports `incomplete`; either way, it names the facts it
+could not observe.
 
 ### The acceptance gate
 

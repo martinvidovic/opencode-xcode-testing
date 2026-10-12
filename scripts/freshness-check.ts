@@ -36,8 +36,10 @@ export type ObservedToolchain = {
   unavailable?: string
 }
 
+export type Fact = "xcodeVersion" | "xcodeBuild" | "xcresulttoolVersion" | "schemaVersion"
+
 export type Drift = {
-  fact: "xcodeVersion" | "xcodeBuild" | "xcresulttoolVersion" | "schemaVersion"
+  fact: Fact
   expected: string
   observed: string
   /** The fixtures keyed to the expected value, and so affected by the drift. */
@@ -45,9 +47,18 @@ export type Drift = {
 }
 
 export type FreshnessReport = {
-  status: "fresh" | "drifted" | "unavailable"
+  /**
+   * `incomplete` when nothing disagreed but the comparison was missing one of
+   * its two sides: a fact this machine's output could not be parsed for, or
+   * no fixtures to compare against (issue #154). `fresh` is a claim that
+   * everything was compared and matched, and a comparison of nothing matches
+   * vacuously.
+   */
+  status: "fresh" | "drifted" | "incomplete" | "unavailable"
   observed: ObservedToolchain
   drift: Drift[]
+  /** The facts that could not be observed, and so were never compared. */
+  missingFacts: Fact[]
   fixturesChecked: number
   /** What a real bundle actually produced, when one was available to read. */
   bundle?: BundleExamination
@@ -320,7 +331,7 @@ function execute(command: string, args: string[]): { status: number | null; stdo
   return { status: result.status, stdout: `${result.stdout ?? ""}${result.stderr ?? ""}` }
 }
 
-const FACTS = ["xcodeVersion", "xcodeBuild", "xcresulttoolVersion", "schemaVersion"] as const
+const FACTS: readonly Fact[] = ["xcodeVersion", "xcodeBuild", "xcresulttoolVersion", "schemaVersion"]
 
 /** Compare what the fixtures claim against what this machine actually has. */
 export function compare(
@@ -330,10 +341,12 @@ export function compare(
   const fixturesChecked = Object.keys(provenance).length
 
   if (observed.unavailable !== undefined) {
-    return { status: "unavailable", observed, drift: [], fixturesChecked, stage: "comparison" }
+    // Nothing was observed, so every fact is missing.
+    return { status: "unavailable", observed, drift: [], missingFacts: [...FACTS].sort(byName), fixturesChecked, stage: "comparison" }
   }
 
   const drift: Drift[] = []
+  const missingFacts = FACTS.filter((fact) => observed[fact] === undefined).sort(byName)
 
   for (const fact of FACTS) {
     const actual = observed[fact]
@@ -360,11 +373,19 @@ export function compare(
     // `compare` answers the version-string half and nothing else, so what it
     // returns is a comparison. Only `runFreshnessCheck` can call it complete.
     stage: "comparison",
-    status: drift.length === 0 ? "fresh" : "drifted",
+    // Drift that was observed is reported whatever else is missing: it is
+    // true regardless. Only the absence of drift needs both sides compared.
+    status:
+      drift.length > 0 ? "drifted" : missingFacts.length > 0 || fixturesChecked === 0 ? "incomplete" : "fresh",
     observed,
     drift: drift.sort((a, b) => a.fact.localeCompare(b.fact)),
+    missingFacts,
     fixturesChecked,
   }
+}
+
+function byName(a: string, b: string): number {
+  return a.localeCompare(b)
 }
 
 function sameMajor(a: string, b: string): boolean {
@@ -381,6 +402,9 @@ export function render(report: FreshnessReport): string {
 
   if (report.status === "unavailable") {
     return `freshness: unavailable — ${report.observed.unavailable ?? "the toolchain could not be observed"}\n`
+  }
+  if (report.status === "incomplete") {
+    return `freshness: incomplete — ${gapsIn(report).join("; ")}${unfinished}\n`
   }
   if (report.status === "fresh") {
     const examined =
@@ -400,7 +424,16 @@ export function render(report: FreshnessReport): string {
   for (const key of report.bundle?.missingKeys ?? []) {
     lines.push(`  a real Result Bundle no longer carries ${key}`)
   }
+  for (const gap of gapsIn(report)) lines.push(`  and ${gap}`)
   return `${lines.join("\n")}\n`
+}
+
+/** What the comparison could not cover, in the words a person reads. */
+function gapsIn(report: FreshnessReport): string[] {
+  return [
+    ...(report.missingFacts.length === 0 ? [] : [`could not observe ${report.missingFacts.join(", ")}`]),
+    ...(report.fixturesChecked === 0 ? ["no fixtures were checked"] : []),
+  ]
 }
 
 export function runFreshnessCheck(
@@ -426,7 +459,7 @@ export function runFreshnessCheck(
   const report = compare(observeToolchain(), readFixtureProvenance(directory))
   // A real snapshot: the arrays are copied too, so what was recorded stays
   // what was recorded whatever happens to `report` afterwards.
-  options.record?.({ ...report, drift: [...report.drift], stage: "comparison" })
+  options.record?.({ ...report, drift: [...report.drift], missingFacts: [...report.missingFacts], stage: "comparison" })
 
   // Examined by whoever produced the bundle, while it still existed —
   // otherwise produced here, so the check is never version strings alone.
