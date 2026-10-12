@@ -194,8 +194,9 @@ The minimum is one line:
 project" is a normal state, not a diagnostic — so a global install does not put
 Xcode tools in front of a model working on a Rust service.
 
-This file is the enablement marker *and* the project configuration. Its fields
-are all optional:
+This file is the enablement marker *and* the project configuration.
+`schemaVersion: 1` is required, and a file without it, or with any other
+version, is rejected. Every other field is optional:
 
 ```json
 {
@@ -212,7 +213,7 @@ are all optional:
 | --- | --- |
 | `xcodeContainer` | Discovered beneath the containment root. Exactly one workspace wins; only if there are no workspaces are projects considered. Two of either is a structured ambiguity you must resolve, never a guess. |
 | `scheme` | Discovered from **checked-in shared schemes only**, and only when there is exactly one. A scheme under `xcuserdata` exists on one machine and would make discovery depend on whose laptop it ran on. |
-| `destination` | **Required.** There is no safe default: guessing one runs your tests somewhere you did not ask for. |
+| `destination` | **Required** here or in the Test Run request. There is no safe default: guessing one runs your tests somewhere you did not ask for. |
 | `derivedData` | `shared`. Use `isolated` for a per-run directory. |
 | `timeoutSeconds` | `900`. Range is 1 to 7200. |
 | `testLanguage` | Scheme default. Set e.g. `"en"` to pass `-testLanguage en`. |
