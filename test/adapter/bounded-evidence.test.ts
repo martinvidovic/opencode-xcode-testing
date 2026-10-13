@@ -10,10 +10,10 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, openSync, closeSync, writeSync, writeFileSync } from "node:fs"
+import { mkdirSync, openSync, closeSync, statSync, writeSync } from "node:fs"
 import { join } from "node:path"
 
-import { DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
+import { bundleDigest, DIGEST_CHUNK_BYTES } from "../../src/adapter/service.ts"
 import { withSandbox, type Sandbox } from "../runner/harness.ts"
 import { withJumpingWallClock } from "../wall-clock.ts"
 import { digestOf } from "./scenarios.ts"
@@ -33,6 +33,36 @@ function bundleWithLargeFile(box: Sandbox, bytes: number): string {
     closeSync(fd)
   }
   return bundle
+}
+
+/** Overwrite the last `bytes.length` bytes of a file in place. */
+function overwriteTail(path: string, bytes: Buffer): void {
+  const fd = openSync(path, "r+")
+  try {
+    writeSync(fd, bytes, 0, bytes.length, statSync(path).size - bytes.length)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * A clock that stands still for its first `withinBudget` readings and reads
+ * as long past any deadline from then on. It counts the readings it gave, so a
+ * test can say where in the walk the budget ran out without timing anything.
+ */
+function clockExpiringAfter(withinBudget: number): { now: () => number; readings: () => number } {
+  let readings = 0
+  return {
+    now: () => (++readings <= withinBudget ? 0 : Number.MAX_SAFE_INTEGER),
+    readings: () => readings,
+  }
+}
+
+/** How many clock readings a walk that never runs out of budget takes. */
+function readingsForCompleteDigest(bundle: string): number {
+  const clock = clockExpiringAfter(Number.POSITIVE_INFINITY)
+  expect(bundleDigest(bundle, 30_000, clock.now).status).toBe("digested")
+  return clock.readings()
 }
 
 describe("digesting a large Result Bundle", () => {
@@ -61,22 +91,41 @@ describe("digesting a large Result Bundle", () => {
 
   test("notices a change in the last partial chunk", async () => {
     await withSandbox((box) => {
-      const before = digestOf(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES + 5))
       const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES + 5)
-      writeFileSync(join(bundle, "Extra"), "one more byte")
+      const file = join(bundle, "Data")
+      const before = digestOf(bundle)
 
+      // Only the bytes past the last full chunk change, and the length does
+      // not: a digest that stopped at the last whole chunk sees no difference.
+      overwriteTail(file, Buffer.from("BBB"))
+
+      expect(statSync(file).size).toBe(DIGEST_CHUNK_BYTES + 5)
       expect(digestOf(bundle)).not.toBe(before)
     })
   })
 
   test("gives up inside a large file rather than after it", async () => {
     await withSandbox((box) => {
+      // Calibrated against the walk rather than against how it is written
+      // today: one more chunk must cost exactly one more reading of the clock,
+      // or the budget is not being checked as the file is read. Checking only
+      // between files would let one large file overrun the whole budget
+      // unnoticed, which is exactly where an overrun would matter.
+      const ninthChunk = readingsForCompleteDigest(bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 9))
       const bundle = bundleWithLargeFile(box, DIGEST_CHUNK_BYTES * 8)
+      const complete = readingsForCompleteDigest(bundle)
+      expect(ninthChunk - complete).toBe(1)
 
-      // A budget of zero expires on the first chunk. Checking only between
-      // files would let one large file overrun the whole budget unnoticed,
-      // which is exactly where an overrun would matter.
-      expect(digestOf(bundle, 0)).toBeUndefined()
+      // So the last readings of a complete walk are the per-chunk ones. A
+      // budget that runs out four short of the end runs out with the first
+      // chunks read and the last ones not.
+      const clock = clockExpiringAfter(complete - 4)
+
+      expect(bundleDigest(bundle, 30_000, clock.now)).toEqual({
+        status: "incomplete",
+        reason: "deadline",
+      })
+      expect(clock.readings()).toBe(complete - 3)
     })
   })
 
