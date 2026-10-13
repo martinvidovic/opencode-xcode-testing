@@ -117,6 +117,12 @@ export type RetentionEnvironment = {
 export type RetentionReport = {
   evicted: string[]
   reasons: Record<string, "age" | "count" | "perRootBytes" | "userWideBytes">
+  /**
+   * Everything this root gave back: evicted runs and reclaimed caches alike. A
+   * pass across roots subtracts it before the next root is measured against
+   * the user-wide target (issue #151).
+   */
+  bytesFreed: number
   tombstonesRemoved: string[]
   /**
    * Every tool-owned byte this root still holds: retained runs **and** the
@@ -269,7 +275,11 @@ export function planEviction(
   }
 
   if (environment.userWideBytes !== undefined) {
-    let userWide = environment.userWideBytes
+    // Credited with everything the rules above already evict (issue #151).
+    // Those bytes are leaving whatever this target says, and measuring against
+    // the total before they went evicts further evidence to free them twice.
+    let userWide =
+      environment.userWideBytes - bytesOf(evictable.filter((run) => reasons[run.runId] !== undefined))
     for (const run of surviving()) {
       if (userWide <= RETENTION.userWideByteTarget) break
       if (run.runId === protectedRunId) continue
@@ -438,9 +448,12 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
   for (const runId of plan.evict) evictRun(environment.storage, runId, nowMs)
 
   const tombstonesRemoved = sweepTombstones(environment.storage, nowMs)
-  const runBytes = runs
-    .filter((run) => !plan.evict.includes(run.runId))
-    .reduce((total, run) => total + run.bytes, 0)
+  let runBytes = 0
+  let evictedBytes = 0
+  for (const run of runs) {
+    if (plan.evict.includes(run.runId)) evictedBytes += run.bytes
+    else runBytes += run.bytes
+  }
 
   const mutatedBundles = runs
     .filter((run) => run.bundleDigestVerified === "no")
@@ -450,6 +463,7 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
   return {
     evicted: plan.evict,
     reasons: plan.reasons,
+    bytesFreed: evictedBytes + reclaimed.bytesReclaimed,
     tombstonesRemoved,
     retainedBytes: runBytes + reclaimed.cacheBytes,
     cacheBytes: reclaimed.cacheBytes,

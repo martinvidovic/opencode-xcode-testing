@@ -211,7 +211,10 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
   const staleRoots = collectStaleRoots(environment, claimed, nowMs)
   const surviving = claimed.filter((rootKey) => !staleRoots.includes(rootKey))
 
-  const userWideBytes = totalToolBytes(storage, expired)
+  // Taken once, then carried forward (issue #151): every root measured against
+  // the total as it stood before the roots ahead of it gave bytes back evicts
+  // evidence to free storage that is already free.
+  let userWideBytes = totalToolBytes(storage, expired)
   const reports: Record<string, RetentionReport> = {}
   const held: string[] = []
   const unvisited: string[] = []
@@ -277,6 +280,7 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
     // A held root lock means a live run owns that root; skipping it is correct.
     if (report !== undefined) {
       reports[rootKey] = report
+      userWideBytes -= report.bytesFreed
       // Nothing reclaimed while bytes remain is a root something is holding.
       if (report.cacheBytes > 0 && report.cachesReclaimed.length === 0) held.push(rootKey)
     }

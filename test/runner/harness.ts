@@ -9,7 +9,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process"
 import type { Readable, Writable } from "node:stream"
-import { mkdtempSync, rmSync } from "node:fs"
+import { closeSync, ftruncateSync, mkdtempSync, openSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -55,6 +55,19 @@ export async function withSandbox<T>(
     return await work(box)
   } finally {
     box.dispose()
+  }
+}
+
+/**
+ * A file with a large apparent size and no allocated blocks, so byte targets
+ * are exercised through the real accounting path without the disk (ADR 0002).
+ */
+export function sparseFile(path: string, bytes: number): void {
+  const fd = openSync(path, "w", 0o600)
+  try {
+    ftruncateSync(fd, bytes)
+  } finally {
+    closeSync(fd)
   }
 }
 
