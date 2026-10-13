@@ -85,6 +85,17 @@ export type RecoveryReport = {
   /** The error codes recorded by earlier failed reclamations of those runs. */
   reclamationFailures: string[]
   quarantineCleared: boolean
+  /**
+   * The run holding the Execution Slot as this pass left it, read under the
+   * same root lock its verdict was reached under; absent when the slot was
+   * free (issue #150).
+   *
+   * A verdict that nothing is running is a statement about that slot and no
+   * other. The lock is released when this pass returns, and another instance
+   * can admit a run before anything acts on the verdict — so a caller that
+   * acts on it later has to check the slot is still the one described here.
+   */
+  activeRunId?: string
 }
 
 /**
@@ -148,6 +159,8 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
   try {
     runIds = readdirSync(storage.runsDir).sort()
   } catch {
+    // No owner named: nothing about the slot was examined, so this report
+    // must not read as a verdict about it (issue #150).
     return report
   }
 
@@ -239,15 +252,20 @@ function reconcileLocked(environment: RecoveryEnvironment): RecoveryReport {
 
   writeQueue(storage, state)
 
-  if (busy) return { ...report, status: "busy" }
-  if (report.uncertain.length > 0) return { ...report, status: "stillQuarantined" }
-
   const changed =
     report.needsFinalization.length > 0 ||
     report.quarantined.length > 0 ||
     report.slotsReleased.length > 0 ||
     report.quarantineCleared
-  return { ...report, status: changed ? "recovered" : "alreadyHealthy" }
+  const status: RecoveryStatus = busy
+    ? "busy"
+    : report.uncertain.length > 0
+      ? "stillQuarantined"
+      : changed
+        ? "recovered"
+        : "alreadyHealthy"
+  // The slot as written above, under the lock the verdict was reached under.
+  return { ...report, status, ...(state.activeRunId === undefined ? {} : { activeRunId: state.activeRunId }) }
 }
 
 function withoutActive(state: QueueState): QueueState {

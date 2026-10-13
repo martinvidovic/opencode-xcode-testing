@@ -161,8 +161,12 @@ export type HousekeepingEnvironment = {
    * Optional, and absent means the old behaviour: the slot is believed and
    * the cache is kept. Failing closed is the right default for a caller that
    * cannot supply a probe.
+   *
+   * `activeRunId` is the slot owner the verdict was reached against, absent
+   * for a free slot (issue #150). A port that leaves it out has said the slot
+   * was free, so its verdict never overrides a slot that turns out held.
    */
-  reconcile?(storage: Storage): { status: RecoveryStatus }
+  reconcile?(storage: Storage): { status: RecoveryStatus; activeRunId?: string }
   /**
    * Whether the pass has run out of time (issue #153). Checked between roots,
    * because the work for one root is synchronous filesystem work nothing
@@ -229,10 +233,18 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
     // this pass could have released is a cache this pass will refuse to
     // reclaim, and the order is the whole of what makes the refusal temporary
     // rather than permanent.
-    let nothingIsRunning = false
+    //
+    // Outside the lock is also why the verdict carries the slot owner it saw
+    // (issue #150): the lock recovery held is released before retention takes
+    // its own, and a run admitted in between is one recovery never looked at.
+    // Retention compares the two under its lock and believes the slot when
+    // they differ.
+    let idleVerdict: { slotOwner?: string } | undefined
     try {
       const reconciled = environment.reconcile?.(rootStorage)
-      nothingIsRunning = reconciled !== undefined && probedAndIdle(reconciled.status)
+      if (reconciled !== undefined && probedAndIdle(reconciled.status)) {
+        idleVerdict = reconciled.activeRunId === undefined ? {} : { slotOwner: reconciled.activeRunId }
+      }
     } catch {
       // A root that cannot be reconciled keeps its slot, which is the
       // conservative answer and the one this had before. It is not a reason
@@ -256,7 +268,7 @@ export function runHousekeeping(environment: HousekeepingEnvironment): Housekeep
         storage: rootStorage,
         now: () => nowMs,
         userWideBytes,
-        nothingIsRunning,
+        ...(idleVerdict === undefined ? {} : { idleVerdict }),
         leased: leases.runs,
         evictionUncertain: leases.uncertain || !owner.readable,
         ...(owner.runId === undefined ? {} : { activeRunId: owner.runId }),

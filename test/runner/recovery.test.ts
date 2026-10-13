@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { writeFileSync } from "node:fs"
+import { rmSync, writeFileSync } from "node:fs"
 
 import { readQueue, writeQueue } from "../../src/runner/queue.ts"
 import { quarantineSlot, reconcileRoot } from "../../src/runner/recovery.ts"
@@ -265,6 +265,44 @@ describe("a healthy root", () => {
         uncertain: [],
         slotsReleased: [],
       })
+    })
+  })
+})
+
+describe("the slot a verdict was reached against (issue #150)", () => {
+  test("names the run a crashed slot is still held by", async () => {
+    await withSandbox((box) => {
+      seedDirectory(box, "run-dead")
+      seedRun(box.storage, { runId: "run-dead", state: "launchAuthorized" })
+      writeQueue(box.storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: "run-dead" })
+
+      const report = reconcile(box, { processes: {} })
+      expect(report).toMatchObject({ status: "recovered", activeRunId: "run-dead" })
+    })
+  })
+
+  test("names no owner once it has released the slot", async () => {
+    await withSandbox((box) => {
+      seedDirectory(box, "run-done")
+      seedRun(box.storage, { runId: "run-done", state: "completed", completedAt: TIMESTAMP })
+      writeQueue(box.storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: "run-done" })
+
+      const report = reconcile(box, { processes: {} })
+      expect(report.slotsReleased).toEqual(["run-done"])
+      expect(report.activeRunId).toBeUndefined()
+    })
+  })
+
+  test("names no owner for a slot it could not examine", async () => {
+    // The runs could not be listed, so nothing about the slot's owner was
+    // established — naming it would let a caller treat it as probed and idle.
+    await withSandbox((box) => {
+      writeQueue(box.storage, { schemaVersion: 1, nextSequence: 2, tickets: [], activeRunId: "run-held" })
+      rmSync(box.storage.runsDir, { recursive: true, force: true })
+      writeFileSync(box.storage.runsDir, "")
+
+      const report = reconcile(box, { processes: {} })
+      expect(report.activeRunId).toBeUndefined()
     })
   })
 })
