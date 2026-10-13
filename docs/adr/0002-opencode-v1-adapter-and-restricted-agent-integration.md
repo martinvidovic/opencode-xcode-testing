@@ -604,6 +604,9 @@ recorded so they are deliberate rather than accidental:
 - `bootHost`'s launcher and requested port (issue #135) — a controlled child can
   fail to bind while a stale fixed endpoint remains reachable. The test observes
   the same child lifecycle as production without spawning OpenCode.
+- `bundleDigest`'s clock (issue #155) — when the digest budget runs out. Real
+  time cannot place an expiry inside one file of a Result Bundle, and that is
+  the only place a deadline checked between entries alone would go unnoticed.
 
 The gate seams default to the real implementation and are overridden only by
 tests. The acceptance gate still boots a real OpenCode host for B1 registration,

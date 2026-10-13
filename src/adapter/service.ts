@@ -1679,14 +1679,21 @@ export type BundleDigest =
   | { status: "digested"; digest: string }
   | { status: "incomplete"; reason: "deadline" | "unreadable" }
 
-export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): BundleDigest {
+export function bundleDigest(
+  path: string,
+  budgetMs = DIGEST_BUDGET_MS,
+  // A seam for tests that need the budget to run out at a chosen point in the
+  // walk (issue #155). Real time cannot place an expiry inside one file.
+  now: () => number = monotonicNow,
+): BundleDigest {
   const hash = createHash("sha256")
 
   // Monotonic, and a *duration* from the caller rather than an instant. The
   // caller is measuring its own remaining budget on its own clock; handing it
   // an instant would mean two clocks in one deadline, and a wall clock would
   // mean a deadline an NTP step can move while the walk is still running.
-  const deadline = monotonicNow() + budgetMs
+  const deadline = now() + budgetMs
+  const expired = () => now() >= deadline
   let incomplete: "deadline" | "unreadable" | undefined
 
   const walk = (current: string) => {
@@ -1704,7 +1711,7 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): BundleD
     }
 
     for (const entry of entries) {
-      if (monotonicNow() >= deadline) {
+      if (expired()) {
         incomplete = "deadline"
         return
       }
@@ -1718,7 +1725,7 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): BundleD
         const stats = lstatSync(child)
         if (stats.isSymbolicLink()) hash.update(readlinkSync(child))
         else if (stats.isDirectory()) walk(child)
-        else if (stats.isFile() && !hashFile(hash, child, deadline)) {
+        else if (stats.isFile() && !hashFile(hash, child, expired)) {
           incomplete = "deadline"
           return
         }
@@ -1749,13 +1756,13 @@ export function bundleDigest(path: string, budgetMs = DIGEST_BUDGET_MS): BundleD
  * sit inside, not their own mode. The caller has already established this
  * entry is a regular file rather than a link.
  */
-function hashFile(hash: Hash, path: string, deadline: number): boolean {
+function hashFile(hash: Hash, path: string, expired: () => boolean): boolean {
   const buffer = Buffer.allocUnsafe(DIGEST_CHUNK_BYTES)
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
 
   try {
     while (true) {
-      if (monotonicNow() >= deadline) return false
+      if (expired()) return false
       const read = readSync(fd, buffer, 0, buffer.length, null)
       if (read <= 0) return true
       hash.update(buffer.subarray(0, read))
