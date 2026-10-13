@@ -15,7 +15,7 @@ import { join } from "node:path"
 import { spawnGatedChild, type GatedChild } from "../../src/runner/gate.ts"
 import { signallingIsSafe, systemProbe } from "../../src/runner/identity.ts"
 import { createRunDirectory, RUN_ARTIFACTS } from "../../src/runner/paths.ts"
-import { readRunRecord } from "../../src/runner/state.ts"
+import { readRunRecord, type RunRecord } from "../../src/runner/state.ts"
 import { superviseRun, type SupervisionResult } from "../../src/runner/supervisor.ts"
 import {
   fakeProbe,
@@ -50,9 +50,17 @@ function stubArgs(options: StubOptions): string[] {
 type Controls = {
   /** Flips cancellation the moment the child publishes its identity. */
   cancelOnRecorded?: boolean
-  cancelAfterMs?: number
+  /**
+   * Cancels once this holds of the run, polled until supervision ends. A fact
+   * about the run rather than an elapsed time, so a loaded machine changes
+   * when the cancellation lands but never which path it exercises.
+   */
+  cancelWhen?: (run: { log: string; record: RunRecord | undefined }) => boolean
   timeoutSeconds?: number
 }
+
+/** The stub has started and installed its traps. */
+const stubReady = ({ log }: { log: string }): boolean => log.includes(" ready\n")
 
 async function supervise(
   box: Sandbox,
@@ -78,7 +86,20 @@ async function supervise(
     announce()
   }
 
-  if (controls.cancelAfterMs !== undefined) setTimeout(cancel, controls.cancelAfterMs)
+  const logPath = join(box.storage.runsDir, runId, RUN_ARTIFACTS.rawLog)
+  let supervising = true
+  const cancelWhen = controls.cancelWhen
+  if (cancelWhen !== undefined) {
+    void (async () => {
+      while (supervising) {
+        if (cancelWhen({ log: readLog(logPath), record: readRunRecord(box.storage, runId) })) {
+          cancel()
+          return
+        }
+        await sleep(10)
+      }
+    })()
+  }
 
   const now = monotonic()
   const result = await superviseRun(
@@ -102,7 +123,7 @@ async function supervise(
           args: stubArgs(options),
           cwd: box.homeDir,
           environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
-          logPath: join(box.storage.runsDir, runId, RUN_ARTIFACTS.rawLog),
+          logPath,
         })
         if (controls.cancelOnRecorded === true) {
           void child.recorded.then(cancel).catch(() => {})
@@ -111,16 +132,19 @@ async function supervise(
       },
     },
     { record, supervisorIdentity: { pid: process.pid, startedAt: "test" } },
-  )
+  ).finally(() => {
+    supervising = false
+  })
 
-  let log = ""
+  return { result, log: readLog(logPath), runId }
+}
+
+function readLog(path: string): string {
   try {
-    log = readFileSync(join(box.storage.runsDir, runId, RUN_ARTIFACTS.rawLog), "utf8")
+    return readFileSync(path, "utf8")
   } catch {
-    log = ""
+    return ""
   }
-
-  return { result, log, runId }
 }
 
 describe("an ordinary run", () => {
@@ -187,7 +211,7 @@ describe("the gated launch protocol", () => {
 describe("caller cancellation", () => {
   test("fixes `cancelled` and records that termination was requested", async () => {
     await withSandbox(async (box) => {
-      const { result } = await supervise(box, { sleepMs: 30_000 }, { cancelAfterMs: 300 })
+      const { result } = await supervise(box, { sleepMs: 30_000 }, { cancelWhen: stubReady })
 
       expect(result.trigger).toBe("callerCancellation")
       expect(result.termination.requested).toBe("yes")
@@ -203,7 +227,13 @@ describe("the process deadline", () => {
       const { result } = await supervise(
         box,
         { sleepMs: 30_000 },
-        { timeoutSeconds: 1, cancelAfterMs: 2_500 },
+        // Cancelled once the deadline is on record, so the cancellation is
+        // genuinely the later of the two and lands while escalation is under
+        // way — not after a run that has already finished.
+        {
+          timeoutSeconds: 1,
+          cancelWhen: ({ record }) => record?.terminationTrigger === "processDeadline",
+        },
       )
 
       expect(result.trigger).toBe("processDeadline")
@@ -219,7 +249,7 @@ describe("bounded escalation", () => {
       const { result, log } = await supervise(
         box,
         { sleepMs: 30_000, trap: ["SIGINT", "SIGTERM"] },
-        { cancelAfterMs: 300 },
+        { cancelWhen: stubReady },
       )
 
       expect(log).toContain("trapped SIGINT")
@@ -237,7 +267,7 @@ describe("bounded escalation", () => {
       const { result, log } = await supervise(
         box,
         { sleepMs: 30_000, trap: [] },
-        { cancelAfterMs: 300 },
+        { cancelWhen: stubReady },
       )
       expect(result.execution.signal).toBe("SIGINT")
       expect(log).not.toContain("trapped")

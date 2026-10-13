@@ -73,7 +73,9 @@ describe("a probe that never exits", () => {
     // inherits the probe's pipes. Killing only the direct child would leave
     // that one holding them open, and a probe that waits for its output to
     // close would wait as long as it ran.
-    const marker = "xcode-test-grandchild-probe-153"
+    // Searched for machine-wide, so it names this test process: a concurrent
+    // run of the suite has a probe of its own alive at this very moment.
+    const marker = `xcode-test-grandchild-probe-153-${process.pid}`
     const started = performance.now()
 
     const outcome = await spawnProbe({ timeoutMs: 200 })("/bin/sh", ["-c", `/bin/sleep 30 & wait # ${marker}`])

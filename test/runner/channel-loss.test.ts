@@ -91,8 +91,7 @@ describe("a supervisor whose adapter has gone", () => {
       // in a real run that group is `xcodebuild`.
       const pgid = record?.child?.pgid
       expect(pgid).toBeGreaterThan(0)
-      await sleep(50)
-      expect(systemProbe.membersOf(pgid as number)).toEqual([])
+      expect(await waitForEmptyGroup(pgid as number, 5_000)).toBe(true)
 
       // Recorded as a fact rather than as an outcome, so it survives even when
       // a cancellation or a deadline fixed the outcome first.
