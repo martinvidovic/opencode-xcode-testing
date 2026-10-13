@@ -21,7 +21,7 @@ import {
   runHousekeeping,
   writeRegistry,
 } from "../../src/runner/housekeeping.ts"
-import { fakeProbe, seedRun, withSandbox, type Sandbox } from "./harness.ts"
+import { fakeProbe, seedRun, sparseFile, withSandbox, type Sandbox } from "./harness.ts"
 import { reconcileRoot, type RecoveryStatus } from "../../src/runner/recovery.ts"
 import { readQueue, writeQueue, type QueueState } from "../../src/runner/queue.ts"
 import { createRunDirectory } from "../../src/runner/paths.ts"
@@ -149,6 +149,41 @@ describe("running housekeeping", () => {
       } finally {
         held.release()
       }
+    })
+  })
+
+  test("measures each root against what the roots before it left (issue #151)", async () => {
+    // The first root's own age eviction takes the total well under target.
+    // Handing the second root the total from before that pass made it evict
+    // evidence to free bytes that were already gone.
+    await withSandbox((box) => {
+      const DAY_MS = 24 * 60 * 60 * 1000
+      const GIB = 1024 ** 3
+      const roots = [storageFor(box.homeDir, "/workspace/one"), storageFor(box.homeDir, "/workspace/two")]
+      const [first, second] = roots.sort((a, b) => a.rootKey.localeCompare(b.rootKey))
+      if (first === undefined || second === undefined) throw new Error("two roots expected")
+
+      const completedRun = (root: Storage, runId: string, daysAgo: number, bytes: number) => {
+        createRunDirectory(root, runId)
+        seedRun(root, { runId, state: "completed", completedAt: new Date(NOW - daysAgo * DAY_MS).toISOString() })
+        sparseFile(join(root.runsDir, runId, "result.xcresult"), bytes)
+      }
+      prepareStorage(first)
+      prepareStorage(second)
+      completedRun(first, "run-ancient", 9, 17 * GIB)
+      completedRun(second, "run-older", 2, 2 * GIB)
+      completedRun(second, "run-newer", 1, 2 * GIB)
+
+      writeRegistry(box.storage, {
+        schemaVersion: 1,
+        roots: { [first.rootKey]: { lastSeenAtMs: NOW }, [second.rootKey]: { lastSeenAtMs: NOW } },
+      })
+
+      const outcome = housekeep(box, NOW)
+      expect(outcome.status).toBe("ran")
+      if (outcome.status !== "ran") return
+      expect(outcome.reports[first.rootKey]?.evicted).toEqual(["run-ancient"])
+      expect(outcome.reports[second.rootKey]?.evicted).toEqual([])
     })
   })
 })

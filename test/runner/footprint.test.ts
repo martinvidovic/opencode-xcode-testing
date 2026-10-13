@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, utimesSync } from "node:fs"
+import { existsSync, mkdirSync, utimesSync } from "node:fs"
 import { join } from "node:path"
 
 import { createRunDirectory, RUN_ARTIFACTS, sharedDerivedDataFor } from "../../src/runner/paths.ts"
@@ -34,22 +34,12 @@ import {
   directorySize,
 } from "../../src/runner/retention.ts"
 import { totalToolBytes } from "../../src/runner/housekeeping.ts"
-import { seedRun, withSandbox, type Sandbox } from "./harness.ts"
+import { seedRun, sparseFile, withSandbox, type Sandbox } from "./harness.ts"
 import { writeQueue } from "../../src/runner/queue.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const GIB = 1024 ** 3
 const NOW = Date.parse("2026-09-13T12:00:00.000Z")
-
-/** A file with a large apparent size and no allocated blocks. */
-function sparseFile(path: string, bytes: number): void {
-  const fd = openSync(path, "w", 0o600)
-  try {
-    ftruncateSync(fd, bytes)
-  } finally {
-    closeSync(fd)
-  }
-}
 
 function completedRun(box: Sandbox, runId: string, bytes: number, daysAgo = 0): void {
   createRunDirectory(box.storage, runId)

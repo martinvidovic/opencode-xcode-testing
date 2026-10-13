@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { createRunDirectory } from "../../src/runner/paths.ts"
@@ -26,7 +26,7 @@ import {
   sweepTombstones,
   tombstonePath,
 } from "../../src/runner/retention.ts"
-import { seedRun, withSandbox, type Sandbox } from "./harness.ts"
+import { seedRun, sparseFile, withSandbox, type Sandbox } from "./harness.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const NOW = Date.parse("2026-09-13T12:00:00.000Z")
@@ -46,16 +46,6 @@ function completedRun(
     ...(options.quarantined === true ? { quarantined: true } : {}),
   })
   if (options.bytes !== undefined) sparseFile(join(box.storage.runsDir, runId, "result.xcresult"), options.bytes)
-}
-
-/** A file with a large apparent size and no allocated blocks. */
-function sparseFile(path: string, bytes: number): void {
-  const fd = openSync(path, "w", 0o600)
-  try {
-    ftruncateSync(fd, bytes)
-  } finally {
-    closeSync(fd)
-  }
 }
 
 function retain(box: Sandbox, options: { userWideBytes?: number; leased?: Set<string>; activeRunId?: string } = {}) {
@@ -153,6 +143,22 @@ describe("the user-wide byte target", () => {
       const report = retain(box, { userWideBytes: RETENTION.userWideByteTarget + 2 * oneGiB })
       expect(report.evicted).toEqual(["run-a", "run-b"])
       expect(report.reasons["run-a"]).toBe("userWideBytes")
+    })
+  })
+
+  test("counts what the hard rules already evict toward the target (issue #151)", async () => {
+    // One GiB over, and age is already taking one GiB. Planning the user-wide
+    // target against the total as it stood before age had its turn evicted a
+    // second GiB of evidence to free bytes that were already on their way out.
+    await withSandbox((box) => {
+      const oneGiB = 1024 ** 3
+      completedRun(box, "run-ancient", { completedDaysAgo: 8, bytes: oneGiB })
+      completedRun(box, "run-a", { completedDaysAgo: 3, bytes: oneGiB })
+      completedRun(box, "run-b", { completedDaysAgo: 1, bytes: oneGiB })
+
+      const report = retain(box, { userWideBytes: RETENTION.userWideByteTarget + oneGiB })
+      expect(report.evicted).toEqual(["run-ancient"])
+      expect(report.reasons["run-ancient"]).toBe("age")
     })
   })
 
