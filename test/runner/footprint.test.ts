@@ -73,14 +73,14 @@ function cache(box: Sandbox, container: string, bytes: number, daysAgo = 0): str
 
 function retain(
   box: Sandbox,
-  options: { userWideBytes?: number; activeRunId?: string; nothingIsRunning?: boolean } = {},
+  options: { userWideBytes?: number; activeRunId?: string; idleVerdict?: { slotOwner?: string } } = {},
 ) {
   return runRetention({
     storage: box.storage,
     now: () => NOW,
     ...(options.userWideBytes === undefined ? {} : { userWideBytes: options.userWideBytes }),
     ...(options.activeRunId === undefined ? {} : { activeRunId: options.activeRunId }),
-    ...(options.nothingIsRunning === undefined ? {} : { nothingIsRunning: options.nothingIsRunning }),
+    ...(options.idleVerdict === undefined ? {} : { idleVerdict: options.idleVerdict }),
   })
 }
 
@@ -292,8 +292,8 @@ describe("a tree whose largest cache is pinned by a crashed run", () => {
 
   test("converges once recovery has said nothing is running", () => {
     withSandbox((box) => {
-      const { cache: pinned } = pinnedTree(box)
-      const report = retain(box, { userWideBytes: 30 * GIB, nothingIsRunning: true })
+      const { cache: pinned, run } = pinnedTree(box)
+      const report = retain(box, { userWideBytes: 30 * GIB, idleVerdict: { slotOwner: run } })
 
       expect(report.cachesReclaimed).toHaveLength(1)
       expect(existsSync(pinned)).toBe(false)
@@ -308,7 +308,7 @@ describe("a tree whose largest cache is pinned by a crashed run", () => {
     // not the same outcome wearing a different name.
     withSandbox((box) => {
       const { run } = pinnedTree(box)
-      const report = retain(box, { userWideBytes: 30 * GIB, nothingIsRunning: true })
+      const report = retain(box, { userWideBytes: 30 * GIB, idleVerdict: { slotOwner: run } })
 
       expect(report.evicted).toEqual([])
       expect(report.cacheBytesReclaimed).toBeGreaterThan(0)
@@ -323,7 +323,7 @@ describe("a tree whose largest cache is pinned by a crashed run", () => {
     // from reading as "eviction never happens".
     withSandbox((box) => {
       completedRun(box, "b".repeat(32), 1024, 30)
-      const report = retain(box, { nothingIsRunning: true })
+      const report = retain(box, { idleVerdict: {} })
 
       expect(report.evicted).toEqual(["b".repeat(32)])
       expect(report.reasons["b".repeat(32)]).toBe("age")

@@ -103,8 +103,15 @@ export type RetentionEnvironment = {
    * it arrives as a fact from a caller that asked recovery, and its absence
    * means the slot is believed — which is the conservative answer and the one
    * this had before.
+   *
+   * It names the slot owner recovery saw (absent: the slot was free), because
+   * the verdict was reached under a root lock that has since been released
+   * (issue #150). Another instance can admit a run in that window, and a
+   * verdict about the slot's previous owner — or about no owner at all — says
+   * nothing about a build that run has started. It overrides the slot only
+   * while the slot is still held by the run it describes.
    */
-  nothingIsRunning?: boolean
+  idleVerdict?: { slotOwner?: string }
 }
 
 export type RetentionReport = {
@@ -460,7 +467,7 @@ export function runRetention(environment: RetentionEnvironment & { userWideBytes
  * build may be writing into is not the way to find out. It is also not a
  * reason to fail retention — the runs beside it are still worth sweeping.
  */
-function coordinationState(storage: Storage): { slotHeld: boolean; quarantined: boolean } {
+function coordinationState(storage: Storage): { slotOwner?: string; slotHeld: boolean; quarantined: boolean } {
   try {
     const queue = readQueue(storage)
     // Two answers, because they are two facts and one of them outranks a
@@ -468,7 +475,11 @@ function coordinationState(storage: Storage): { slotHeld: boolean; quarantined: 
     // two must never both look true, or admission would wait out its whole
     // deadline instead of failing fast — so a root held for the strongest
     // possible reason has no slot to show for it.
-    return { slotHeld: queue.activeRunId !== undefined, quarantined: queue.quarantine !== undefined }
+    return {
+      ...(queue.activeRunId === undefined ? {} : { slotOwner: queue.activeRunId }),
+      slotHeld: queue.activeRunId !== undefined,
+      quarantined: queue.quarantine !== undefined,
+    }
   } catch {
     return { slotHeld: true, quarantined: true }
   }
@@ -494,7 +505,8 @@ function coordinationState(storage: Storage): { slotHeld: boolean; quarantined: 
  * pass reads it and declines (issue #110). So a caller that has asked recovery
  * whether anything attributable to this root is still alive can say so, and
  * that answer outranks the slot — a slot held by a run with no live process is
- * a run waiting to be finalized, not a build in progress.
+ * a run waiting to be finalized, not a build in progress. Only about the run
+ * it saw, though: a slot that has changed hands since is believed again.
  */
 function reclaimCaches(
   environment: RetentionEnvironment & { userWideBytes?: number },
@@ -513,7 +525,7 @@ function reclaimCaches(
   // `activeRunId` is deliberately not consulted here (issue #116). It now
   // comes from the same `queue.json` that `coordinationState` reads, so a
   // second check against it would say the same thing — except that it would
-  // say it *before* the `nothingIsRunning` override, which is exactly the
+  // say it *before* the `idleVerdict` override, which is exactly the
   // permanent refusal #110 removed. It protects a run's evidence from
   // eviction; the caches are decided below.
   const unchanged = { keys: [] as string[], bytesReclaimed: 0, cacheBytes: total() }
@@ -522,10 +534,15 @@ function reclaimCaches(
   // Quarantine first, and not overridable. A liveness verdict says nothing is
   // running *now*; quarantine says this root's lifecycle could not be
   // confirmed, which is the stronger statement and the one that survives a
-  // process having gone. Letting `nothingIsRunning` clear it would reclaim
+  // process having gone. Letting `idleVerdict` clear it would reclaim
   // the caches of the one kind of root whose state nobody could establish.
   if (coordination.quarantined) return unchanged
-  if (environment.nothingIsRunning !== true && coordination.slotHeld) return unchanged
+  // Bound to the slot the verdict was reached against (issue #150). A run
+  // admitted since — into a slot that was free, or that changed hands — is
+  // one the verdict never looked at, and its build may be writing right now.
+  const verdictCoversSlot =
+    coordination.slotOwner !== undefined && environment.idleVerdict?.slotOwner === coordination.slotOwner
+  if (coordination.slotHeld && !verdictCoversSlot) return unchanged
 
   // Oldest first, so the cache that buys the least goes first.
   const ordered = [...caches].sort((a, b) => a.modifiedMs - b.modifiedMs || a.key.localeCompare(b.key))

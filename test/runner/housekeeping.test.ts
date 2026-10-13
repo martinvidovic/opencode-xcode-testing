@@ -514,13 +514,16 @@ describe("what recovery's verdict is allowed to mean", () => {
     return { storage, cache }
   }
 
-  /** Housekeeping whose reconciliation returns a status without probing. */
+  /**
+   * Housekeeping whose reconciliation returns a status without probing, about
+   * the slot `withCache` leaves held.
+   */
   function housekeepReturning(box: Sandbox, status: RecoveryStatus) {
     return runHousekeeping({
       storage: box.storage,
       now: () => NOW,
       storageForRootKey: (rootKey) => storageForRootKey(box.homeDir, rootKey),
-      reconcile: () => ({ status }),
+      reconcile: () => ({ status, activeRunId: RUN }),
     })
   }
 
@@ -565,6 +568,74 @@ describe("what recovery's verdict is allowed to mean", () => {
 
       housekeepReturning(box, "recovered")
       expect(existsSync(cache)).toBe(true)
+    })
+  })
+
+  describe("a run admitted after the verdict was taken (issue #150)", () => {
+    const ADMITTED = "d".repeat(32)
+    const probe = fakeProbe({ processes: { 4_343: "alive" } })
+
+    /**
+     * Housekeeping whose reconciliation is the real one, followed by an
+     * admission landing in the window between it releasing the root lock and
+     * retention taking it — the interleaving, driven through the port rather
+     * than left to timing.
+     */
+    function housekeepThenAdmit(box: Sandbox) {
+      return runHousekeeping({
+        storage: box.storage,
+        now: () => NOW,
+        storageForRootKey: (rootKey) => storageForRootKey(box.homeDir, rootKey),
+        reconcile: (storage) => {
+          const report = reconcileRoot({ storage, probe, timestamp: () => new Date(NOW).toISOString() })
+          createRunDirectory(storage, ADMITTED)
+          seedRun(storage, { runId: ADMITTED, state: "launchAuthorized", owner: { pid: 4_343, startedAt: "alive" } })
+          writeQueue(storage, { schemaVersion: 1, nextSequence: 3, tickets: [], activeRunId: ADMITTED })
+          return report
+        },
+      })
+    }
+
+    test("keeps its cache when the slot was free when recovery looked", () => {
+      withSandbox((box) => {
+        const { storage, cache } = withCache(box)
+        // Free when recovery looks: the earlier run finished cleanly.
+        seedRun(storage, { runId: RUN, state: "completed", completedAt: new Date(NOW).toISOString() })
+        writeQueue(storage, { schemaVersion: 1, nextSequence: 2, tickets: [] })
+
+        housekeepThenAdmit(box)
+
+        expect(readQueue(storage).activeRunId).toBe(ADMITTED)
+        expect(existsSync(cache)).toBe(true)
+      })
+    })
+
+    test("keeps its cache when the slot changed hands after recovery looked", () => {
+      // Recovery found a crashed run holding the slot and nothing alive — the
+      // #110 verdict. That verdict is about the crashed run; it says nothing
+      // about the run that took the slot after it.
+      withSandbox((box) => {
+        const { cache } = withCache(box)
+
+        housekeepThenAdmit(box)
+
+        expect(existsSync(cache)).toBe(true)
+      })
+    })
+
+    test("a verdict that does not name the slot's owner does not override it", () => {
+      // A port that reports idle without saying what it saw has said the slot
+      // was free, and is believed only about a free slot.
+      withSandbox((box) => {
+        const { cache } = withCache(box)
+        runHousekeeping({
+          storage: box.storage,
+          now: () => NOW,
+          storageForRootKey: (rootKey) => storageForRootKey(box.homeDir, rootKey),
+          reconcile: () => ({ status: "recovered" }),
+        })
+        expect(existsSync(cache)).toBe(true)
+      })
     })
   })
 
