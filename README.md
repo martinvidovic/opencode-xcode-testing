@@ -333,6 +333,27 @@ files in an isolated OpenCode, reads the effective permissions OpenCode
 resolves for them, and checks what a model under each is actually offered.
 They are tested artifacts, not documentation that drifts.
 
+## Inspection completeness and Result Bundle integrity
+
+Ordinary structured `xcode_test_inspect` pages read the immutable normalized
+index retained when the Test Run finished. `available (complete)` describes
+that indexed evidence; it does **not** attest to the current Result Bundle's
+integrity. Paging does not reopen or digest the bundle.
+
+A Focused Detail request (`testId` or `diagnosticId`) combines indexed fields
+with Bundle-Backed Detail such as activities. Before extracting that detail,
+the tool checks the recorded toolchain identity and recomputes the bundle
+digest. If the digest no longer matches, Focused Detail is `incomplete` and
+explains why. Indexed statuses, attempts, identities, diagnostics and retained
+messages remain as saved, and the published outcome is not invalidated. Empty
+activities on an incomplete response do not prove that no activities existed.
+
+Consequently, a page can be `available (complete)` while Focused Detail for the
+same test is `incomplete`. Consult the annotation and truncation metadata for
+what could not be read or returned. A mismatch alone does not establish its
+cause or imply that the saved test outcome was incorrect. There is currently
+no separate public integrity-check operation.
+
 ## What the tool will not do
 
 The design is deliberately narrow, and the boundaries are worth knowing before

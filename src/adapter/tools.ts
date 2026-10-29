@@ -483,7 +483,7 @@ export function renderInspection(
   switch (response.status) {
     case "available":
       return [
-        block(PRIORITY.envelope, `${header} (${response.completeness})`),
+        block(PRIORITY.envelope, `${header} (${response.completeness})`, ...indexSourceLines(response.data)),
         ...facetBlocks(response.data, response.truncation),
       ]
     case "incomplete":
@@ -492,7 +492,8 @@ export function renderInspection(
           PRIORITY.envelope,
           header,
           "",
-          "The retained evidence is known to be partial, so an empty page does not prove there are zero records.",
+          incompleteInspectionExplanation(request, response.data),
+          ...indexSourceLines(response.data),
           // Why, when there is a why (issue #76). Every typed cause — a
           // deadline that expired, a bundle that was deleted, a bundle that no
           // longer matches its digest, an association that could not be made
@@ -543,6 +544,27 @@ export function renderInspection(
     case "invalid":
       return [block(PRIORITY.envelope, header, "", response.message)]
   }
+}
+
+/** A page's completeness describes the index, not a fresh check of its bundle. */
+function indexSourceLines(data: unknown): string[] {
+  const page = data as FacetPage | undefined
+  return page?.view === "records"
+    ? ["Source: retained index. Result Bundle integrity was not checked for this page."]
+    : []
+}
+
+function incompleteInspectionExplanation(request: InspectRunRequest, data: unknown): string {
+  const page = data as FacetPage | undefined
+  if (page?.view === "focused") {
+    return "Focused Detail is incomplete. Indexed statuses, attempts, identities, diagnostics and messages remain as retained. Missing Bundle-Backed Detail does not invalidate the saved outcome. See the annotation and truncation metadata for what could not be read or returned."
+  }
+  // With no returned focused record, do not imply that its indexed evidence
+  // was readable: an unsafe or damaged index can also answer `incomplete`.
+  if (request.testId !== undefined || request.diagnosticId !== undefined || page?.view === "omitted") {
+    return "The requested Focused Detail could not be read or returned completely. See the annotation and truncation metadata."
+  }
+  return "The requested evidence could not be read or returned completely, so an empty page does not prove there are zero records."
 }
 
 /**

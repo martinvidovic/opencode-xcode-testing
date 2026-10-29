@@ -16,8 +16,18 @@ them. Read failures, or focus a test or diagnostic, only to diagnose why one
 failed — not to find out which ones did. A skipped test's reason is not a
 failure; read status skipped for those.
 
-This never runs tests and never accepts a path. It reads the evidence that was
-retained when the run finished, so the answer is the same every time.
+This never runs tests and never accepts a path. Ordinary structured pages read
+the immutable index retained when the run finished. They do not reopen the
+Result Bundle or check its current integrity. Indexed statuses, counts and the
+published outcome do not change when later Bundle-Backed Detail is unavailable.
+
+Focused Detail combines indexed fields (identity, status, attempts, diagnostics
+and retained messages) with Bundle-Backed Detail such as activities. Before
+extracting Bundle-Backed Detail, it checks the recorded toolchain identity and
+recomputes the bundle digest. A digest mismatch makes this detail `incomplete`;
+it does not invalidate the indexed fields or saved outcome. An empty activities
+list on that response means detail could not be read, not that none existed.
+Focused Detail availability can therefore change even while paging is unchanged.
 
 Pages default to 20 records and accept at most 100. A response that has more
 carries a cursor; pass it back to continue. A cursor belongs to one run, one
@@ -25,11 +35,16 @@ facet and one status filter, and cannot be reused across any of them. Pass diagn
 a cursor to focus on a single record — identifiers and cursors cannot be
 combined.
 
-Responses are typed rather than thrown. `available` means the evidence is
-complete, so an empty page authoritatively means zero records. `incomplete`
-means it is known to be partial, so an empty page proves nothing. `expired`
-means it was retained and has since been deleted; `notFound` means it was never
-known. `unsupported` means the facet was never produced.
+Responses are typed rather than thrown. On ordinary structured pages,
+`available (complete)` describes complete indexed evidence, not current Result
+Bundle integrity; an empty page authoritatively means zero records. On Focused
+Detail, `available` means Bundle-Backed Detail was also read. `incomplete` means
+the requested evidence could not be read or returned completely: read its
+annotation and truncation metadata to distinguish missing detail from partial
+indexed evidence. An empty incomplete page proves nothing. `expired` means it
+was retained and has since been deleted; `notFound` means it was never known.
+`unsupported` means the facet was never produced or cannot be read by the
+available toolchain or index decoder.
 
 An `omitted` line means a record was too large to return within the response
 cap and was passed over rather than shortened. What would have had to be cut

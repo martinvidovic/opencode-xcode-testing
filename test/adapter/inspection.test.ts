@@ -11,7 +11,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { createTestToolService, INDEX_ARTIFACT, type ServiceEnvironment } from "../../src/adapter/service.ts"
+import { bundleDigest, createTestToolService, INDEX_ARTIFACT, type ServiceEnvironment } from "../../src/adapter/service.ts"
+import { renderInspection } from "../../src/adapter/tools.ts"
 import { RESPONSE_BYTE_CAP, RESPONSE_ENVELOPE_BYTES } from "../../src/domain/limits.ts"
 import { BLOCKED_FIELD_CAP, OMITTED_REASON } from "../../src/interpreter/paging.ts"
 import type { InspectRunRequest, InspectionResponse } from "../../src/domain/inspection.ts"
@@ -443,6 +444,75 @@ describe("the response cap", () => {
 })
 
 describe("bundle-backed detail", () => {
+  test("distinguishes indexed outcomes from unavailable Bundle-Backed Detail after a digest mismatch", async () => {
+    await withSandbox(async (box) => {
+      createRunDirectory(box.storage, RUN)
+      const bundle = join(runDirectory(box.storage, RUN), RUN_ARTIFACTS.resultBundle)
+      mkdirSync(bundle)
+      const contents = join(bundle, "synthetic.txt")
+      writeFileSync(contents, "original")
+      const digest = bundleDigest(bundle)
+      if (digest.status !== "digested") throw new Error("expected a synthetic bundle digest")
+      seedRun(box.storage, { runId: RUN, state: "completed", bundleDigest: digest.digest })
+      const index = indexWith({
+        bundleDigestVerified: "yes",
+        occurrences: [{
+          id: "test-synthetic",
+          identity: {
+            bundle: "AppTests", suite: "ExampleTests", test: "testExample()",
+            canonical: "AppTests/ExampleTests/testExample()",
+          },
+          identityComplete: true,
+          status: "passed",
+          position: "0",
+          attempts: [{ ordinal: 1, status: "passed" }],
+          failures: [],
+        }],
+      })
+      writeFileSync(join(runDirectory(box.storage, RUN), INDEX_ARTIFACT), JSON.stringify(index), {
+        mode: 0o600,
+      })
+      let extractions = 0
+      const service = createTestToolService({
+        ...environmentFor(box),
+        xcresultToolFor: () => ({
+          identity: index.toolchain,
+          async run() {
+            extractions++
+            return { ok: true, payload: { activities: [] } }
+          },
+        }),
+      })
+      const pageRequest = { runId: RUN, facet: "tests", limit: 1 } as const
+      const focusRequest = { runId: RUN, facet: "tests", testId: "test-synthetic" } as const
+      expect(await service.inspect(focusRequest)).toMatchObject({ status: "available" })
+
+      writeFileSync(contents, "changed")
+      const page = await service.inspect(pageRequest)
+      const focused = await service.inspect(focusRequest)
+      expect(page).toMatchObject({
+        status: "available", completeness: "complete",
+        data: { records: [{ id: "test-synthetic", status: "passed" }] },
+      })
+      expect(focused).toMatchObject({
+        status: "incomplete",
+        annotation: "the Result Bundle no longer matches the digest recorded for this Test Run",
+        data: { focused: { status: "passed", attempts: [{ ordinal: 1, status: "passed" }], activities: [] } },
+      })
+      expect(extractions).toBe(1)
+      expect(await service.inspect(pageRequest)).toEqual(page)
+
+      const pageText = renderInspection(pageRequest, page).flatMap((entry) => entry.lines).join("\n")
+      const focusedText = renderInspection(focusRequest, focused).flatMap((entry) => entry.lines).join("\n")
+      expect(pageText).toContain("Source: retained index")
+      expect(pageText).toContain("Result Bundle integrity was not checked for this page")
+      expect(focusedText).toContain("Indexed statuses, attempts, identities, diagnostics and messages remain as retained")
+      expect(focusedText).toContain("Missing Bundle-Backed Detail does not invalidate the saved outcome")
+      expect(focusedText).toContain("no longer matches the digest")
+      expect(focusedText).not.toContain("empty page")
+    })
+  })
+
   const diagnostic = {
     id: "diag-1",
     kind: "testFailure" as const,

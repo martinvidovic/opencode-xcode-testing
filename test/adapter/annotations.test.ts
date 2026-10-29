@@ -124,6 +124,57 @@ describe("an incomplete inspection", () => {
     const envelope = blocks[0]
     expect(envelope?.lines.join("\n")).toContain(CAUSES[0] as string)
   })
+
+  test("does not call retained evidence partial when a page record could not be returned", () => {
+    const text = renderInspection(REQUEST, {
+      status: "incomplete",
+      data: { view: "records", facet: "failures", records: [] },
+      truncation: { ...UNTRUNCATED, responseTruncated: true, recordsOmitted: 1 },
+      annotation: OMITTED_REASON,
+    }).flatMap((entry) => entry.lines).join("\n")
+
+    expect(text).toContain("could not be read or returned completely")
+    expect(text).toContain("an empty page does not prove there are zero records")
+    expect(text).toContain("1 record(s) too large to return")
+    expect(text).toContain(OMITTED_REASON)
+    expect(text).not.toContain("retained evidence is known to be partial")
+  })
+})
+
+describe("an incomplete Focused Detail", () => {
+  function focusedText(data: unknown, annotation: string = LAZY_ANNOTATIONS.bundleGone): string {
+    return renderInspection({ ...REQUEST, diagnosticId: "diag-synthetic" }, {
+      status: "incomplete",
+      data,
+      truncation: UNTRUNCATED,
+      annotation,
+    }).flatMap((entry) => entry.lines).join("\n")
+  }
+
+  test("distinguishes retained diagnostic text from missing Bundle-Backed Detail", () => {
+    const text = focusedText({
+      view: "focused", facet: "failures",
+      focused: {
+        id: "diag-synthetic", kind: "testFailure", message: "Synthetic assertion failed",
+        stackFrames: [], activities: [], attachments: [],
+      },
+    })
+
+    expect(text).toContain("Indexed statuses, attempts, identities, diagnostics and messages remain as retained")
+    expect(text).toContain("Synthetic assertion failed")
+    expect(text).not.toContain("empty page")
+    expect(text).not.toContain("integrity was not checked for this page")
+  })
+
+  test("does not vouch for indexed evidence when no focused record could be read", () => {
+    const text = focusedText(undefined, "the retained evidence for this Test Run is not trustworthy")
+
+    expect(text).toContain("could not be read or returned completely")
+    expect(text).toContain("not trustworthy")
+    expect(text).not.toContain("remain as retained")
+    expect(text).not.toContain("does not invalidate")
+    expect(text).not.toContain("empty page")
+  })
 })
 
 describe("the text an annotation may carry", () => {
