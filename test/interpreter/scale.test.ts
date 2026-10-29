@@ -14,8 +14,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -285,27 +285,25 @@ describe("a read that has to be stopped", () => {
     // about processes this test has to actually check, because a leaked
     // grandchild leaves no trace in the response or in the staging directory.
     //
-    // The stub stands in for that shape: a parent that emits, and a detached
-    // grandchild that appends to a file forever. If the group died, the file
-    // stops growing; if only the parent was signalled, it does not.
+    // The stub stands in for that shape: a parent that emits, and a
+    // backgrounded grandchild that loops forever. Each invocation records its
+    // own PID — which is its group, since the read leads one — and the
+    // grandchild's, so the test can ask the kernel whether either survived
+    // rather than infer it from what they did or did not write.
     const directory = mkdtempSync(join(tmpdir(), "xcode-test-group-"))
     const bundle = join(directory, "result.xcresult")
     mkdirSync(bundle, { recursive: true })
 
-    const alive = join(directory, "grandchild-alive")
-    // The file is created by the parent's very first statement, and the
-    // parent then waits for the grandchild before producing any output. Both
-    // halves matter: without the first, "it never wrote" can mean the fork
-    // lost a race with the kill; without the second, the read can time out
-    // while `sh` is still starting on a loaded machine. Neither is a fact
-    // about process groups, and both used to fail this test.
+    // One line per invocation, appended in a single write after the fork: a
+    // retried read must not overwrite the evidence of the attempt before it.
+    const launched = join(directory, "launched")
     const script = join(directory, "xcresulttool")
     writeFileSync(
       script,
       [
         "#!/bin/sh",
-        `echo start >> "${alive}"`,
-        `( while true; do echo tick >> "${alive}"; sleep 0.05; done ) &`,
+        "( while true; do sleep 0.05; done ) &",
+        `echo "$$ $!" >> "${launched}"`,
         "while true; do echo '{}'; sleep 0.05; done",
       ].join("\n") + "\n",
     )
@@ -321,11 +319,11 @@ describe("a read that has to be stopped", () => {
       const response = await tool.run("get test-results tests", 3_000)
       expect(response).toMatchObject({ ok: false, failure: "timedOut" })
 
-      // Waited for rather than sampled at a fixed offset. A fixed window has
-      // to be long enough for the slowest machine and short enough to be
-      // worth running, and a dying process's last write landing inside it is
-      // indistinguishable from one that is still going.
-      expect(await startedThenStopped(alive)).toBeGreaterThan(0)
+      // Asked of the kernel, not read off the output. A writer that has gone
+      // quiet is indistinguishable from one the scheduler has not run lately.
+      const recorded = launchedProcesses(launched)
+      expect(recorded.length).toBeGreaterThan(0)
+      expect(await survivorsOf(recorded)).toEqual([])
       expect(stagedFiles(directory)).toEqual([])
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -333,37 +331,65 @@ describe("a read that has to be stopped", () => {
   }, 30_000)
 })
 
+type Launched = { pgid: number; grandchild: number }
+
 /**
- * Wait for the spawned writer to start, then to stop, and report where it got to.
- *
- * Both halves are necessary and the order matters. Waiting only for it to stop
- * passes the moment it has not yet started — "nothing, then nothing" looks
- * exactly like "stopped" — which would make this green for a run where the
- * process was killed before it could prove it had ever been alive.
+ * Every invocation the stub recorded. Recorded after the fork, so each entry
+ * names processes that did exist — "never recorded" cannot pass for "gone".
  */
-async function startedThenStopped(path: string): Promise<number> {
-  const deadline = Date.now() + 20_000
-
-  while (Date.now() < deadline && sizeOf(path) === 0) await Bun.sleep(25)
-  if (sizeOf(path) === 0) throw new Error("the spawned grandchild never wrote anything")
-
-  let previous = -1
-  while (Date.now() < deadline) {
-    await Bun.sleep(250)
-    const size = sizeOf(path)
-    // Two equal readings, because one is not evidence: a writer sleeping
-    // between appends looks stopped at any single instant.
-    if (size === previous) return size
-    previous = size
+function launchedProcesses(path: string): Launched[] {
+  let text = ""
+  try {
+    text = readFileSync(path, "utf8")
+  } catch {
+    return []
   }
-
-  throw new Error("the spawned grandchild never stopped writing")
+  return [...text.matchAll(/^(\d+) (\d+)\n/gm)].map((match) => ({
+    pgid: Number(match[1]),
+    grandchild: Number(match[2]),
+  }))
 }
 
-function sizeOf(path: string): number {
+/**
+ * Wait for every recorded group and grandchild to cease to exist, and report
+ * any that never did.
+ *
+ * Polled because a killed process lingers as a zombie until it is reaped, and
+ * the reaper runs on its own schedule. Both checks, because a grandchild that
+ * left the group would empty it without having stopped.
+ */
+async function survivorsOf(recorded: Launched[]): Promise<string[]> {
+  const deadline = Date.now() + 20_000
+  for (;;) {
+    const survivors = recorded.flatMap(({ pgid, grandchild }) => [
+      ...(groupExists(pgid) ? [`group ${pgid}`] : []),
+      ...(processExists(grandchild) ? [`grandchild ${grandchild}`] : []),
+    ])
+    if (survivors.length === 0 || Date.now() >= deadline) return survivors
+    await Bun.sleep(25)
+  }
+}
+
+function processExists(pid: number): boolean {
+  return signallable(pid)
+}
+
+function groupExists(pgid: number): boolean {
+  // A negative PID addresses the group.
+  return signallable(-pgid)
+}
+
+/**
+ * `kill(target, 0)`: the kernel's own answer, with no signal sent. Asked
+ * directly rather than through `ps`, which would be a second process standing
+ * between the test and the fact.
+ */
+function signallable(target: number): boolean {
   try {
-    return statSync(path).size
-  } catch {
-    return 0
+    process.kill(target, 0)
+    return true
+  } catch (error) {
+    // `EPERM` means something is there that this process may not signal.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH"
   }
 }

@@ -56,6 +56,10 @@ function run(options: Options): void {
     }).unref()
   }
 
+  // After the traps, not with `started`: a test that cancels on this line
+  // knows the signals it sends will be observed rather than obeyed.
+  process.stdout.write(`stub ${process.pid} ready\n`)
+
   const stayAlive = options.sleepMs > 0 ? options.sleepMs : 0
   setTimeout(() => {
     process.stdout.write(`stub ${process.pid} exiting ${options.exitCode}\n`)

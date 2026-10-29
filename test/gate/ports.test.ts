@@ -24,7 +24,16 @@ const FORMERLY_FIXED = [45_729, 45_741, 45_795, 45_796]
 
 /** Hold `port` for the duration of `work`, as a stale invocation would. */
 async function occupying<T>(ports: readonly number[], work: () => Promise<T>): Promise<T> {
-  const held = ports.map((port) => Bun.serve({ port, fetch: () => new Response("someone else") }))
+  const held = ports.flatMap((port) => {
+    try {
+      return [Bun.serve({ port, fetch: () => new Response("someone else") })]
+    } catch (error) {
+      // Already held — by a concurrent run of this suite, say — which is the
+      // state this sets out to create.
+      if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") return []
+      throw error
+    }
+  })
   try {
     return await work()
   } finally {

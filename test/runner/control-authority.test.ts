@@ -32,6 +32,13 @@ import {
 /** Long enough that a cancellation lands while the child is unmistakably alive. */
 const CHILD_SECONDS = 5
 
+/**
+ * What the child prints before it does anything else. The gate only lets a
+ * child `exec` once launch has been authorized and recorded, so seeing this in
+ * the raw log means the run is under way — not that it probably is by now.
+ */
+const STARTED = "child-started"
+
 type Conversation = {
   /** Say this before `hello` goes. */
   before?: string
@@ -111,8 +118,8 @@ async function converse(talk: Conversation): Promise<{ record: RunRecord | undef
       containmentRoot,
       rootKey: box.storage.rootKey,
       runId,
-      command: "/bin/sleep",
-      args: [String(CHILD_SECONDS)],
+      command: "/bin/sh",
+      args: ["-c", `echo ${STARTED}; exec /bin/sleep ${CHILD_SECONDS}`],
       environment: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
       developerDirectory: "/unused",
     }
@@ -122,9 +129,9 @@ async function converse(talk: Conversation): Promise<{ record: RunRecord | undef
       await ready
       // `ready` is published before supervision starts, so a cancel sent on
       // its heels would land in the pre-launch window and prove something
-      // else. The child sleeps for seconds; this waits long enough to be
-      // inside the run, and is nowhere near long enough to race it.
-      await sleep(750)
+      // else. Waited for on the child's own word rather than on a guess at
+      // how long a loaded machine takes to get there.
+      await childStarted(join(runDirectory(box.storage, runId), RUN_ARTIFACTS.rawLog))
       toSupervisor?.write(talk.afterReady)
     }
 
@@ -132,6 +139,24 @@ async function converse(talk: Conversation): Promise<{ record: RunRecord | undef
   } finally {
     box.dispose()
     rmSync(containmentRoot, { recursive: true, force: true })
+  }
+}
+
+/** Wait for the child to announce itself in the raw log, or fail saying it never did. */
+async function childStarted(rawLog: string): Promise<void> {
+  const deadline = Date.now() + 20_000
+  for (;;) {
+    if (logContains(rawLog, STARTED)) return
+    if (Date.now() >= deadline) throw new Error("the supervised child never reported that it had started")
+    await sleep(25)
+  }
+}
+
+function logContains(path: string, text: string): boolean {
+  try {
+    return readFileSync(path, "utf8").includes(text)
+  } catch {
+    return false
   }
 }
 
